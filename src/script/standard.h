@@ -66,6 +66,7 @@ enum txnouttype
     TX_WITNESS_V0_SCRIPTHASH = 6,
     TX_WITNESS_V0_KEYHASH = 7,
     /** RVN START */
+    TX_WITNESS_V2_PQ_KEYHASH = 12, // RIP-25: Witness v2 PQ hybrid key hash
     TX_NEW_ASSET = 8,
     TX_REISSUE_ASSET = 9,
     TX_TRANSFER_ASSET = 10,

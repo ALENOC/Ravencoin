@@ -10,8 +10,10 @@
 #include "crypto/ripemd160.h"
 #include "crypto/sha1.h"
 #include "crypto/sha256.h"
+#include "crypto/mldsa.h"
 #include "pubkey.h"
 #include "script/script.h"
+#include "consensus/consensus.h"
 
 typedef std::vector<unsigned char> valtype;
 
@@ -1374,6 +1376,25 @@ bool TransactionSignatureChecker::VerifySignature(const std::vector<unsigned cha
 
 bool TransactionSignatureChecker::CheckSig(const std::vector<unsigned char> &vchSigIn, const std::vector<unsigned char> &vchPubKey, const CScript &scriptCode, SigVersion sigversion) const
 {
+    // RIP-25: ML-DSA-44 signature verification for witness v2
+    if (sigversion == SIGVERSION_WITNESS_V2_PQ)
+    {
+        // For PQ verification, vchSigIn is the ML-DSA signature (2420 bytes, no sighash byte)
+        // vchPubKey is the ML-DSA public key (1312 bytes)
+        if (vchSigIn.size() != mldsa::SIGNATURE_BYTES)
+            return false;
+        if (vchPubKey.size() != mldsa::PUBLICKEY_BYTES)
+            return false;
+
+        // Compute sighash using SIGHASH_ALL and witness v0 style hashing
+        uint256 sighash = SignatureHash(scriptCode, *txTo, nIn, SIGHASH_ALL, amount, SIGVERSION_WITNESS_V0, this->txdata);
+
+        // Verify ML-DSA-44 signature
+        return mldsa::Verify(vchSigIn.data(), vchSigIn.size(),
+                             sighash.begin(), 32,
+                             vchPubKey.data());
+    }
+
     CPubKey pubkey(vchPubKey);
     if (!pubkey.IsValid())
         return false;
@@ -1510,6 +1531,96 @@ static bool VerifyWitnessProgram(const CScriptWitness &witness, int witversion, 
         {
             return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WRONG_LENGTH);
         }
+    }
+    else if (witversion == 2 && (flags & SCRIPT_VERIFY_PQ_HYBRID))
+    {
+        // RIP-25: Witness version 2 — Post-Quantum Hybrid Signatures (ECDSA + ML-DSA-44)
+        // Program must be 32 bytes: SHA256(type || ecdsa_pk || mldsa_pk)
+        if (program.size() != 32)
+        {
+            return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WRONG_LENGTH);
+        }
+
+        // Witness stack must contain exactly 4 elements:
+        // [0] ECDSA signature (DER + sighash byte)
+        // [1] ML-DSA-44 signature (2420 bytes)
+        // [2] Compressed ECDSA public key (33 bytes)
+        // [3] ML-DSA-44 public key (1312 bytes)
+        if (witness.stack.size() != 4)
+        {
+            return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+        }
+
+        const std::vector<unsigned char>& ecdsa_sig = witness.stack[0];
+        const std::vector<unsigned char>& mldsa_sig = witness.stack[1];
+        const std::vector<unsigned char>& ecdsa_pk  = witness.stack[2];
+        const std::vector<unsigned char>& mldsa_pk  = witness.stack[3];
+
+        // Validate element sizes
+        if (ecdsa_pk.size() != 33)
+            return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+        if (mldsa_pk.size() != mldsa::PUBLICKEY_BYTES)
+            return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+        if (mldsa_sig.size() != mldsa::SIGNATURE_BYTES)
+            return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+
+        // Check PQ witness element sizes against PQ limit
+        for (unsigned int i = 0; i < witness.stack.size(); i++)
+        {
+            if (witness.stack[i].size() > MAX_PQ_WITNESS_ELEMENT_SIZE)
+                return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
+        }
+
+        // Step 1: Verify public key binding — SHA256(0x04 || ecdsa_pk || mldsa_pk) == program
+        uint256 expected_program;
+        {
+            CSHA256 hasher;
+            unsigned char type_byte = 0x04; // HYBRID_KEY_TYPE_MLDSA44
+            hasher.Write(&type_byte, 1);
+            hasher.Write(ecdsa_pk.data(), ecdsa_pk.size());
+            hasher.Write(mldsa_pk.data(), mldsa_pk.size());
+            hasher.Finalize(expected_program.begin());
+        }
+        if (memcmp(expected_program.begin(), program.data(), 32) != 0)
+        {
+            return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+        }
+
+        // Step 2: Compute sighash for verification
+        // Extract sighash type from ECDSA signature (last byte)
+        if (ecdsa_sig.empty())
+            return set_error(serror, SCRIPT_ERR_SIG_DER);
+
+        // Step 3: Verify ECDSA signature using standard script evaluation
+        // Build a P2PKH-like script for ECDSA verification
+        CPubKey ecdsaPubKey(ecdsa_pk.begin(), ecdsa_pk.end());
+        if (!ecdsaPubKey.IsValid() || !ecdsaPubKey.IsCompressed())
+            return set_error(serror, SCRIPT_ERR_WITNESS_PUBKEYTYPE);
+
+        // Use the checker to verify ECDSA signature
+        CScript ecdsaScriptCode;
+        ecdsaScriptCode << OP_DUP << OP_HASH160 << ToByteVector(ecdsaPubKey.GetID()) << OP_EQUALVERIFY << OP_CHECKSIG;
+
+        std::vector<std::vector<unsigned char> > ecdsa_stack;
+        ecdsa_stack.push_back(ecdsa_sig);
+        ecdsa_stack.push_back(ecdsa_pk);
+
+        if (!EvalScript(ecdsa_stack, ecdsaScriptCode, flags, checker, SIGVERSION_WITNESS_V0, serror))
+        {
+            return false;
+        }
+        if (ecdsa_stack.size() != 1 || !CastToBool(ecdsa_stack.back()))
+            return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+
+        // Step 4: Verify ML-DSA-44 signature
+        // The ML-DSA signature signs the same sighash that ECDSA signed
+        if (!checker.CheckSig(mldsa_sig, std::vector<unsigned char>(mldsa_pk.begin(), mldsa_pk.end()),
+                              ecdsaScriptCode, SIGVERSION_WITNESS_V2_PQ))
+        {
+            return set_error(serror, SCRIPT_ERR_SIG_NULLFAIL);
+        }
+
+        return set_success(serror);
     }
     else if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM)
     {

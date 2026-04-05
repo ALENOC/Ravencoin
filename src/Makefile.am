@@ -176,6 +176,7 @@ RAVEN_CORE_H = \
   netbase.h \
   netmessagemaker.h \
   noui.h \
+  pqkey.h \
   policy/feerate.h \
   policy/fees.h \
   policy/policy.h \
@@ -332,6 +333,8 @@ crypto_libraven_crypto_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 crypto_libraven_crypto_a_SOURCES = \
   crypto/aes.cpp \
   crypto/aes.h \
+  crypto/mldsa.cpp \
+  crypto/mldsa.h \
   crypto/chacha20.h \
   crypto/chacha20.cpp \
   crypto/common.h \
@@ -421,6 +424,7 @@ libraven_common_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 libraven_common_a_SOURCES = \
   base58.cpp \
   chainparams.cpp \
+  pqkey.cpp \
   coins.cpp \
   compressor.cpp \
   core_read.cpp \

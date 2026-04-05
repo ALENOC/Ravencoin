@@ -34,6 +34,7 @@ const char* GetTxnOutputType(txnouttype t)
     case TX_RESTRICTED_ASSET_DATA: return "nullassetdata";
     case TX_WITNESS_V0_KEYHASH: return "witness_v0_keyhash";
     case TX_WITNESS_V0_SCRIPTHASH: return "witness_v0_scripthash";
+    case TX_WITNESS_V2_PQ_KEYHASH: return "witness_v2_pq_keyhash";
 
     /** RVN START */
     case TX_NEW_ASSET: return ASSET_NEW_STRING;
@@ -92,6 +93,12 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, std::vector<std::v
         }
         if (witnessversion == 0 && witnessprogram.size() == 32) {
             typeRet = TX_WITNESS_V0_SCRIPTHASH;
+            vSolutionsRet.push_back(witnessprogram);
+            return true;
+        }
+        // RIP-25: Witness v2 programs are 32-byte hashes of hybrid PQ keys
+        if (witnessversion == 2 && witnessprogram.size() == 32) {
+            typeRet = TX_WITNESS_V2_PQ_KEYHASH;
             vSolutionsRet.push_back(witnessprogram);
             return true;
         }

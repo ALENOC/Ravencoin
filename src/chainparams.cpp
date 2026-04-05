@@ -162,6 +162,13 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nOverrideRuleChangeActivationThreshold = 1411; // Approx 70% of 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nOverrideMinerConfirmationWindow = 2016;
 
+        // RIP-25: Post-Quantum Hybrid Signatures (ECDSA + ML-DSA-44)
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 11;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 1798761600; // UTC: ~6 months after software release (placeholder)
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1830297600; // UTC: ~18 months after start (placeholder)
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 1714; // Approx 85% of 2016
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 2016;
+        consensus.nPQHybridEnabled = false; // Will be set true on activation
 
         // The best chain should have at least this much work
         consensus.nMinimumChainWork = uint256S("0000000000000000000000000000000000000000000000355cd0ac1503c83052"); // Block 2383567
@@ -326,6 +333,14 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nTimeout = 1628877600; // UTC: Fri Aug 13 2021 18:00:00
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nOverrideRuleChangeActivationThreshold = 1411; // Approx 70% of 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nOverrideMinerConfirmationWindow = 2016;
+
+        // RIP-25: Post-Quantum Hybrid Signatures — testnet activates immediately for testing
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 11;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 1199145601; // January 1, 2008 (always active for testnet)
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1893456000; // Far future
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 1310;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 2016;
+        consensus.nPQHybridEnabled = true; // Active on testnet
 
         // The best chain should have at least this much work.
         consensus.nMinimumChainWork = uint256S("0x000000000000000000000000000000000000000000000000000168050db560b4");
@@ -546,6 +561,12 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nTimeout = 999999999999ULL;
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nOverrideRuleChangeActivationThreshold = 400;
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nOverrideMinerConfirmationWindow = 500;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 11;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 0;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 999999999999ULL;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 108;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 144;
+        consensus.nPQHybridEnabled = true;
 
         // The best chain should have at least this much work.
         consensus.nMinimumChainWork = uint256S("0x00");

@@ -12,6 +12,8 @@
 #include "primitives/transaction.h"
 #include "script/standard.h"
 #include "uint256.h"
+#include "pqkey.h"
+#include "crypto/mldsa.h"
 
 
 typedef std::vector<unsigned char> valtype;
@@ -156,6 +158,11 @@ static bool SignStep(const BaseSignatureCreator& creator, const CScript& scriptP
         }
         return false;
 
+    case TX_WITNESS_V2_PQ_KEYHASH:
+        // RIP-25: Return the witness program hash; actual signing happens in ProduceSignature
+        ret.push_back(vSolutions[0]);
+        return true;
+
     default:
         return false;
     }
@@ -211,6 +218,16 @@ bool ProduceSignature(const BaseSignatureCreator& creator, const CScript& fromPu
         txnouttype subType;
         solved = solved && SignStep(creator, witnessscript, result, subType, SIGVERSION_WITNESS_V0) && subType != TX_SCRIPTHASH && subType != TX_WITNESS_V0_SCRIPTHASH && subType != TX_WITNESS_V0_KEYHASH;
         result.push_back(std::vector<unsigned char>(witnessscript.begin(), witnessscript.end()));
+        sigdata.scriptWitness.stack = result;
+        result.clear();
+    }
+    else if (solved && whichType == TX_WITNESS_V2_PQ_KEYHASH)
+    {
+        // RIP-25: Witness v2 PQ hybrid signing
+        // The witness program hash (result[0]) identifies the hybrid key pair
+        // Actual witness stack construction requires a CHybridKey from the keystore
+        // For now, mark as solved — the wallet layer populates the witness stack
+        // with [ecdsa_sig, mldsa_sig, ecdsa_pk, mldsa_pk]
         sigdata.scriptWitness.stack = result;
         result.clear();
     }
@@ -427,6 +444,11 @@ static Stacks CombineSignatures(const CScript& scriptPubKey, const BaseSignature
     case TX_REISSUE_ASSET:
         // Signatures are bigger than placeholders or empty scripts:
         if (sigs1.script.empty() || sigs1.script[0].empty())
+            return sigs2;
+        return sigs1;
+    case TX_WITNESS_V2_PQ_KEYHASH:
+        // RIP-25: PQ hybrid — prefer the more complete witness
+        if (sigs1.witness.empty() || sigs1.witness[0].empty())
             return sigs2;
         return sigs1;
 
