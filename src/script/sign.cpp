@@ -223,12 +223,43 @@ bool ProduceSignature(const BaseSignatureCreator& creator, const CScript& fromPu
     }
     else if (solved && whichType == TX_WITNESS_V2_PQ_KEYHASH)
     {
-        // RIP-25: Witness v2 PQ hybrid signing
-        // The witness program hash (result[0]) identifies the hybrid key pair
-        // Actual witness stack construction requires a CHybridKey from the keystore
-        // For now, mark as solved — the wallet layer populates the witness stack
-        // with [ecdsa_sig, mldsa_sig, ecdsa_pk, mldsa_pk]
-        sigdata.scriptWitness.stack = result;
+        // RIP-25: Witness v2 ML-DSA-44 signing
+        // result[0] = 32-byte witness program (SHA256 of ML-DSA pubkey)
+        uint256 witnessProgram;
+        if (result[0].size() == 32) {
+            memcpy(witnessProgram.begin(), result[0].data(), 32);
+        }
+
+        CPQKey pqKey;
+        CPQPubKey pqPubKey;
+        if (creator.KeyStore().HavePQKey(witnessProgram) &&
+            creator.KeyStore().GetPQKey(witnessProgram, pqKey) &&
+            creator.KeyStore().GetPQPubKey(witnessProgram, pqPubKey))
+        {
+            // Compute sighash for witness v2
+            const TransactionSignatureCreator* txCreator =
+                dynamic_cast<const TransactionSignatureCreator*>(&creator);
+            if (txCreator) {
+                CScript pqScriptCode; // empty for witness v2
+                uint256 sighash = SignatureHash(pqScriptCode, *txCreator->GetTransaction(),
+                    txCreator->GetInput(), txCreator->GetHashType(),
+                    txCreator->GetAmount(), SIGVERSION_WITNESS_V2_PQ);
+
+                std::vector<unsigned char> mldsa_sig;
+                if (pqKey.Sign(sighash, mldsa_sig)) {
+                    sigdata.scriptWitness.stack.clear();
+                    sigdata.scriptWitness.stack.push_back(mldsa_sig);
+                    sigdata.scriptWitness.stack.push_back(pqPubKey.GetVch());
+                } else {
+                    solved = false;
+                }
+            } else {
+                // Non-transaction creator — defer to wallet layer
+                sigdata.scriptWitness.stack = result;
+            }
+        } else {
+            solved = false;
+        }
         result.clear();
     }
 
@@ -447,7 +478,7 @@ static Stacks CombineSignatures(const CScript& scriptPubKey, const BaseSignature
             return sigs2;
         return sigs1;
     case TX_WITNESS_V2_PQ_KEYHASH:
-        // RIP-25: PQ hybrid — prefer the more complete witness
+        // RIP-25: PQ ML-DSA-44 — prefer the more complete witness
         if (sigs1.witness.empty() || sigs1.witness[0].empty())
             return sigs2;
         return sigs1;

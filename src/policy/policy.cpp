@@ -41,10 +41,9 @@ CAmount GetDustThreshold(const CTxOut& txout, const CFeeRate& dustRelayFeeIn)
 
     if (txout.scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
         if (witnessversion == 2) {
-            // RIP-25: PQ witness v2 inputs are larger due to ML-DSA signatures
-            // ECDSA sig (~72) + ML-DSA sig (2420) + ECDSA pk (33) + ML-DSA pk (1312) = ~3837 bytes
+            // RIP-25: PQ witness v2 inputs: ML-DSA sig (2420) + ML-DSA pk (1312) = 3732 bytes
             // Apply PQ witness discount (1/8 weight)
-            nSize += (32 + 4 + 1 + (3837 / PQ_WITNESS_SCALE_FACTOR) + 4);
+            nSize += (32 + 4 + 1 + (3732 / PQ_WITNESS_SCALE_FACTOR) + 4);
         } else {
             // sum the sizes of the parts of a transaction input
             // with 75% segwit discount applied to the script size.
@@ -267,8 +266,8 @@ bool IsWitnessStandard(const CTransaction& tx, const CCoinsViewCache& mapInputs)
 
         // RIP-25: Check witness v2 PQ standard limits
         if (witnessversion == 2 && witnessprogram.size() == 32) {
-            // Must have exactly 4 stack items: ecdsa_sig, mldsa_sig, ecdsa_pk, mldsa_pk
-            if (tx.vin[i].scriptWitness.stack.size() != 4)
+            // Must have exactly 2 stack items: mldsa_sig, mldsa_pk
+            if (tx.vin[i].scriptWitness.stack.size() != 2)
                 return false;
             // Each element must be within the PQ witness element size limit
             for (unsigned int j = 0; j < tx.vin[i].scriptWitness.stack.size(); j++) {

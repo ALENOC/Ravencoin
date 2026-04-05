@@ -5,26 +5,33 @@ https://ravencoin.org
 
 ---
 
-## RIP-25: Post-Quantum Hybrid Signatures (This Fork)
+## RIP-25: Post-Quantum Signatures (This Fork)
 
-This fork implements [RIP-25](doc/RIP-0025-PQ-Hybrid-Signatures.md) ([GitHub Issue #1280](https://github.com/RavenProject/Ravencoin/issues/1280)), a proposal to add **quantum-resistant transaction signing** to Ravencoin using a hybrid ECDSA + ML-DSA-44 (FIPS 204) scheme.
+This fork implements [RIP-25](doc/RIP-0025-PQ-Signatures.md) ([GitHub Issue #1280](https://github.com/RavenProject/Ravencoin/issues/1280)), a proposal to add **quantum-resistant transaction signing** to Ravencoin using ML-DSA-44 (FIPS 204).
 
 ### What it does
 
-Every transaction signed with witness v2 requires **two valid signatures**: the existing ECDSA/secp256k1 plus a post-quantum ML-DSA-44 (Module-Lattice Digital Signature). If either fails, the transaction is rejected. This protects funds even if one algorithm is broken.
+New **witness v2** addresses use ML-DSA-44 (a NIST-standardized post-quantum signature algorithm) exclusively. Existing ECDSA addresses (witness v0) continue working unchanged. Users gradually migrate funds from ECDSA to ML-DSA-44 addresses, making the system quantum-resistant before quantum computers can break ECDSA.
+
+- **Old addresses (witness v0):** ECDSA/secp256k1, unchanged
+- **New addresses (witness v2):** ML-DSA-44 only, quantum-resistant
+- **Migration:** Users send funds from old to new addresses at their own pace
 
 ### Key changes
 
 | Area | Change |
 |------|--------|
 | **Consensus** | BIP9 soft-fork deployment (bit 11, 85% threshold), phased block weight increase (8 → 12 → 16 MWU) |
-| **Script** | Witness version 2 validation with AND-composition of ECDSA + ML-DSA-44 |
+| **Script** | Witness version 2 validation: 2-element witness stack [mldsa_sig, mldsa_pk], SHA256(pk) == program |
 | **Policy** | `TX_WITNESS_V2_PQ_KEYHASH` standard type, PQ witness discount (8x), PQ-aware dust threshold |
+| **Addresses** | Bech32m encoding for witness v2 (HRP: `rvn` mainnet, `trvn` testnet, `rcrt` regtest) |
 | **Network** | `NODE_PQ_HYBRID` service flag (bit 5), 16 MB protocol message limit |
 | **Crypto** | `src/crypto/mldsa.h/cpp` — ML-DSA-44 via [liboqs](https://github.com/open-quantum-safe/liboqs) (FIPS 204 compliant) |
-| **Keys** | `src/pqkey.h/cpp` — `CHybridKey` / `CHybridPubKey` with domain-separated key derivation |
+| **Keys** | `src/pqkey.h/cpp` — `CPQKey` / `CPQPubKey` for ML-DSA-44 key management |
+| **Wallet** | `getnewpqaddress` RPC, PQ keystore integration, `IsMine` for witness v2 |
+| **Signing** | ML-DSA-44 signing in `sign.cpp` via `TransactionSignatureCreator` |
 | **Build** | liboqs added as dependency (`depends/packages/liboqs.mk`, `configure.ac --with-liboqs`) |
-| **Tests** | `src/test/pqkey_tests.cpp` — 20 unit tests (keygen, sign/verify, partial sig rejection, serialization) |
+| **Tests** | `src/test/pqkey_tests.cpp` — unit tests for ML-DSA-44 keygen, sign/verify, witness programs |
 
 ### Branch
 
@@ -58,9 +65,9 @@ make -j$(nproc)
 
 ### Status
 
-**Complete implementation** — All consensus rules, script validation, policy, network, signing framework, and ML-DSA-44 cryptographic integration via liboqs are implemented. The build system detects liboqs automatically via pkg-config or `--with-liboqs`.
+**Complete implementation** — All consensus rules, script validation, policy, network, wallet, signing, address encoding, and ML-DSA-44 cryptographic integration via liboqs are implemented. The build system detects liboqs automatically via pkg-config or `--with-liboqs`.
 
-For the full specification see [`doc/RIP-0025-PQ-Hybrid-Signatures.md`](doc/RIP-0025-PQ-Hybrid-Signatures.md).
+For the full specification see [`doc/RIP-0025-PQ-Signatures.md`](doc/RIP-0025-PQ-Signatures.md).
 
 ---
 

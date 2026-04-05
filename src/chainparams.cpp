@@ -205,6 +205,9 @@ public:
         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x88, 0xB2, 0x1E};
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x88, 0xAD, 0xE4};
 
+        // RIP-25: Bech32m HRP for PQ witness v2 addresses
+        strBech32PQHrp = "rvn";
+
         // Raven BIP44 cointype in mainnet is '175'
         nExtCoinType = 175;
 
@@ -439,6 +442,9 @@ public:
         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x35, 0x87, 0xCF};
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
 
+        // RIP-25: Bech32m HRP for PQ witness v2 addresses (testnet)
+        strBech32PQHrp = "trvn";
+
         // Raven BIP44 cointype in testnet
         nExtCoinType = 1;
 
@@ -671,6 +677,9 @@ public:
         base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,239);
         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x35, 0x87, 0xCF};
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
+
+        // RIP-25: Bech32m HRP for PQ witness v2 addresses (regtest)
+        strBech32PQHrp = "rcrt";
 
         // Raven BIP44 cointype in regtest
         nExtCoinType = 1;

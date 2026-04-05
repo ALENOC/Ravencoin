@@ -80,6 +80,18 @@ public:
     friend bool operator<(const CNoDestination &a, const CNoDestination &b) { return true; }
 };
 
+/** RIP-25: Witness v2 PQ destination — holds the 32-byte witness program (SHA256 of ML-DSA pubkey) */
+class WitnessV2PQDestination {
+public:
+    uint256 witnessProgram;
+
+    WitnessV2PQDestination() : witnessProgram() {}
+    WitnessV2PQDestination(const uint256& wp) : witnessProgram(wp) {}
+
+    friend bool operator==(const WitnessV2PQDestination& a, const WitnessV2PQDestination& b) { return a.witnessProgram == b.witnessProgram; }
+    friend bool operator<(const WitnessV2PQDestination& a, const WitnessV2PQDestination& b) { return a.witnessProgram < b.witnessProgram; }
+};
+
 /**
  * A txout script template with a specific destination. It is either:
  *  * CNoDestination: no destination set
@@ -87,7 +99,7 @@ public:
  *  * CScriptID: TX_SCRIPTHASH destination
  *  A CTxDestination is the internal data type encoded in a ravencoin address
  */
-typedef boost::variant<CNoDestination, CKeyID, CScriptID> CTxDestination;
+typedef boost::variant<CNoDestination, CKeyID, CScriptID, WitnessV2PQDestination> CTxDestination;
 
 /** Check whether a CTxDestination is a CNoDestination. */
 bool IsValidDestination(const CTxDestination& dest);
@@ -148,5 +160,8 @@ CScript GetScriptForNullAssetDataDestination(const CTxDestination &dest);
  * P2WSH script.
  */
 CScript GetScriptForWitness(const CScript& redeemscript);
+
+/** RIP-25: Generate a witness v2 scriptPubKey for a PQ witness program (32 bytes) */
+CScript GetScriptForWitnessV2PQ(const uint256& witnessProgram);
 
 #endif // RAVEN_SCRIPT_STANDARD_H

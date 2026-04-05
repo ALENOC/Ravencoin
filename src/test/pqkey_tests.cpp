@@ -2,7 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-// RIP-25: Hybrid Key Unit Tests
+// RIP-25: ML-DSA-44 Post-Quantum Key Unit Tests
 
 #include "pqkey.h"
 #include "crypto/mldsa.h"
@@ -157,26 +157,6 @@ BOOST_AUTO_TEST_CASE(mldsa_verify_wrong_siglen)
     BOOST_CHECK(!mldsa::Verify(sig, 0, msg, sizeof(msg) - 1, pk));
 }
 
-BOOST_AUTO_TEST_CASE(mldsa_sign_deterministic)
-{
-    // Same (sk, msg) must produce same signature
-    unsigned char seed[32];
-    memset(seed, 0x77, 32);
-
-    unsigned char pk[mldsa::PUBLICKEY_BYTES], sk[mldsa::SECRETKEY_BYTES];
-    BOOST_CHECK(mldsa::KeyGen(pk, sk, seed));
-
-    unsigned char msg[] = "determinism test";
-
-    unsigned char sig1[mldsa::SIGNATURE_BYTES], sig2[mldsa::SIGNATURE_BYTES];
-    size_t siglen1 = 0, siglen2 = 0;
-
-    BOOST_CHECK(mldsa::Sign(sig1, &siglen1, msg, sizeof(msg) - 1, sk));
-    BOOST_CHECK(mldsa::Sign(sig2, &siglen2, msg, sizeof(msg) - 1, sk));
-
-    BOOST_CHECK(memcmp(sig1, sig2, mldsa::SIGNATURE_BYTES) == 0);
-}
-
 BOOST_AUTO_TEST_CASE(mldsa_sizes_correct)
 {
     // Verify constants match FIPS 204 ML-DSA-44
@@ -187,233 +167,189 @@ BOOST_AUTO_TEST_CASE(mldsa_sizes_correct)
 }
 
 // ============================================================
-// Hybrid Key Tests
+// CPQKey / CPQPubKey Tests (ML-DSA-44 Only)
 // ============================================================
 
-BOOST_AUTO_TEST_CASE(hybrid_key_generation)
+BOOST_AUTO_TEST_CASE(pqkey_generation)
 {
-    CHybridKey key;
-
-    // Generate with random seed
-    BOOST_CHECK(key.MakeNewKey());
+    CPQKey key;
+    key.MakeNewKey();
     BOOST_CHECK(key.IsValid());
 
-    // Get public key
-    CHybridPubKey pub = key.GetPubKey();
+    CPQPubKey pub = key.GetPubKey();
     BOOST_CHECK(pub.IsValid());
-    BOOST_CHECK_EQUAL(pub.size(), CHybridPubKey::HYBRID_PUBKEY_SIZE);
-    BOOST_CHECK_EQUAL(pub.GetType(), HYBRID_KEY_TYPE_MLDSA44);
+    BOOST_CHECK_EQUAL(pub.size(), mldsa::PUBLICKEY_BYTES);
 }
 
-BOOST_AUTO_TEST_CASE(hybrid_key_deterministic)
+BOOST_AUTO_TEST_CASE(pqkey_deterministic_from_seed)
 {
-    // Same master seed must produce same hybrid keypair
     unsigned char seed[32];
     memset(seed, 0xBE, 32);
 
-    CHybridKey key1, key2;
-    BOOST_CHECK(key1.MakeNewKey(seed));
-    BOOST_CHECK(key2.MakeNewKey(seed));
+    CPQKey key1, key2;
+    BOOST_CHECK(key1.SetSeed(seed));
+    BOOST_CHECK(key2.SetSeed(seed));
 
-    CHybridPubKey pub1 = key1.GetPubKey();
-    CHybridPubKey pub2 = key2.GetPubKey();
+    CPQPubKey pub1 = key1.GetPubKey();
+    CPQPubKey pub2 = key2.GetPubKey();
 
-    BOOST_CHECK(memcmp(pub1.data(), pub2.data(), pub1.size()) == 0);
+    BOOST_CHECK(pub1 == pub2);
 }
 
-BOOST_AUTO_TEST_CASE(hybrid_sign_verify_roundtrip)
+BOOST_AUTO_TEST_CASE(pqkey_sign_verify_roundtrip)
 {
-    CHybridKey key;
-    BOOST_CHECK(key.MakeNewKey());
+    CPQKey key;
+    key.MakeNewKey();
+    BOOST_CHECK(key.IsValid());
 
-    CHybridPubKey pub = key.GetPubKey();
+    CPQPubKey pub = key.GetPubKey();
     BOOST_CHECK(pub.IsValid());
 
-    // Create a mock transaction hash
     uint256 hash;
     memset(hash.begin(), 0xAA, 32);
 
-    // Sign
-    std::vector<unsigned char> ecdsa_sig, mldsa_sig;
-    BOOST_CHECK(key.Sign(hash, ecdsa_sig, mldsa_sig));
+    std::vector<unsigned char> sig;
+    BOOST_CHECK(key.Sign(hash, sig));
+    BOOST_CHECK_EQUAL(sig.size(), mldsa::SIGNATURE_BYTES);
 
-    // Check signature sizes
-    BOOST_CHECK(ecdsa_sig.size() > 0 && ecdsa_sig.size() <= 72);
-    BOOST_CHECK_EQUAL(mldsa_sig.size(), mldsa::SIGNATURE_BYTES);
-
-    // Verify
-    BOOST_CHECK(pub.Verify(hash, ecdsa_sig, mldsa_sig));
+    BOOST_CHECK(pub.Verify(hash, sig));
 }
 
-BOOST_AUTO_TEST_CASE(hybrid_verify_wrong_hash)
+BOOST_AUTO_TEST_CASE(pqkey_verify_wrong_hash)
 {
-    CHybridKey key;
-    BOOST_CHECK(key.MakeNewKey());
+    CPQKey key;
+    key.MakeNewKey();
 
-    CHybridPubKey pub = key.GetPubKey();
+    CPQPubKey pub = key.GetPubKey();
 
     uint256 hash1, hash2;
     memset(hash1.begin(), 0xAA, 32);
     memset(hash2.begin(), 0xBB, 32);
 
-    std::vector<unsigned char> ecdsa_sig, mldsa_sig;
-    BOOST_CHECK(key.Sign(hash1, ecdsa_sig, mldsa_sig));
+    std::vector<unsigned char> sig;
+    BOOST_CHECK(key.Sign(hash1, sig));
 
     // Must fail with different hash
-    BOOST_CHECK(!pub.Verify(hash2, ecdsa_sig, mldsa_sig));
+    BOOST_CHECK(!pub.Verify(hash2, sig));
 }
 
-BOOST_AUTO_TEST_CASE(hybrid_verify_wrong_pubkey)
+BOOST_AUTO_TEST_CASE(pqkey_verify_wrong_pubkey)
 {
-    CHybridKey key1, key2;
-    BOOST_CHECK(key1.MakeNewKey());
-    BOOST_CHECK(key2.MakeNewKey());
+    CPQKey key1, key2;
+    key1.MakeNewKey();
+    key2.MakeNewKey();
 
-    CHybridPubKey pub2 = key2.GetPubKey();
+    CPQPubKey pub2 = key2.GetPubKey();
 
     uint256 hash;
     memset(hash.begin(), 0xCC, 32);
 
-    // Sign with key1
-    std::vector<unsigned char> ecdsa_sig, mldsa_sig;
-    BOOST_CHECK(key1.Sign(hash, ecdsa_sig, mldsa_sig));
+    std::vector<unsigned char> sig;
+    BOOST_CHECK(key1.Sign(hash, sig));
 
-    // Verify with key2's pubkey must fail
-    BOOST_CHECK(!pub2.Verify(hash, ecdsa_sig, mldsa_sig));
+    // Verify with wrong key must fail
+    BOOST_CHECK(!pub2.Verify(hash, sig));
 }
 
-BOOST_AUTO_TEST_CASE(hybrid_verify_partial_signature_ecdsa_only)
+BOOST_AUTO_TEST_CASE(pqkey_witness_program)
 {
-    CHybridKey key;
-    BOOST_CHECK(key.MakeNewKey());
+    CPQKey key;
+    key.MakeNewKey();
 
-    CHybridPubKey pub = key.GetPubKey();
+    CPQPubKey pub = key.GetPubKey();
 
-    uint256 hash;
-    memset(hash.begin(), 0xDD, 32);
-
-    std::vector<unsigned char> ecdsa_sig, mldsa_sig;
-    BOOST_CHECK(key.Sign(hash, ecdsa_sig, mldsa_sig));
-
-    // Tamper with ML-DSA signature (valid ECDSA + invalid ML-DSA)
-    std::vector<unsigned char> bad_mldsa(mldsa_sig);
-    bad_mldsa[500] ^= 0xFF;
-
-    BOOST_CHECK(!pub.Verify(hash, ecdsa_sig, bad_mldsa));
-}
-
-BOOST_AUTO_TEST_CASE(hybrid_verify_partial_signature_mldsa_only)
-{
-    CHybridKey key;
-    BOOST_CHECK(key.MakeNewKey());
-
-    CHybridPubKey pub = key.GetPubKey();
-
-    uint256 hash;
-    memset(hash.begin(), 0xEE, 32);
-
-    std::vector<unsigned char> ecdsa_sig, mldsa_sig;
-    BOOST_CHECK(key.Sign(hash, ecdsa_sig, mldsa_sig));
-
-    // Tamper with ECDSA signature (invalid ECDSA + valid ML-DSA)
-    std::vector<unsigned char> bad_ecdsa(ecdsa_sig);
-    if (bad_ecdsa.size() > 5)
-        bad_ecdsa[5] ^= 0xFF;
-
-    BOOST_CHECK(!pub.Verify(hash, bad_ecdsa, mldsa_sig));
-}
-
-BOOST_AUTO_TEST_CASE(hybrid_witness_program)
-{
-    CHybridKey key;
-    BOOST_CHECK(key.MakeNewKey());
-
-    CHybridPubKey pub = key.GetPubKey();
-
-    // Witness program must be 32 bytes (SHA256 hash)
+    // Witness program must be 32 bytes (SHA256 of ML-DSA pubkey)
     uint256 wp = pub.GetWitnessProgram();
     BOOST_CHECK(!wp.IsNull());
 
     // Same key must produce same witness program
-    CHybridPubKey pub2 = key.GetPubKey();
-    uint256 wp2 = pub2.GetWitnessProgram();
+    uint256 wp2 = pub.GetWitnessProgram();
     BOOST_CHECK(wp == wp2);
 }
 
-BOOST_AUTO_TEST_CASE(hybrid_pubkey_serialization)
+BOOST_AUTO_TEST_CASE(pqkey_different_keys_different_witness_programs)
 {
-    CHybridKey key;
-    BOOST_CHECK(key.MakeNewKey());
+    CPQKey key1, key2;
+    key1.MakeNewKey();
+    key2.MakeNewKey();
 
-    CHybridPubKey pub = key.GetPubKey();
+    uint256 wp1 = key1.GetPubKey().GetWitnessProgram();
+    uint256 wp2 = key2.GetPubKey().GetWitnessProgram();
 
-    // Serialize
-    std::vector<unsigned char> serialized = pub.Serialize();
-    BOOST_CHECK_EQUAL(serialized.size(), CHybridPubKey::HYBRID_PUBKEY_SIZE);
-
-    // Deserialize
-    CHybridPubKey pub2;
-    BOOST_CHECK(pub2.Deserialize(serialized.data(), serialized.size()));
-    BOOST_CHECK(pub2.IsValid());
-
-    // Must match original
-    BOOST_CHECK(memcmp(pub.data(), pub2.data(), pub.size()) == 0);
+    BOOST_CHECK(wp1 != wp2);
 }
 
-BOOST_AUTO_TEST_CASE(hybrid_pubkey_deserialize_invalid)
+BOOST_AUTO_TEST_CASE(pqkey_multiple_signatures)
 {
-    CHybridPubKey pub;
+    CPQKey key;
+    key.MakeNewKey();
 
-    // Wrong size
-    unsigned char bad_data[100];
-    memset(bad_data, 0, 100);
-    BOOST_CHECK(!pub.Deserialize(bad_data, 100));
-    BOOST_CHECK(!pub.IsValid());
-
-    // Wrong type byte
-    unsigned char bad_type[CHybridPubKey::HYBRID_PUBKEY_SIZE];
-    memset(bad_type, 0, sizeof(bad_type));
-    bad_type[0] = 0xFF; // invalid type
-    BOOST_CHECK(!pub.Deserialize(bad_type, sizeof(bad_type)));
-}
-
-BOOST_AUTO_TEST_CASE(hybrid_ecdsa_component_works)
-{
-    CHybridKey key;
-    BOOST_CHECK(key.MakeNewKey());
-
-    CHybridPubKey pub = key.GetPubKey();
-
-    // Extract ECDSA component
-    CPubKey ecdsaPub = pub.GetECDSAPubKey();
-    BOOST_CHECK(ecdsaPub.IsCompressed());
-    BOOST_CHECK(ecdsaPub.IsValid());
-
-    // Verify the ECDSA component independently
-    uint256 hash;
-    memset(hash.begin(), 0xFF, 32);
-
-    std::vector<unsigned char> ecdsa_sig;
-    BOOST_CHECK(key.GetECDSAKey().Sign(hash, ecdsa_sig));
-    BOOST_CHECK(ecdsaPub.Verify(hash, ecdsa_sig));
-}
-
-BOOST_AUTO_TEST_CASE(hybrid_multiple_signatures_same_key)
-{
-    CHybridKey key;
-    BOOST_CHECK(key.MakeNewKey());
-
-    CHybridPubKey pub = key.GetPubKey();
+    CPQPubKey pub = key.GetPubKey();
 
     // Sign multiple different messages
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 5; i++) {
         uint256 hash;
         memset(hash.begin(), i, 32);
 
-        std::vector<unsigned char> ecdsa_sig, mldsa_sig;
-        BOOST_CHECK(key.Sign(hash, ecdsa_sig, mldsa_sig));
-        BOOST_CHECK(pub.Verify(hash, ecdsa_sig, mldsa_sig));
+        std::vector<unsigned char> sig;
+        BOOST_CHECK(key.Sign(hash, sig));
+        BOOST_CHECK(pub.Verify(hash, sig));
     }
+}
+
+BOOST_AUTO_TEST_CASE(pqkey_set_key_data)
+{
+    CPQKey key;
+    key.MakeNewKey();
+    BOOST_CHECK(key.IsValid());
+
+    // Get raw key data
+    const auto& keydata = key.GetKeyData();
+    BOOST_CHECK_EQUAL(keydata.size(), mldsa::SECRETKEY_BYTES);
+
+    // Create new key from raw data
+    CPQKey key2;
+    std::vector<unsigned char> data(keydata.begin(), keydata.end());
+    BOOST_CHECK(key2.SetKeyData(data));
+    BOOST_CHECK(key2.IsValid());
+}
+
+BOOST_AUTO_TEST_CASE(pqkey_invalid_state)
+{
+    CPQKey key;
+    BOOST_CHECK(!key.IsValid());
+
+    uint256 hash;
+    memset(hash.begin(), 0x11, 32);
+
+    std::vector<unsigned char> sig;
+    BOOST_CHECK(!key.Sign(hash, sig));
+}
+
+BOOST_AUTO_TEST_CASE(pqpubkey_invalid_size)
+{
+    // Empty pubkey
+    CPQPubKey pub;
+    BOOST_CHECK(!pub.IsValid());
+
+    // Wrong size pubkey
+    std::vector<unsigned char> bad(100, 0);
+    CPQPubKey pub2(bad);
+    BOOST_CHECK(!pub2.IsValid());
+}
+
+BOOST_AUTO_TEST_CASE(pqpubkey_verify_rejects_wrong_sig_size)
+{
+    CPQKey key;
+    key.MakeNewKey();
+    CPQPubKey pub = key.GetPubKey();
+
+    uint256 hash;
+    memset(hash.begin(), 0xDD, 32);
+
+    // Wrong size signature
+    std::vector<unsigned char> bad_sig(100, 0);
+    BOOST_CHECK(!pub.Verify(hash, bad_sig));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

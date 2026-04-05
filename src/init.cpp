@@ -1828,6 +1828,11 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
     if(chainparams.GetConsensus().nSegwitEnabled) {
     		nLocalServices = ServiceFlags(nLocalServices | NODE_WITNESS);
     }
+
+    // RIP-25: Advertise post-quantum support
+    if(chainparams.GetConsensus().nPQHybridEnabled) {
+        nLocalServices = ServiceFlags(nLocalServices | NODE_PQ_HYBRID);
+    }
     // ********************************************************* Step 10: import blocks
 
     if (!CheckDiskSpace())
