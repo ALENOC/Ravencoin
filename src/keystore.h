@@ -166,5 +166,6 @@ public:
 
 typedef std::vector<unsigned char, secure_allocator<unsigned char> > CKeyingMaterial;
 typedef std::map<CKeyID, std::pair<CPubKey, std::vector<unsigned char> > > CryptedKeyMap;
+typedef std::map<uint256, std::pair<CPQPubKey, std::vector<unsigned char> > > CryptedPQKeyMap;
 
 #endif // RAVEN_KEYSTORE_H

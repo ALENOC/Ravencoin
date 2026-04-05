@@ -1772,6 +1772,11 @@ size_t static WitnessSigOps(int witversion, const std::vector<unsigned char> &wi
         }
     }
 
+    if (witversion == 2 && witprogram.size() == 32)
+    {
+        return 1;
+    }
+
     // Future flags may be implemented here.
     return 0;
 }

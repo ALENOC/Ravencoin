@@ -294,6 +294,17 @@ bool CWallet::AddKeyPubKey(const CKey& secret, const CPubKey &pubkey)
     return CWallet::AddKeyPubKeyWithDB(walletdb, secret, pubkey);
 }
 
+bool CWallet::AddPQKeyPubKey(const CPQKey &key, const CPQPubKey &pubkey)
+{
+    AssertLockHeld(cs_wallet);
+    if (!CCryptoKeyStore::AddPQKeyPubKey(key, pubkey))
+        return false;
+
+    uint256 witnessProgram = pubkey.GetWitnessProgram();
+    std::vector<unsigned char> keyData(key.GetKeyData().begin(), key.GetKeyData().end());
+    return CWalletDB(*dbw).WritePQKey(witnessProgram, pubkey, keyData);
+}
+
 bool CWallet::AddCryptedKey(const CPubKey &vchPubKey,
                             const std::vector<unsigned char> &vchCryptedSecret)
 {
@@ -312,6 +323,21 @@ bool CWallet::AddCryptedKey(const CPubKey &vchPubKey,
     }
 }
 
+bool CWallet::AddCryptedPQKey(const CPQPubKey &pqPubKey,
+                              const std::vector<unsigned char> &vchCryptedSecret)
+{
+    if (!CCryptoKeyStore::AddCryptedPQKey(pqPubKey, vchCryptedSecret))
+        return false;
+    {
+        LOCK(cs_wallet);
+        uint256 witnessProgram = pqPubKey.GetWitnessProgram();
+        if (pwalletdbEncryption)
+            return pwalletdbEncryption->WriteCryptedPQKey(witnessProgram, pqPubKey, vchCryptedSecret);
+        else
+            return CWalletDB(*dbw).WriteCryptedPQKey(witnessProgram, pqPubKey, vchCryptedSecret);
+    }
+}
+
 bool CWallet::LoadKeyMetadata(const CTxDestination& keyID, const CKeyMetadata &meta)
 {
     AssertLockHeld(cs_wallet); // mapKeyMetadata
@@ -323,6 +349,11 @@ bool CWallet::LoadKeyMetadata(const CTxDestination& keyID, const CKeyMetadata &m
 bool CWallet::LoadCryptedKey(const CPubKey &vchPubKey, const std::vector<unsigned char> &vchCryptedSecret)
 {
     return CCryptoKeyStore::AddCryptedKey(vchPubKey, vchCryptedSecret);
+}
+
+bool CWallet::LoadCryptedPQKey(const CPQPubKey &pqPubKey, const std::vector<unsigned char> &vchCryptedSecret)
+{
+    return CCryptoKeyStore::AddCryptedPQKey(pqPubKey, vchCryptedSecret);
 }
 
 bool CWallet::LoadCryptedWords(const uint256& hash, const std::vector<unsigned char> &vchCryptedWords)

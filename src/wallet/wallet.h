@@ -919,6 +919,10 @@ public:
     bool AddKeyPubKeyWithDB(CWalletDB &walletdb,const CKey& key, const CPubKey &pubkey);
     //! Adds a key to the store, without saving it to disk (used by LoadWallet)
     bool LoadKey(const CKey& key, const CPubKey &pubkey) { return CCryptoKeyStore::AddKeyPubKey(key, pubkey); }
+    //! Adds a PQ key to the store, and saves it to disk.
+    bool AddPQKeyPubKey(const CPQKey &key, const CPQPubKey &pubkey) override;
+    //! Adds a PQ key to the store, without saving it to disk (used by LoadWallet)
+    bool LoadPQKey(const CPQKey& key, const CPQPubKey &pubkey) { return CCryptoKeyStore::AddPQKeyPubKey(key, pubkey); }
     //! Load metadata (used by LoadWallet)
     bool LoadKeyMetadata(const CTxDestination& pubKey, const CKeyMetadata &metadata);
 
@@ -927,8 +931,12 @@ public:
 
     //! Adds an encrypted key to the store, and saves it to disk.
     bool AddCryptedKey(const CPubKey &vchPubKey, const std::vector<unsigned char> &vchCryptedSecret) override;
+    //! Adds an encrypted PQ key to the store, and saves it to disk.
+    bool AddCryptedPQKey(const CPQPubKey &pqPubKey, const std::vector<unsigned char> &vchCryptedSecret) override;
     //! Adds an encrypted key to the store, without saving it to disk (used by LoadWallet)
     bool LoadCryptedKey(const CPubKey &vchPubKey, const std::vector<unsigned char> &vchCryptedSecret);
+    //! Adds an encrypted PQ key to the store, without saving it to disk (used by LoadWallet)
+    bool LoadCryptedPQKey(const CPQPubKey &pqPubKey, const std::vector<unsigned char> &vchCryptedSecret);
     bool LoadCryptedWords(const uint256& hash, const std::vector<unsigned char> &vchCryptedWords);
     bool LoadCryptedPassphrase(const std::vector<unsigned char> &vchCryptedPassphrase);
     bool LoadCryptedVchSeed(const std::vector<unsigned char> &vchCryptedVchSeed);
