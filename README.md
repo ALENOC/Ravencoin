@@ -3,6 +3,40 @@ Raven Core integration/staging tree
 
 https://ravencoin.org
 
+---
+
+## RIP-25: Post-Quantum Hybrid Signatures (This Fork)
+
+This fork implements [RIP-25](doc/RIP-0025-PQ-Hybrid-Signatures.md) ([GitHub Issue #1280](https://github.com/RavenProject/Ravencoin/issues/1280)), a proposal to add **quantum-resistant transaction signing** to Ravencoin using a hybrid ECDSA + ML-DSA-44 (FIPS 204) scheme.
+
+### What it does
+
+Every transaction signed with witness v2 requires **two valid signatures**: the existing ECDSA/secp256k1 plus a post-quantum ML-DSA-44 (Module-Lattice Digital Signature). If either fails, the transaction is rejected. This protects funds even if one algorithm is broken.
+
+### Key changes
+
+| Area | Change |
+|------|--------|
+| **Consensus** | BIP9 soft-fork deployment (bit 11, 85% threshold), phased block weight increase (8 → 12 → 16 MWU) |
+| **Script** | Witness version 2 validation with AND-composition of ECDSA + ML-DSA-44 |
+| **Policy** | `TX_WITNESS_V2_PQ_KEYHASH` standard type, PQ witness discount (8x), PQ-aware dust threshold |
+| **Network** | `NODE_PQ_HYBRID` service flag (bit 5), 16 MB protocol message limit |
+| **Crypto** | `src/crypto/mldsa.h/cpp` — ML-DSA-44 wrapper (PoC uses HMAC-SHA512 simulation, production will use [liboqs](https://github.com/open-quantum-safe/liboqs)) |
+| **Keys** | `src/pqkey.h/cpp` — `CHybridKey` / `CHybridPubKey` with domain-separated key derivation |
+| **Tests** | `src/test/pqkey_tests.cpp` — 20 unit tests (keygen, sign/verify, partial sig rejection, serialization) |
+
+### Branch
+
+All work is on [`feature/rip25-pq-hybrid`](https://github.com/ALENOC/Ravencoin/tree/feature/rip25-pq-hybrid).
+
+### Status
+
+**Proof-of-concept** — The ML-DSA-44 cryptographic core uses a simulation (HMAC-SHA512 based). To move to production, replace `src/crypto/mldsa.cpp` with calls to `OQS_SIG_ml_dsa_44` from liboqs. The consensus integration, script validation, policy rules and signing framework are complete.
+
+For the full specification see [`doc/RIP-0025-PQ-Hybrid-Signatures.md`](doc/RIP-0025-PQ-Hybrid-Signatures.md).
+
+---
+
 To see how to run Ravencoin, please read the respective files in [the doc folder](doc)
 
 
