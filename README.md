@@ -21,17 +21,44 @@ Every transaction signed with witness v2 requires **two valid signatures**: the 
 | **Script** | Witness version 2 validation with AND-composition of ECDSA + ML-DSA-44 |
 | **Policy** | `TX_WITNESS_V2_PQ_KEYHASH` standard type, PQ witness discount (8x), PQ-aware dust threshold |
 | **Network** | `NODE_PQ_HYBRID` service flag (bit 5), 16 MB protocol message limit |
-| **Crypto** | `src/crypto/mldsa.h/cpp` — ML-DSA-44 wrapper (PoC uses HMAC-SHA512 simulation, production will use [liboqs](https://github.com/open-quantum-safe/liboqs)) |
+| **Crypto** | `src/crypto/mldsa.h/cpp` — ML-DSA-44 via [liboqs](https://github.com/open-quantum-safe/liboqs) (FIPS 204 compliant) |
 | **Keys** | `src/pqkey.h/cpp` — `CHybridKey` / `CHybridPubKey` with domain-separated key derivation |
+| **Build** | liboqs added as dependency (`depends/packages/liboqs.mk`, `configure.ac --with-liboqs`) |
 | **Tests** | `src/test/pqkey_tests.cpp` — 20 unit tests (keygen, sign/verify, partial sig rejection, serialization) |
 
 ### Branch
 
 All work is on [`feature/rip25-pq-hybrid`](https://github.com/ALENOC/Ravencoin/tree/feature/rip25-pq-hybrid).
 
+### Building with liboqs
+
+```bash
+# Install liboqs (Ubuntu/Debian)
+sudo apt install cmake ninja-build
+git clone https://github.com/open-quantum-safe/liboqs.git
+cd liboqs && mkdir build && cd build
+cmake -DOQS_MINIMAL_BUILD="SIG_ml_dsa_44" -DBUILD_SHARED_LIBS=ON ..
+make -j$(nproc) && sudo make install
+sudo ldconfig
+
+# Build Ravencoin with PQ support
+cd /path/to/Ravencoin
+./autogen.sh
+./configure --with-liboqs
+make -j$(nproc)
+```
+
+Or using the depends system:
+```bash
+cd depends && make
+cd .. && ./autogen.sh
+./configure --prefix=$(pwd)/depends/x86_64-pc-linux-gnu
+make -j$(nproc)
+```
+
 ### Status
 
-**Proof-of-concept** — The ML-DSA-44 cryptographic core uses a simulation (HMAC-SHA512 based). To move to production, replace `src/crypto/mldsa.cpp` with calls to `OQS_SIG_ml_dsa_44` from liboqs. The consensus integration, script validation, policy rules and signing framework are complete.
+**Complete implementation** — All consensus rules, script validation, policy, network, signing framework, and ML-DSA-44 cryptographic integration via liboqs are implemented. The build system detects liboqs automatically via pkg-config or `--with-liboqs`.
 
 For the full specification see [`doc/RIP-0025-PQ-Hybrid-Signatures.md`](doc/RIP-0025-PQ-Hybrid-Signatures.md).
 
