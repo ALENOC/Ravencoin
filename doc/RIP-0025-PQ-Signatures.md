@@ -178,6 +178,38 @@ ML-DSA signatures and public keys are pure validation overhead. A **PQ witness d
 static const int PQ_WITNESS_SCALE_FACTOR = 8;
 ```
 
+##### Weight Calculation
+
+The standard SegWit weight formula is:
+
+```
+weight = stripped_size × 4 + witness_size
+```
+
+For PQ witness v2 inputs (detected by a 2-element witness stack: 2,420-byte sig + 1,312-byte pk), `GetTransactionWeight` applies an additional discount. Each PQ witness byte is reduced from **1 WU** (standard segwit) to **0.5 WU** (8x discount):
+
+```
+pq_discount = pq_witness_bytes × (PQ_WITNESS_SCALE_FACTOR − WITNESS_SCALE_FACTOR) / PQ_WITNESS_SCALE_FACTOR
+            = 3732 × (8 − 4) / 8
+            = 1866 WU
+
+adjusted_weight = standard_weight − pq_discount
+```
+
+##### Effective Virtual Size
+
+For a typical single-input PQ transaction (~200 bytes stripped, ~3,732 bytes PQ witness):
+
+| Metric | Without PQ discount | With PQ discount |
+|--------|---------------------|------------------|
+| Weight (WU) | ~4,532 | ~2,666 |
+| Virtual size (vbytes) | ~1,133 | ~667 |
+| Relay fee (at 0.01 RVN/kB) | ~0.01133 RVN | ~0.00667 RVN |
+
+##### Wallet Fee Estimation
+
+The wallet estimates transaction size before signing using `DummySignTx`. For PQ witness v2 inputs, `ProduceSignature` cannot verify dummy ML-DSA data, so `DummySignTx` detects witness v2 PQ outputs and inserts correctly-sized dummy witness data (2,420 + 1,312 bytes). This ensures the fee calculation accounts for the full PQ witness size and discount.
+
 #### 4.2 Phased Block Weight Increase
 
 | Phase | Max Block Weight | Activation |
@@ -257,6 +289,7 @@ public:
 | **Script** | `script/sign.h/cpp` | ML-DSA signing via `TransactionSignatureCreator` |
 | **Script** | `script/ismine.cpp` | `IsMine` for witness v2 outputs |
 | **Consensus** | `consensus/consensus.h/cpp` | Block weight increase, PQ constants (`PQ_WITNESS_SCALE_FACTOR`, `MAX_PQ_WITNESS_ELEMENT_SIZE`) |
+| **Consensus** | `consensus/validation.h` | PQ witness weight discount in `GetTransactionWeight` |
 | **Consensus** | `consensus/params.h` | `DEPLOYMENT_PQ_HYBRID` flag |
 | **Validation** | `validation.cpp/h` | `GetBlockScriptFlags()`, `IsPQHybridDeployed()` |
 | **Validation** | `versionbits.cpp` | `pq_hybrid` deployment info registration |
