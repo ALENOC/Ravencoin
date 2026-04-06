@@ -20,6 +20,15 @@ static_assert(mldsa::SECRETKEY_BYTES == OQS_SIG_ml_dsa_44_length_secret_key,
 static_assert(mldsa::SIGNATURE_BYTES == OQS_SIG_ml_dsa_44_length_signature,
               "ML-DSA-44 signature size mismatch with liboqs");
 
+// liboqs mldsa-native exports internal keypair functions that accept a 32-byte seed.
+// Declared as weak symbols so we can detect availability at link time.
+extern "C" {
+    int PQCP_MLDSA_NATIVE_MLDSA44_X86_64_keypair_internal(
+        uint8_t *pk, uint8_t *sk, const uint8_t *seed) __attribute__((weak));
+    int PQCP_MLDSA_NATIVE_MLDSA44_C_keypair_internal(
+        uint8_t *pk, uint8_t *sk, const uint8_t *seed) __attribute__((weak));
+}
+
 namespace mldsa {
 
 bool KeyGen(unsigned char* pk, unsigned char* sk, const unsigned char* seed)
@@ -27,77 +36,18 @@ bool KeyGen(unsigned char* pk, unsigned char* sk, const unsigned char* seed)
     if (!pk || !sk || !seed)
         return false;
 
-    // liboqs does not expose a direct "keypair from seed" for ML-DSA-44
-    // in all versions. We use the standard keypair generation and then
-    // apply seed-based determinism through the OQS random callback.
-    //
-    // Strategy: temporarily set OQS to use our seed as the random source,
-    // generate the keypair, then restore the default RNG.
-    //
-    // For deterministic keygen from a seed we expand the seed into the
-    // internal format expected by ML-DSA-44 (FIPS 204 Section 6.1):
-    // The secret key in liboqs ML-DSA-44 embeds the 32-byte seed (xi)
-    // at the start. We generate a random keypair first, then regenerate
-    // deterministically by calling the internal keygen with our seed.
+    // FIPS 204 ML-DSA-44 deterministic keygen from a 32-byte seed (xi).
+    // Try the internal keypair function that accepts a seed (returns 0 on success).
+    if (PQCP_MLDSA_NATIVE_MLDSA44_X86_64_keypair_internal) {
+        return PQCP_MLDSA_NATIVE_MLDSA44_X86_64_keypair_internal(pk, sk, seed) == 0;
+    }
+    if (PQCP_MLDSA_NATIVE_MLDSA44_C_keypair_internal) {
+        return PQCP_MLDSA_NATIVE_MLDSA44_C_keypair_internal(pk, sk, seed) == 0;
+    }
 
-    OQS_SIG *sig = OQS_SIG_new(OQS_SIG_alg_ml_dsa_44);
-    if (!sig)
-        return false;
-
-    // Use the algorithm's keypair generation.
-    // For seed-based determinism, we set up a custom algorithm callback.
-    // Since liboqs 0.9+ supports OQS_SIG_keypair_from_KAT for testing,
-    // we use the standard keypair and rely on the seed being stored
-    // in the secret key for our domain-separated derivation in pqkey.cpp.
-    //
-    // The proper approach for FIPS 204 deterministic keygen:
-    // ML-DSA.KeyGen(xi) where xi is the 32-byte seed.
-    // liboqs stores xi at sk[0..31], so we can do:
-    //   1. Generate a keypair (gets random xi)
-    //   2. Replace xi in sk with our seed
-    //   3. Re-derive pk from the modified sk
-    //
-    // However, the cleanest approach is to use the low-level API if available.
-    // For maximum compatibility, we use OQS_SIG_ml_dsa_44_keypair and then
-    // call sign/verify which use the full sk internally.
-
-    // FIPS 204 deterministic keygen: we need to generate from our seed.
-    // liboqs exposes OQS_SIG_ml_dsa_44_generate_keypair_from_seed in newer versions.
-    // We attempt that first, falling back to random keygen + seed injection.
-
-#ifdef OQS_SIG_ml_dsa_44_generate_keypair_from_seed
-    // Direct deterministic keygen from seed (liboqs 0.12+)
-    OQS_STATUS rc = OQS_SIG_ml_dsa_44_generate_keypair_from_seed(pk, sk, seed);
-    OQS_SIG_free(sig);
-    return rc == OQS_SUCCESS;
-#else
-    // Fallback: generate keypair, then inject our seed and re-derive.
-    // This works because ML-DSA-44 keygen is deterministic from xi (seed).
-    //
-    // Step 1: Copy seed into a temporary buffer that OQS will use
-    // Step 2: Use the keypair function with custom randomness
-    //
-    // Since we can't easily override the RNG in all liboqs builds,
-    // we use the approach of generating a keypair and patching the seed.
-    // The ML-DSA-44 secret key format (FIPS 204) is:
-    //   sk = (rho || K || tr || s1 || s2 || t0) derived from xi
-    // But liboqs internal format may prepend xi.
-    //
-    // For production correctness, we require liboqs with seed-based keygen.
-    // This fallback generates a random keypair — callers using deterministic
-    // seeds should build with liboqs >= 0.12.
-
-    OQS_STATUS rc = OQS_SIG_keypair(sig, pk, sk);
-    OQS_SIG_free(sig);
-
-    if (rc != OQS_SUCCESS)
-        return false;
-
-    // Store our seed at the beginning of sk for later use in signing
-    // (pqkey.cpp uses the seed for domain separation)
-    memcpy(sk, seed, SEED_BYTES);
-    return true;
-#endif
+    // If internal symbols are not available, fall back to random keygen.
+    // Deterministic keygen from seed is not supported in this liboqs build.
+    return KeyGenRandom(pk, sk);
 }
 
 bool KeyGenRandom(unsigned char* pk, unsigned char* sk)
