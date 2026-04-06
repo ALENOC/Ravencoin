@@ -1296,7 +1296,7 @@ uint256 SignatureHash(const CScript &scriptCode, const CTransaction &txTo, unsig
 {
     assert(nIn < txTo.vin.size());
 
-    if (sigversion == SIGVERSION_WITNESS_V0)
+    if (sigversion == SIGVERSION_WITNESS_V0 || sigversion == SIGVERSION_WITNESS_V2_PQ)
     {
         uint256 hashPrevouts;
         uint256 hashSequence;
@@ -1386,8 +1386,8 @@ bool TransactionSignatureChecker::CheckSig(const std::vector<unsigned char> &vch
         if (vchPubKey.size() != mldsa::PUBLICKEY_BYTES)
             return false;
 
-        // Compute sighash using SIGHASH_ALL and witness v0 style hashing
-        uint256 sighash = SignatureHash(scriptCode, *txTo, nIn, SIGHASH_ALL, amount, SIGVERSION_WITNESS_V0, this->txdata);
+        // Compute sighash using SIGHASH_ALL and witness v2 PQ hashing
+        uint256 sighash = SignatureHash(scriptCode, *txTo, nIn, SIGHASH_ALL, amount, SIGVERSION_WITNESS_V2_PQ, this->txdata);
 
         // Verify ML-DSA-44 signature
         return mldsa::Verify(vchSigIn.data(), vchSigIn.size(),
