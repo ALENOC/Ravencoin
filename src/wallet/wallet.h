@@ -1298,11 +1298,24 @@ bool CWallet::DummySignTx(CMutableTransaction &txNew, const ContainerType &coins
 
         if (!ProduceSignature(DummySignatureCreator(this), scriptPubKey, sigdata))
         {
-            // just add dummy 256 bytes as sigdata if this fails (can't necessarily sign for all inputs)
-            CScript dummyScript = CScript(cstrZeros, cstrZeros + 256);
-            SignatureData dummyData = SignatureData(dummyScript);
-            UpdateTransaction(txNew, nIn, dummyData);
-            allSigned = false;
+            // RIP-25: For PQ witness v2 outputs, ProduceSignature fails because
+            // VerifyScript can't verify dummy ML-DSA data. Set correctly-sized
+            // dummy witness so fee estimation accounts for PQ witness bytes.
+            int witnessversion = 0;
+            std::vector<unsigned char> witnessprogram;
+            if (scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram) &&
+                witnessversion == 2 && witnessprogram.size() == 32) {
+                SignatureData pqDummy;
+                pqDummy.scriptWitness.stack.push_back(std::vector<unsigned char>(2420, 0)); // ML-DSA-44 sig
+                pqDummy.scriptWitness.stack.push_back(std::vector<unsigned char>(1312, 0)); // ML-DSA-44 pk
+                UpdateTransaction(txNew, nIn, pqDummy);
+            } else {
+                // just add dummy 256 bytes as sigdata if this fails (can't necessarily sign for all inputs)
+                CScript dummyScript = CScript(cstrZeros, cstrZeros + 256);
+                SignatureData dummyData = SignatureData(dummyScript);
+                UpdateTransaction(txNew, nIn, dummyData);
+                allSigned = false;
+            }
         } else {
             UpdateTransaction(txNew, nIn, sigdata);
         }

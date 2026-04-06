@@ -254,8 +254,9 @@ bool ProduceSignature(const BaseSignatureCreator& creator, const CScript& fromPu
                     solved = false;
                 }
             } else {
-                // Non-transaction creator — defer to wallet layer
-                sigdata.scriptWitness.stack = result;
+                // Non-transaction creator (e.g. DummySignatureCreator) — cannot sign.
+                // Fee estimation handles this in DummySignTx with correctly-sized dummy witness.
+                solved = false;
             }
         } else {
             solved = false;
