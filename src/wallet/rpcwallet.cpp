@@ -1421,6 +1421,8 @@ public:
         }
         return false;
     }
+
+    bool operator()(const WitnessV2PQDestination &dest) const { return false; }
 };
 
 UniValue addwitnessaddress(const JSONRPCRequest& request)

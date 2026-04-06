@@ -130,6 +130,7 @@ public:
     }
 
     void operator()(const CNoDestination &none) {}
+    void operator()(const WitnessV2PQDestination &dest) {}
 };
 
 const CWalletTx* CWallet::GetWalletTx(const uint256& hash) const
