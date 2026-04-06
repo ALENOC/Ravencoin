@@ -250,16 +250,21 @@ public:
 |----------|-------|---------|
 | **Crypto** | `crypto/mldsa.h/cpp` | ML-DSA-44 wrapper around liboqs |
 | **Keys** | `pqkey.h/cpp` | `CPQKey`/`CPQPubKey` classes |
-| **Script** | `script/interpreter.cpp` | Witness v2 validation (2-element stack) |
+| **Script** | `script/interpreter.h` | `SCRIPT_VERIFY_PQ_HYBRID` flag, `SIGVERSION_WITNESS_V2_PQ` |
+| **Script** | `script/interpreter.cpp` | Witness v2 validation (2-element stack), `WitnessSigOps` for v2 |
 | **Script** | `script/script_error.h/cpp` | PQ-specific error codes |
 | **Script** | `script/standard.h/cpp` | `TX_WITNESS_V2_PQ_KEYHASH`, `WitnessV2PQDestination` |
 | **Script** | `script/sign.h/cpp` | ML-DSA signing via `TransactionSignatureCreator` |
 | **Script** | `script/ismine.cpp` | `IsMine` for witness v2 outputs |
-| **Consensus** | `consensus/consensus.h/cpp` | Block weight increase, PQ constants |
+| **Consensus** | `consensus/consensus.h/cpp` | Block weight increase, PQ constants (`PQ_WITNESS_SCALE_FACTOR`, `MAX_PQ_WITNESS_ELEMENT_SIZE`) |
 | **Consensus** | `consensus/params.h` | `DEPLOYMENT_PQ_HYBRID` flag |
 | **Validation** | `validation.cpp/h` | `GetBlockScriptFlags()`, `IsPQHybridDeployed()` |
+| **Validation** | `versionbits.cpp` | `pq_hybrid` deployment info registration |
 | **Wallet** | `wallet/rpcwallet.cpp` | `getnewpqaddress` RPC command |
-| **Keystore** | `keystore.h` | PQ key maps (`PQKeyMap`, `PQPubKeyMap`) |
+| **Wallet** | `wallet/walletdb.h/cpp` | PQ key persistence: `WritePQKey`, `WriteCryptedPQKey`, `ReadKeyValue` handlers for `"pqkey"`/`"cpqkey"` |
+| **Wallet** | `wallet/wallet.h/cpp` | `AddPQKeyPubKey` (disk persist), `AddCryptedPQKey`, `LoadPQKey`/`LoadCryptedPQKey` |
+| **Wallet** | `wallet/crypter.h/cpp` | PQ key encryption: `mapCryptedPQKeys`, `AddCryptedPQKey`, `EncryptKeys`/`Unlock` for PQ keys |
+| **Keystore** | `keystore.h` | PQ key maps (`PQKeyMap`, `PQPubKeyMap`, `CryptedPQKeyMap`) |
 | **Address** | `bech32.h/cpp` (new) | Bech32m encoding/decoding (BIP350) |
 | **Address** | `base58.cpp` | `EncodeDestination`/`DecodeDestination` for bech32m |
 | **Params** | `chainparams.h/cpp` | Bech32m HRP (`rvn`/`trvn`/`rcrt`), BIP9 deployment |
@@ -268,8 +273,8 @@ public:
 | **P2P** | `init.cpp` | Advertise `NODE_PQ_HYBRID` service |
 | **Policy** | `policy/policy.h/cpp` | PQ dust threshold, `IsWitnessStandard` (2-element stack) |
 | **Build** | `configure.ac`, `Makefile.am` | liboqs integration, `--with-liboqs` |
-| **Build** | `depends/packages/liboqs.mk` | liboqs depends package |
-| **Tests** | `test/pqkey_tests.cpp` | ML-DSA-44 and CPQKey unit tests |
+| **Build** | `depends/packages/liboqs.mk`, `packages.mk` | liboqs depends package |
+| **Tests** | `test/pqkey_tests.cpp`, `Makefile.test.include` | ML-DSA-44 and CPQKey unit tests |
 
 ### 7. Migration Plan
 
