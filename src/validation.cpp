@@ -4143,6 +4143,17 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
     if (block.nBits != GetNextWorkRequired(pindexPrev, &block, consensusParams))
         return state.DoS(100, false, REJECT_INVALID, "bad-diffbits", false, "incorrect proof of work");
 
+    // The height declared inside the KAWPOW header feeds the PoW hash, the DAG epoch
+    // and the ProgPoW period. It must match the actual height of the block.
+    if (nHeight >= consensusParams.nHeightHeaderCheckActivation &&
+        block.nTime >= nKAWPOWActivationTime &&
+        block.nHeight != (uint32_t)nHeight) {
+        return state.DoS(100,
+                         error("%s: declared header height %u does not match chain height %d",
+                               __func__, block.nHeight, nHeight),
+                         REJECT_INVALID, "bad-blk-height");
+    }
+
     // Check against checkpoints
     if (fCheckpointsEnabled) {
         // Don't accept any forks from the main chain prior to last checkpoint.
@@ -4723,6 +4734,37 @@ bool static LoadBlockIndexDB(const CChainParams& chainparams)
         return false;
 
     boost::this_thread::interruption_point();
+
+    // Drop entries whose ancestry was broken by a skipped index entry. InsertBlockIndex
+    // creates an empty placeholder for an unknown parent, and such a placeholder keeps
+    // nBits == 0, which no real block header ever has.
+    {
+        std::vector<std::pair<int, CBlockIndex*> > vByHeight;
+        vByHeight.reserve(mapBlockIndex.size());
+        for (const std::pair<uint256, CBlockIndex*>& item : mapBlockIndex)
+            vByHeight.push_back(std::make_pair(item.second->nHeight, item.second));
+        sort(vByHeight.begin(), vByHeight.end());
+
+        std::set<CBlockIndex*> setBroken;
+        for (const std::pair<int, CBlockIndex*>& item : vByHeight) {
+            CBlockIndex* pindex = item.second;
+            if (pindex->nBits == 0 || (pindex->pprev && setBroken.count(pindex->pprev)))
+                setBroken.insert(pindex);
+        }
+
+        if (!setBroken.empty()) {
+            for (BlockMap::iterator it = mapBlockIndex.begin(); it != mapBlockIndex.end(); ) {
+                if (setBroken.count(it->second)) {
+                    delete it->second;
+                    it = mapBlockIndex.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            LogPrintf("LoadBlockIndexDB(): dropped %u block index entries with broken ancestry\n",
+                      (unsigned)setBroken.size());
+        }
+    }
 
     // Calculate nChainWork
     std::vector<std::pair<int, CBlockIndex*> > vSortedByHeight;
