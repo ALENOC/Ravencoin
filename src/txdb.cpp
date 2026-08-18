@@ -463,6 +463,8 @@ bool CBlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, 
 
     pcursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
 
+    int64_t nSkipped = 0;
+
     // Load mapBlockIndex
     while (pcursor->Valid()) {
         boost::this_thread::interruption_point();
@@ -470,8 +472,19 @@ bool CBlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, 
         if (pcursor->GetKey(key) && key.first == DB_BLOCK_INDEX) {
             CDiskBlockIndex diskindex;
             if (pcursor->GetValue(diskindex)) {
+                uint256 hashBlock = diskindex.GetBlockHash();
+
+                if (!CheckProofOfWork(hashBlock, diskindex.nBits, consensusParams)) {
+                    if (nSkipped < 32)
+                        LogPrintf("%s: skipping unverifiable block index entry at height %d\n",
+                                  __func__, diskindex.nHeight);
+                    nSkipped++;
+                    pcursor->Next();
+                    continue;
+                }
+
                 // Construct block index object
-                CBlockIndex* pindexNew = insertBlockIndex(diskindex.GetBlockHash());
+                CBlockIndex* pindexNew = insertBlockIndex(hashBlock);
                 pindexNew->pprev          = insertBlockIndex(diskindex.hashPrev);
                 pindexNew->nHeight        = diskindex.nHeight;
                 pindexNew->nFile          = diskindex.nFile;
@@ -488,9 +501,6 @@ bool CBlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, 
                 pindexNew->mix_hash       = diskindex.mix_hash;
                 pindexNew->nHeight        = diskindex.nHeight;
 
-                if (!CheckProofOfWork(pindexNew->GetBlockHash(), pindexNew->nBits, consensusParams))
-                    return error("%s: CheckProofOfWork failed: %s", __func__, pindexNew->ToString());
-
                 pcursor->Next();
             } else {
                 return error("%s: failed to read value", __func__);
@@ -499,6 +509,9 @@ bool CBlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, 
             break;
         }
     }
+
+    if (nSkipped > 0)
+        LogPrintf("%s: skipped %d unverifiable block index entries\n", __func__, nSkipped);
 
     return true;
 }
