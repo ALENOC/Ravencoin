@@ -31,6 +31,11 @@ jobs:
       - name: Checkout the Code
         uses: actions/checkout@v4
 
+      - name: Apply audited RIP-25 / v4.8 overlap patch
+        run: |
+          git apply --check contrib/devtools/rip25-v48-staging.patch
+          git apply contrib/devtools/rip25-v48-staging.patch
+
       - name: Verify RIP-25 / v4.8 consensus invariants
         run: bash contrib/devtools/check-rip25-v48-invariants.sh
 
@@ -61,7 +66,7 @@ jobs:
         run: ${SCRIPTS}/04-configure-build.sh ${{ matrix.OS }} ${{ github.workspace }}
 
       - name: Build Raven
-        run: make -j2 LIBOQS_LIBS=-loqs
+        run: make -j2
 
       - name: Check Binary Security
         run: ${SCRIPTS}/05-binary-checks.sh ${{ matrix.OS }} ${{ github.workspace }}
