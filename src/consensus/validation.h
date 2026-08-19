@@ -104,6 +104,22 @@ public:
     std::string GetDebugMessage() const { return strDebugMessage; }
 };
 
+/**
+ * Ravencoin 4.8.0 KAWPOW header-height invariant.
+ * Before the 4.8 height gate (or before KAWPOW itself) the legacy field is
+ * not enforced. At/after both gates, the height declared in the PoW header
+ * must exactly match the block's contextual chain height.
+ */
+static inline bool IsKAWPOWHeaderHeightValid(const CBlockHeader& block,
+                                              int actualHeight,
+                                              int headerHeightCheckActivation,
+                                              uint32_t kawpowActivationTime)
+{
+    return actualHeight < headerHeightCheckActivation ||
+           block.nTime < kawpowActivationTime ||
+           block.nHeight == static_cast<uint32_t>(actualHeight);
+}
+
 // These implement the weight = (stripped_size * 4) + witness_size formula,
 // using only serialization with and without witness data. As witness_size
 // is equal to total_size - stripped_size, this formula is identical to:
