@@ -19,12 +19,7 @@
 
 #include <vector>
 
-/**
- * An ML-DSA-44 public key for post-quantum witness v2 addresses.
- *
- * Size: 1312 bytes (FIPS 204 ML-DSA-44)
- * Witness program: SHA256(mldsa_pubkey) = 32 bytes
- */
+/** ML-DSA-44 public key used by RIP-25 witness v2. */
 class CPQPubKey
 {
 private:
@@ -41,13 +36,8 @@ public:
     const unsigned char* end() const { return vch.data() + vch.size(); }
 
     bool IsValid() const { return vch.size() == mldsa::PUBLICKEY_BYTES; }
-
-    /** Compute witness v2 program: SHA256(mldsa_pubkey) */
     uint256 GetWitnessProgram() const;
-
-    /** Verify an ML-DSA-44 signature over a 32-byte hash */
     bool Verify(const uint256& hash, const std::vector<unsigned char>& sig) const;
-
     std::vector<unsigned char> GetVch() const { return vch; }
 
     friend bool operator==(const CPQPubKey& a, const CPQPubKey& b) { return a.vch == b.vch; }
@@ -63,12 +53,7 @@ public:
     }
 };
 
-/**
- * An ML-DSA-44 private key for post-quantum signing.
- *
- * Size: 2560 bytes (FIPS 204 ML-DSA-44)
- * Uses secure allocator to protect key material in memory.
- */
+/** ML-DSA-44 private key for post-quantum signing. */
 class CPQKey
 {
 private:
@@ -81,28 +66,26 @@ public:
 
     ~CPQKey()
     {
-        if (keydata.size() > 0)
+        if (!keydata.empty())
             memory_cleanse(keydata.data(), keydata.size());
     }
 
     bool IsValid() const { return fValid; }
-
-    /** Generate a new random ML-DSA-44 keypair */
     void MakeNewKey();
 
-    /** Generate a deterministic ML-DSA-44 keypair from a 32-byte seed */
+    /** Reserved for deterministic keygen; fails closed with pinned liboqs 0.12.0. */
     bool SetSeed(const unsigned char* seed);
 
     CPQPubKey GetPubKey() const { return pubkey; }
-
-    /** Sign a 32-byte hash with ML-DSA-44 */
     bool Sign(const uint256& hash, std::vector<unsigned char>& sigOut) const;
 
-    /** Get raw secret key data (for wallet serialization) */
     const std::vector<unsigned char, secure_allocator<unsigned char>>& GetKeyData() const { return keydata; }
 
-    /** Set key from raw data (for wallet deserialization), recomputes pubkey */
+    /** Restore secret-key bytes. The persisted public key must be rebound separately. */
     bool SetKeyData(const std::vector<unsigned char>& data);
+
+    /** Bind the persisted public key after wallet deserialization/decryption. */
+    bool SetPubKey(const CPQPubKey& pubkeyIn);
 };
 
 #endif // RAVEN_PQKEY_H
