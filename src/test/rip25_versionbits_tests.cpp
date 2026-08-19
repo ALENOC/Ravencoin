@@ -4,7 +4,6 @@
 
 #include "chain.h"
 #include "consensus/params.h"
-#include "test/test_raven.h"
 #include "versionbits.h"
 
 #include <boost/test/unit_test.hpp>
@@ -66,7 +65,7 @@ Consensus::Params MakeRIP25VersionBitsParams()
 
 } // namespace
 
-BOOST_FIXTURE_TEST_SUITE(rip25_versionbits_tests, BasicTestingSetup)
+BOOST_AUTO_TEST_SUITE(rip25_versionbits_tests)
 
 BOOST_AUTO_TEST_CASE(pq_bit12_activates_independently_from_v48_overflow_bit11)
 {
