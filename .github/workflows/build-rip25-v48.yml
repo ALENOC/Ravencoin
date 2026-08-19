@@ -35,8 +35,12 @@ jobs:
         run: |
           git apply --check contrib/devtools/rip25-v48-staging.patch
           git apply contrib/devtools/rip25-v48-staging.patch
+          git apply --check contrib/devtools/rip25-v48-kawpow-staging.patch
+          git apply contrib/devtools/rip25-v48-kawpow-staging.patch
           git apply --check contrib/devtools/rip25-v48-doc-staging.patch
           git apply contrib/devtools/rip25-v48-doc-staging.patch
+          git apply --check contrib/devtools/rip25-v48-test-wiring-staging.patch
+          git apply contrib/devtools/rip25-v48-test-wiring-staging.patch
 
       - name: Verify RIP-25 / v4.8 consensus invariants
         run: bash contrib/devtools/check-rip25-v48-invariants.sh
@@ -75,6 +79,7 @@ jobs:
         run: |
           ./src/test/test_raven --run_test=pqkey_tests
           ./src/test/test_raven --run_test=pqkey_hardening_tests
+          ./src/test/test_raven --run_test=kawpow_v48_hardening_tests
 
       - name: Check Binary Security
         run: ${SCRIPTS}/05-binary-checks.sh ${{ matrix.OS }} ${{ github.workspace }}
