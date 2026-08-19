@@ -29,6 +29,7 @@ require_fixed 'IsTransferOverflowCheckDeployed' src/consensus/tx_verify.cpp 'mis
 require_fixed 'DEPLOYMENT_PQ_HYBRID].bit = 12' src/chainparams.cpp 'RIP-25 must use BIP9 bit 12'
 require_fixed '"transfer_overflow"' src/versionbits.cpp 'missing transfer_overflow VersionBits metadata'
 require_fixed '"pq_hybrid"' src/versionbits.cpp 'missing pq_hybrid VersionBits metadata'
+require_fixed 'bit:                                    12' doc/RIP-0025-PQ-Signatures.md 'RIP-25 specification still advertises the pre-v4.8 signaling bit'
 
 # TronBlack-approved RIP-25 resource policy is invariant: 8 -> 12 -> 16 MWU and 8x PQ witness discount.
 require_fixed 'MAX_BLOCK_WEIGHT_RIP2 = 8000000' src/consensus/consensus.h 'RIP-2 8 MWU baseline changed'
@@ -52,6 +53,20 @@ require_fixed 'SCRIPT_VERIFY_PQ_HYBRID' src/validation.cpp 'missing consensus/me
 # Policy must not enforce witness-v2 unconditionally before BIP9 activation.
 if grep -A30 'STANDARD_SCRIPT_VERIFY_FLAGS' src/policy/policy.h | grep -Fq 'SCRIPT_VERIFY_PQ_HYBRID'; then
   fail 'SCRIPT_VERIFY_PQ_HYBRID must not be unconditional in STANDARD_SCRIPT_VERIFY_FLAGS'
+fi
+
+# liboqs must be a first-class build dependency, not an ad-hoc CI linker flag.
+require_fixed 'AC_ARG_WITH([liboqs]' configure.ac 'missing --with-liboqs configure option'
+require_fixed 'liboqs >= 0.12.0' configure.ac 'configure must require the pinned liboqs API baseline'
+require_fixed 'AC_SUBST(LIBOQS_LIBS)' configure.ac 'LIBOQS_LIBS is not exported by configure'
+require_fixed 'AC_SUBST(LIBOQS_CFLAGS)' configure.ac 'LIBOQS_CFLAGS is not exported by configure'
+require_fixed 'liboqs' depends/packages/packages.mk 'liboqs missing from depends package graph'
+
+if ! grep -A4 'libravenconsensus_la_LIBADD' src/Makefile.am | grep -Fq '$(LIBOQS_LIBS)'; then
+  fail 'libravenconsensus must link LIBOQS_LIBS'
+fi
+if ! grep -A6 'qt_raven_qt_LDADD' src/Makefile.qt.include | grep -Fq '$(LIBOQS_LIBS)'; then
+  fail 'raven-qt must link LIBOQS_LIBS'
 fi
 
 echo 'RIP-25 / Ravencoin 4.8 invariants: OK'
