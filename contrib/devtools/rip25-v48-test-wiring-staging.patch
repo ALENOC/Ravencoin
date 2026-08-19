@@ -1,0 +1,10 @@
+--- a/src/Makefile.test.include
++++ b/src/Makefile.test.include
+@@ -75,6 +75,7 @@ RAVEN_TESTS =\
+   test/pow_tests.cpp \
+   test/prevector_tests.cpp \
+   test/kawpow_tests.cpp \
++  test/kawpow_v48_hardening_tests.cpp \
+   test/raii_event_tests.cpp \
+   test/random_tests.cpp \
+   test/reverselock_tests.cpp \
