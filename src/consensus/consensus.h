@@ -10,6 +10,9 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+class CBlockIndex;
+namespace Consensus { struct Params; }
+
 /** The maximum allowed size for a serialized block, in bytes (only for buffer size limits) */
 static const unsigned int MAX_BLOCK_SERIALIZED_SIZE = 4000000;
 /** The maximum allowed weight for a block, see BIP 141 (network rule) */
@@ -38,8 +41,8 @@ static const int COINBASE_MATURITY = 100;
 
 static const int WITNESS_SCALE_FACTOR = 4;
 
-static const size_t MIN_TRANSACTION_WEIGHT = WITNESS_SCALE_FACTOR * 60; // 60 is the lower bound for the size of a valid serialized CTransaction
-static const size_t MIN_SERIALIZABLE_TRANSACTION_WEIGHT = WITNESS_SCALE_FACTOR * 10; // 10 is the lower bound for the size of a serialized CTransaction
+static const size_t MIN_TRANSACTION_WEIGHT = WITNESS_SCALE_FACTOR * 60; // 60 is the lower bound for the size of a valid CTransaction
+static const size_t MIN_SERIALIZABLE_TRANSACTION_WEIGHT = WITNESS_SCALE_FACTOR * 10; // 10 is the lower bound for a serialized CTransaction
 
 #define UNUSED_VAR     __attribute__ ((unused))
 //! This variable needs to in this class because undo.h uses it. However because it is in this class
@@ -54,6 +57,10 @@ UNUSED_VAR static bool fCheckTransferOverflowIsActive = false;
 /** Structural upper bounds supported by this binary. Exact active limits are contextual. */
 unsigned int GetMaxBlockWeight();
 unsigned int GetMaxBlockSerializedSize();
+
+/** RIP-25 activation/resource state for the block after pindexPrev. */
+bool IsPQWitnessDiscountActive(const CBlockIndex* pindexPrev, const Consensus::Params& params);
+unsigned int GetMaxBlockWeightForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params);
 
 /** Flags for nSequence and nLockTime locks */
 enum {
