@@ -6,7 +6,6 @@
 
 #include "amount.h"
 #include "base58.h"
-#include "bech32.h"
 #include "chain.h"
 #include "consensus/validation.h"
 #include "core_io.h"
@@ -25,7 +24,6 @@
 #include "util.h"
 #include "utiltime.h"
 #include "utilmoneystr.h"
-#include "pqkey.h"
 #include "wallet/coincontrol.h"
 #include "wallet/feebumper.h"
 #include "wallet/wallet.h"
@@ -224,56 +222,6 @@ UniValue getnewaddress(const JSONRPCRequest& request)
     return EncodeDestination(keyID);
 }
 
-
-UniValue getnewpqaddress(const JSONRPCRequest& request)
-{
-    CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
-    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) {
-        return NullUniValue;
-    }
-
-    if (request.fHelp || request.params.size() > 1)
-        throw std::runtime_error(
-            "getnewpqaddress ( \"account\" )\n"
-            "\nReturns a new post-quantum Raven address (witness v2, ML-DSA-44) for receiving payments.\n"
-            "These addresses are quantum-resistant and use Bech32m encoding.\n"
-            "\nArguments:\n"
-            "1. \"account\"        (string, optional) DEPRECATED. The account name for the address to be linked to.\n"
-            "\nResult:\n"
-            "\"address\"    (string) The new post-quantum raven address (bech32m encoded)\n"
-            "\nExamples:\n"
-            + HelpExampleCli("getnewpqaddress", "")
-            + HelpExampleRpc("getnewpqaddress", "")
-        );
-
-    LOCK2(cs_main, pwallet->cs_wallet);
-
-    // Parse the account first so we don't generate a key if there's an error
-    std::string strAccount;
-    if (!request.params[0].isNull())
-        strAccount = AccountFromValue(request.params[0]);
-
-    // Generate a new ML-DSA-44 keypair
-    CPQKey pqKey;
-    pqKey.MakeNewKey();
-    if (!pqKey.IsValid()) {
-        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to generate ML-DSA-44 keypair");
-    }
-
-    CPQPubKey pqPubKey = pqKey.GetPubKey();
-    uint256 witnessProgram = pqPubKey.GetWitnessProgram();
-
-    // Add to keystore
-    if (!pwallet->AddPQKeyPubKey(pqKey, pqPubKey)) {
-        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to add PQ key to wallet");
-    }
-
-    // Create destination and set address book
-    WitnessV2PQDestination dest(witnessProgram);
-    pwallet->SetAddressBook(dest, strAccount, "receive");
-
-    return EncodeDestination(dest);
-}
 
 CTxDestination GetAccountAddress(CWallet* const pwallet, std::string strAccount, bool bForceNew=false)
 {
@@ -527,7 +475,7 @@ UniValue sendtoaddress(const JSONRPCRequest& request)
 
     if (request.fHelp || request.params.size() < 2 || request.params.size() > 7)
         throw std::runtime_error(
-            "sendtoaddress \"address\" amount ( \"comment\" \"comment_to\" subtractfeefromamount replaceable conf_target \"estimate_mode\")\n"
+            "sendtoaddress \"address\" amount ( \"comment\" \"comment_to\" subtractfeefromamount conf_target \"estimate_mode\")\n"
             "\nSend an amount to a given address.\n"
             + HelpRequiringPassphrase(pwallet) +
             "\nArguments:\n"
@@ -1181,7 +1129,7 @@ UniValue sendmany(const JSONRPCRequest& request)
 
     if (request.fHelp || request.params.size() < 2 || request.params.size() > 8)
         throw std::runtime_error(
-            "sendmany \"fromaccount\" {\"address\":amount,...} ( minconf \"comment\" [\"address\",...] replaceable conf_target \"estimate_mode\")\n"
+            "sendmany \"fromaccount\" {\"address\":amount,...} ( minconf \"comment\" [\"address\",...] conf_target \"estimate_mode\")\n"
             "\nSend multiple times. Amounts are double-precision floating point numbers."
             + HelpRequiringPassphrase(pwallet) + "\n"
             "\nArguments:\n"
@@ -1421,8 +1369,6 @@ public:
         }
         return false;
     }
-
-    bool operator()(const WitnessV2PQDestination &dest) const { return false; }
 };
 
 UniValue addwitnessaddress(const JSONRPCRequest& request)
@@ -3596,7 +3542,6 @@ static const CRPCCommand commands[] =
     { "wallet",             "getmasterkeyinfo",         &getmasterkeyinfo,         {} },
     { "wallet",             "getmywords",               &getmywords,                        {} },
     { "wallet",             "getnewaddress",            &getnewaddress,            {"account"} },
-    { "wallet",             "getnewpqaddress",          &getnewpqaddress,          {"account"} },
     { "wallet",             "getrawchangeaddress",      &getrawchangeaddress,      {} },
     { "wallet",             "getreceivedbyaccount",     &getreceivedbyaccount,     {"account","minconf"} },
     { "wallet",             "getreceivedbyaddress",     &getreceivedbyaddress,     {"address","minconf"} },

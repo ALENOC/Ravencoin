@@ -1526,6 +1526,7 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
     LogPrintf("* Using %.1fMiB for in-memory UTXO set (plus up to %.1fMiB of unused mempool space)\n", nCoinCacheUsage * (1.0 / 1024 / 1024), nMempoolSizeMax * (1.0 / 1024 / 1024));
 
     bool fLoaded = false;
+    bool fRetryWithChainStateRebuild = false;
     while (!fLoaded && !fRequestShutdown) {
         bool fReset = fReindex;
         std::string strLoadError;
@@ -1572,7 +1573,7 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
                     delete pDistributeSnapshotDb;
 
                     // Basic assets
-                    passetsdb = new CAssetsDB(nBlockTreeDBCache, false, fReset);
+                    passetsdb = new CAssetsDB(nBlockTreeDBCache, false, fReset || fReindexChainState);
                     passets = new CAssetsCache();
                     passetsCache = new CLRUCache<std::string, CDatabasedAssetData>(MAX_CACHE_ASSETS_SIZE);
 
@@ -1587,7 +1588,7 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
                     pmyrestricteddb = new CMyRestrictedDB(nBlockTreeDBCache, false, false);
 
                     // Restricted assets
-                    prestricteddb = new CRestrictedDB(nBlockTreeDBCache, false, fReset);
+                    prestricteddb = new CRestrictedDB(nBlockTreeDBCache, false, fReset || fReindexChainState);
                     passetsVerifierCache = new CLRUCache<std::string, CNullAssetTxVerifierString>(
                             MAX_CACHE_ASSETS_SIZE);
                     passetsQualifierCache = new CLRUCache<std::string, int8_t>(MAX_CACHE_ASSETS_SIZE);
@@ -1714,6 +1715,19 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
                 if (!is_coinsview_empty) {
                     // LoadChainTip sets chainActive based on pcoinsTip's best block
                     if (!LoadChainTip(chainparams)) {
+                        // Loading the block index drops entries whose proof of work no longer
+                        // verifies together with everything descending from them. When that
+                        // happens the coins database is left ahead of the block index and has
+                        // to be rebuilt rather than treated as corruption.
+                        bool fCoinsAheadOfIndex;
+                        {
+                            LOCK(cs_main);
+                            fCoinsAheadOfIndex = !mapBlockIndex.count(pcoinsTip->GetBestBlock());
+                        }
+                        if (fCoinsAheadOfIndex) {
+                            LogPrintf("Coins database is ahead of the block index, rebuilding chainstate\n");
+                            fRetryWithChainStateRebuild = true;
+                        }
                         strLoadError = _("Error initializing block database");
                         break;
                     }
@@ -1766,6 +1780,11 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
         } while(false);
 
         if (!fLoaded && !fRequestShutdown) {
+            if (fRetryWithChainStateRebuild) {
+                fRetryWithChainStateRebuild = false;
+                fReindexChainState = true;
+                continue;
+            }
             // first suggest a reindex
             if (!fReset) {
                 bool fRet = uiInterface.ThreadSafeQuestion(
@@ -1828,11 +1847,6 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
     if(chainparams.GetConsensus().nSegwitEnabled) {
     		nLocalServices = ServiceFlags(nLocalServices | NODE_WITNESS);
     }
-
-    // RIP-25: Advertise post-quantum support
-    if(chainparams.GetConsensus().nPQHybridEnabled) {
-        nLocalServices = ServiceFlags(nLocalServices | NODE_PQ_HYBRID);
-    }
     // ********************************************************* Step 10: import blocks
 
     if (!CheckDiskSpace())
@@ -1840,9 +1854,8 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
 
     // Either install a handler to notify us when genesis activates, or set fHaveGenesis directly.
     // No locking, as this happens before any background thread is started.
-    boost::signals2::connection genesisWaitConnection;
     if (chainActive.Tip() == nullptr) {
-        genesisWaitConnection = uiInterface.NotifyBlockTip.connect(BlockNotifyGenesisWait);
+        uiInterface.NotifyBlockTip.connect(BlockNotifyGenesisWait);
     } else {
         fHaveGenesis = true;
     }
@@ -1863,7 +1876,7 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
         while (!fHaveGenesis) {
             condvar_GenesisWait.wait(lock);
         }
-        genesisWaitConnection.disconnect();
+        uiInterface.NotifyBlockTip.disconnect(BlockNotifyGenesisWait);
     }
 
     // ********************************************************* Step 11: start node

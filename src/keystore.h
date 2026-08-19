@@ -114,12 +114,23 @@ public:
         }
         return false;
     }
-    // RIP-25: PQ key methods
+
+    // RIP-25: PQ key methods. Every key pair is cryptographically checked
+    // before it enters the keystore so wallet DB corruption cannot associate a
+    // secret key with an unrelated witness-v2 public key.
     bool AddPQKeyPubKey(const CPQKey &key, const CPQPubKey &pubkey) override
     {
         LOCK(cs_KeyStore);
+        if (!key.IsValid() || !pubkey.IsValid())
+            return false;
+
+        std::vector<unsigned char> keyData(key.GetKeyData().begin(), key.GetKeyData().end());
+        CPQKey validatedKey;
+        if (!validatedKey.SetKeyData(keyData, pubkey))
+            return false;
+
         uint256 wp = pubkey.GetWitnessProgram();
-        mapPQKeys[wp] = key;
+        mapPQKeys[wp] = validatedKey;
         mapPQPubKeys[wp] = pubkey;
         return true;
     }
