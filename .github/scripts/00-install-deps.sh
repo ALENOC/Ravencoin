@@ -35,8 +35,7 @@ if [[ ${OS} == "windows" ]]; then
     zip \
     bison
 
-    update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix 
-
+    update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
 
 elif [[ ${OS} == "osx" ]]; then
     apt -y install \
@@ -69,7 +68,7 @@ elif [[ ${OS} == "osx" ]]; then
     python3-pip
 
     pip3 install ds-store
-    
+
 elif [[ ${OS} == "linux" || ${OS} == "linux-disable-wallet" || ${OS} == "aarch64" || ${OS} == "aarch64-disable-wallet" ]]; then
     apt -y install \
     apt-file \
@@ -100,8 +99,6 @@ elif [[ ${OS} == "linux" || ${OS} == "linux-disable-wallet" || ${OS} == "aarch64
     zip \
     bison
 
-
-
 elif [[ ${OS} == "arm32v7" || ${OS} == "arm32v7-disable-wallet" ]]; then
     apt -y install \
     autoconf \
@@ -129,5 +126,8 @@ else
     echo "you must pass the OS to build for"
     exit 1
 fi
-    update-alternatives --install /usr/bin/python python /usr/bin/python2 1
-    update-alternatives --install /usr/bin/python python /usr/bin/python3 2
+
+if command -v python2 >/dev/null 2>&1; then
+    update-alternatives --install /usr/bin/python python "$(command -v python2)" 1
+fi
+update-alternatives --install /usr/bin/python python "$(command -v python3)" 2
