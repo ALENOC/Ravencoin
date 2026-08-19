@@ -21,8 +21,8 @@ enum DeploymentPos
     DEPLOYMENT_TRANSFER_SCRIPT_SIZE,
     DEPLOYMENT_ENFORCE_VALUE,
     DEPLOYMENT_COINBASE_ASSETS,
-    DEPLOYMENT_TRANSFER_OVERFLOW, // Ravencoin 4.8: asset transfer qty overflow check
-    DEPLOYMENT_PQ_HYBRID, // RIP-25: ML-DSA-44 witness v2
+    DEPLOYMENT_TRANSFER_OVERFLOW,   // Deployment of asset transfer qty overflow check   
+    DEPLOYMENT_PQ_HYBRID, // Deployment of RIP-25: Post-Quantum Hybrid Signatures (ML-DSA-44)
     // DEPLOYMENT_CSV, // Deployment of BIP68, BIP112, and BIP113.
 //    DEPLOYMENT_SEGWIT, // Deployment of BIP141, BIP143, and BIP147.
     // NOTE: Also add new deployments to VersionBitsDeploymentInfo in versionbits.cpp
@@ -80,8 +80,8 @@ struct Params {
     uint256 defaultAssumeValid;
     bool nSegwitEnabled;
     bool nCSVEnabled;
-    bool nPQHybridEnabled; // force-enable only on test chains; mainnet follows BIP9
-    int nHeightHeaderCheckActivation; // Ravencoin 4.8 KAWPOW declared-height enforcement
+    bool nPQHybridEnabled; // RIP-25: Post-Quantum Hybrid Signatures
+    int nHeightHeaderCheckActivation;
 };
 } // namespace Consensus
 
