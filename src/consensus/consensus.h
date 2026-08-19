@@ -21,6 +21,16 @@ static const unsigned int MAX_BLOCK_WEIGHT_RIP2 = 8000000;
 /** The maximum allowed size for a serialized block, in bytes after RIP 2(only for buffer size limits) */
 static const unsigned int MAX_BLOCK_SERIALIZED_SIZE_RIP2 = 8000000;
 
+/** RIP-25: Phase 1 PQ block weight limit (12 MWU) */
+static const unsigned int MAX_BLOCK_WEIGHT_RIP25_PHASE1 = 12000000;
+static const unsigned int MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE1 = 12000000;
+/** RIP-25: Phase 2 PQ block weight limit (16 MWU), one nominal year after Phase 1. */
+static const unsigned int MAX_BLOCK_WEIGHT_RIP25_PHASE2 = 16000000;
+static const unsigned int MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE2 = 16000000;
+/** RIP-25: PQ witness scaling and per-element safety bound. */
+static const int PQ_WITNESS_SCALE_FACTOR = 8;
+static const unsigned int MAX_PQ_WITNESS_ELEMENT_SIZE = 4096;
+
 /** The maximum allowed number of signature check operations in a block (network rule) */
 static const int64_t MAX_BLOCK_SIGOPS_COST = 80000;
 /** Coinbase transaction outputs can only be spent after this number of new blocks (network rule) */
@@ -41,6 +51,7 @@ UNUSED_VAR static bool fEnforcedValuesIsActive = false;
 UNUSED_VAR static bool fCheckCoinbaseAssetsIsActive = false;
 UNUSED_VAR static bool fCheckTransferOverflowIsActive = false;
 
+/** Structural upper bounds supported by this binary. Exact active limits are contextual. */
 unsigned int GetMaxBlockWeight();
 unsigned int GetMaxBlockSerializedSize();
 
