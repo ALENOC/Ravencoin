@@ -43,24 +43,27 @@ reject_fixed 'fPQHybridIsActive' src/consensus/consensus.h 'forbidden static PQ 
 reject_fixed 'SetPQHybridBlockLimitsActive' src/consensus/consensus.h 'forbidden mutable block-limit state'
 
 # These markers are deliberately required from the final contextual validation merge.
-# The gate MUST stay red until validation.cpp uses pindexPrev/VersionBits for both
-# script activation and phased block resource limits.
 require_fixed 'IsPQWitnessDiscountActive' src/validation.cpp 'missing contextual RIP-25 activation helper'
 require_fixed 'GetMaxBlockWeightForPrev' src/validation.cpp 'missing contextual 8/12/16 block-weight helper'
 require_fixed 'VersionBitsStateSinceHeight' src/validation.cpp 'missing deterministic phase-2 boundary'
 require_fixed 'SCRIPT_VERIFY_PQ_HYBRID' src/validation.cpp 'missing consensus/mempool PQ script gate'
+require_fixed 'IsPQWitnessV2Prevout' src/validation.cpp 'PQ consensus discount is not bound to the spent witness-v2 prevout'
 
 # Policy must not enforce witness-v2 unconditionally before BIP9 activation.
 if grep -A30 'STANDARD_SCRIPT_VERIFY_FLAGS' src/policy/policy.h | grep -Fq 'SCRIPT_VERIFY_PQ_HYBRID'; then
   fail 'SCRIPT_VERIFY_PQ_HYBRID must not be unconditional in STANDARD_SCRIPT_VERIFY_FLAGS'
 fi
 
-# liboqs must be a first-class build dependency, not an ad-hoc CI linker flag.
-require_fixed 'AC_ARG_WITH([liboqs]' configure.ac 'missing --with-liboqs configure option'
+# liboqs is consensus-critical in this implementation and must be a pinned,
+# cross-aware first-class dependency. A build without it is not a valid RIP-25 node.
+require_fixed 'AC_ARG_WITH([liboqs]' configure.ac 'missing liboqs configure option'
+require_fixed 'RIP-25 requires liboqs >= 0.12.0' configure.ac 'configure still permits a build without consensus-critical liboqs'
 require_fixed 'liboqs >= 0.12.0' configure.ac 'configure must require the pinned liboqs API baseline'
 require_fixed 'AC_SUBST(LIBOQS_LIBS)' configure.ac 'LIBOQS_LIBS is not exported by configure'
 require_fixed 'AC_SUBST(LIBOQS_CFLAGS)' configure.ac 'LIBOQS_CFLAGS is not exported by configure'
 require_fixed 'liboqs' depends/packages/packages.mk 'liboqs missing from depends package graph'
+require_fixed '$(package)_build_subdir=build' depends/packages/liboqs.mk 'liboqs must use the standard out-of-tree depends build directory'
+require_fixed '$($(package)_cmake) ..' depends/packages/liboqs.mk 'liboqs must use the cross-aware depends CMake wrapper'
 
 if ! grep -A4 'libravenconsensus_la_LIBADD' src/Makefile.am | grep -Fq '$(LIBOQS_LIBS)'; then
   fail 'libravenconsensus must link LIBOQS_LIBS'
