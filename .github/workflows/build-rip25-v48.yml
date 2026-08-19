@@ -31,6 +31,9 @@ jobs:
       - name: Checkout the Code
         uses: actions/checkout@v4
 
+      - name: Verify RIP-25 / v4.8 consensus invariants
+        run: bash contrib/devtools/check-rip25-v48-invariants.sh
+
       - name: Install Build Tools
         run: sudo ${SCRIPTS}/00-install-deps.sh ${{ matrix.OS }}
 
