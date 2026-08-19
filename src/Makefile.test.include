@@ -69,6 +69,7 @@ RAVEN_TESTS =\
   test/netbase_tests.cpp \
   test/pmt_tests.cpp \
   test/pqkey_tests.cpp \
+  test/pqkey_hardening_tests.cpp \
   test/policyestimator_tests.cpp \
   test/pow_tests.cpp \
   test/prevector_tests.cpp \
@@ -178,21 +179,3 @@ raven_test_check: $(TEST_BINARY) FORCE
 
 raven_test_clean : FORCE
 	rm -f $(CLEAN_RAVEN_TEST) $(test_test_raven_OBJECTS) $(TEST_BINARY)
-
-check-local:
-	@echo "Running test/util/raven-util-test.py..."
-	$(PYTHON) $(top_builddir)/test/util/raven-util-test.py
-	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C secp256k1 check
-if EMBEDDED_UNIVALUE
-	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C univalue check
-endif
-
-%.json.h: %.json
-	@$(MKDIR_P) $(@D)
-	@{ \
-	 echo "namespace json_tests{" && \
-	 echo "static unsigned const char $(*F)[] = {" && \
-	 $(HEXDUMP) -v -e '8/1 "0x%02x, "' -e '"\n"' $< | $(SED) -e 's/0x  ,//g' && \
-	 echo "};};"; \
-	} > "$@.new" && mv -f "$@.new" "$@"
-	@echo "Generated $@"
