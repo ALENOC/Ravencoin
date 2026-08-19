@@ -1,0 +1,140 @@
+name: RIP-25 v4.8 Final Gate
+
+on:
+  push:
+    branches:
+      - integration/rip25-v4.8.0
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rip25-v48-final-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MAKEJOBS: -j2
+
+jobs:
+  security-tests:
+    name: PQ + v4.8 security tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            automake autotools-dev bsdmainutils build-essential ca-certificates \
+            cmake curl git libtool pkg-config python3 ninja-build
+
+      - name: Materialize audited RIP-25 port
+        run: |
+          chmod +x contrib/devtools/apply-rip25-v48-port-v3.sh
+          ./contrib/devtools/apply-rip25-v48-port-v3.sh
+
+      - name: Verify security and consensus invariants
+        run: |
+          chmod +x contrib/devtools/check-rip25-v48-invariants.sh
+          ./contrib/devtools/check-rip25-v48-invariants.sh
+
+      - name: Build pinned dependencies
+        run: make -C depends $MAKEJOBS HOST=x86_64-pc-linux-gnu NO_QT=1
+
+      - name: Configure Linux test build
+        run: |
+          ./autogen.sh
+          CONFIG_SITE="$PWD/depends/x86_64-pc-linux-gnu/share/config.site" \
+            ./configure --without-gui --disable-bench
+
+      - name: Build tests
+        run: make $MAKEJOBS
+
+      - name: Run unit and regression tests
+        run: make check
+
+  build:
+    name: build (${{ matrix.name }})
+    needs: security-tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: arm32v7-disable-wallet
+            host: arm-linux-gnueabihf
+            packages: g++-arm-linux-gnueabihf
+            configure_flags: --without-gui --disable-wallet --disable-bench
+            run_tests: false
+          - name: arm32v7
+            host: arm-linux-gnueabihf
+            packages: g++-arm-linux-gnueabihf
+            configure_flags: --without-gui --disable-bench
+            run_tests: false
+          - name: linux-disable-wallet
+            host: x86_64-pc-linux-gnu
+            packages: ''
+            configure_flags: --without-gui --disable-wallet --disable-bench
+            run_tests: true
+          - name: linux
+            host: x86_64-pc-linux-gnu
+            packages: ''
+            configure_flags: --without-gui --disable-bench
+            run_tests: true
+          - name: windows
+            host: x86_64-w64-mingw32
+            packages: g++-mingw-w64-x86-64
+            configure_flags: --without-gui --disable-bench
+            run_tests: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build prerequisites
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            automake autotools-dev bsdmainutils build-essential ca-certificates \
+            cmake curl git libtool pkg-config python3 ninja-build \
+            ${{ matrix.packages }}
+
+      - name: Materialize audited RIP-25 port
+        shell: bash
+        run: |
+          chmod +x contrib/devtools/apply-rip25-v48-port-v3.sh
+          ./contrib/devtools/apply-rip25-v48-port-v3.sh
+
+      - name: Verify security and consensus invariants
+        shell: bash
+        run: |
+          chmod +x contrib/devtools/check-rip25-v48-invariants.sh
+          ./contrib/devtools/check-rip25-v48-invariants.sh
+
+      - name: Build pinned dependencies
+        shell: bash
+        run: make -C depends $MAKEJOBS HOST=${{ matrix.host }} NO_QT=1
+
+      - name: Configure
+        shell: bash
+        run: |
+          ./autogen.sh
+          CONFIG_SITE="$PWD/depends/${{ matrix.host }}/share/config.site" \
+            ./configure ${{ matrix.configure_flags }}
+
+      - name: Build
+        shell: bash
+        run: make $MAKEJOBS
+
+      - name: Run native tests
+        if: matrix.run_tests
+        shell: bash
+        run: make check
