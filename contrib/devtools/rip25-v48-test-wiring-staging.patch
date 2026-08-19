@@ -1,6 +1,14 @@
 --- a/src/Makefile.test.include
 +++ b/src/Makefile.test.include
-@@ -75,6 +75,7 @@ RAVEN_TESTS =\
+@@ -69,6 +69,7 @@ RAVEN_TESTS =\
+   test/pmt_tests.cpp \
+   test/pqkey_tests.cpp \
+   test/pqkey_hardening_tests.cpp \
++  test/rip25_versionbits_tests.cpp \
+   test/policyestimator_tests.cpp \
+   test/pow_tests.cpp \
+   test/prevector_tests.cpp \
+@@ -75,6 +76,7 @@ RAVEN_TESTS =\
    test/pow_tests.cpp \
    test/prevector_tests.cpp \
    test/kawpow_tests.cpp \
