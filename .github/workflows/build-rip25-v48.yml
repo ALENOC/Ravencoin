@@ -35,6 +35,8 @@ jobs:
         run: |
           git apply --check contrib/devtools/rip25-v48-staging.patch
           git apply contrib/devtools/rip25-v48-staging.patch
+          git apply --check contrib/devtools/rip25-v48-doc-staging.patch
+          git apply contrib/devtools/rip25-v48-doc-staging.patch
 
       - name: Verify RIP-25 / v4.8 consensus invariants
         run: bash contrib/devtools/check-rip25-v48-invariants.sh
