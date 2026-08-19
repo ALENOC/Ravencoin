@@ -1,0 +1,40 @@
+name: RIP25 v4.8 merge probe
+
+on:
+  push:
+    branches:
+      - agent/rip25-v48-merge-worker
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout worker branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Probe RIP-25 patch onto exact v4.8.0 tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin feature/rip25-pq-hybrid:refs/remotes/origin/feature/rip25-pq-hybrid
+          git diff --binary 6d48ae0175b10283248146ae3080e2ba70966739 48e334836536d66d4936dc1e5dbf548a0a17c0c3 > /tmp/rip25.patch
+          git reset --hard 22549129888d02e0e08fcdb9f96f3c699167e774
+          set +e
+          git apply --3way /tmp/rip25.patch
+          rc=$?
+          set -e
+          echo "RIP25_APPLY_RC=${rc}"
+          echo "=== STATUS ==="
+          git status --short
+          echo "=== CONFLICTS ==="
+          git diff --name-only --diff-filter=U
+          echo "=== APPLIED FILE COUNT ==="
+          git diff --name-only | wc -l
+          if [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
