@@ -21,7 +21,6 @@ enum DeploymentPos
     DEPLOYMENT_TRANSFER_SCRIPT_SIZE,
     DEPLOYMENT_ENFORCE_VALUE,
     DEPLOYMENT_COINBASE_ASSETS,
-    DEPLOYMENT_TRANSFER_OVERFLOW,   // Deployment of asset transfer qty overflow check
     DEPLOYMENT_PQ_HYBRID, // Deployment of RIP-25: Post-Quantum Hybrid Signatures (ML-DSA-44)
     // DEPLOYMENT_CSV, // Deployment of BIP68, BIP112, and BIP113.
 //    DEPLOYMENT_SEGWIT, // Deployment of BIP141, BIP143, and BIP147.
@@ -81,7 +80,6 @@ struct Params {
     bool nSegwitEnabled;
     bool nCSVEnabled;
     bool nPQHybridEnabled; // RIP-25: Post-Quantum Hybrid Signatures
-    int nHeightHeaderCheckActivation;
 };
 } // namespace Consensus
 

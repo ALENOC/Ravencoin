@@ -123,7 +123,6 @@ public:
         consensus.nBIP66Enabled = true;
         consensus.nSegwitEnabled = true;
         consensus.nCSVEnabled = true;
-        consensus.nHeightHeaderCheckActivation = 4487776;
         consensus.powLimit = uint256S("00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         consensus.kawpowLimit = uint256S("0000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffff"); // Estimated starting diff for first 180 kawpow blocks
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
@@ -162,20 +161,14 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nTimeout = 1628877600; // UTC: Fri Aug 13 2021 18:00:00
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nOverrideRuleChangeActivationThreshold = 1411; // Approx 70% of 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nOverrideMinerConfirmationWindow = 2016;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].bit = 11;  // Asset transfer overflow check
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nStartTime = 1781222401; // UTC: Fri June 12 2026 12:00:01
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nTimeout = 1812844799; // UTC: Sat June 12 2027 23:59:59
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideRuleChangeActivationThreshold = 1411; // Approx 70% of 2016
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideMinerConfirmationWindow = 2016;
 
-        // RIP-25: ML-DSA-44 witness v2 soft fork. Bit 11 is reserved by v4.8.0 transfer_overflow.
-        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12;
-        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 1798761600; // Placeholder; finalize before deployment
-        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1830297600;
+        // RIP-25: Post-Quantum Hybrid Signatures (ECDSA + ML-DSA-44)
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 11;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 1798761600; // UTC: ~6 months after software release (placeholder)
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1830297600; // UTC: ~18 months after start (placeholder)
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 1714; // Approx 85% of 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 2016;
-        consensus.nPQHybridEnabled = false; // Mainnet follows BIP9; test chains may force-enable for testing
-
+        consensus.nPQHybridEnabled = false; // Will be set true on activation
 
         // The best chain should have at least this much work
         consensus.nMinimumChainWork = uint256S("0000000000000000000000000000000000000000000000355cd0ac1503c83052"); // Block 2383567
@@ -211,7 +204,9 @@ public:
         base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,128);
         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x88, 0xB2, 0x1E};
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x88, 0xAD, 0xE4};
-        strBech32PQHrp = "rvn"; // RIP-25 Bech32m HRP
+
+        // RIP-25: Bech32m HRP for PQ witness v2 addresses
+        strBech32PQHrp = "rvn";
 
         // Raven BIP44 cointype in mainnet is '175'
         nExtCoinType = 175;
@@ -231,8 +226,7 @@ public:
                 { 909251, uint256S("0x000000000000694c9a363eff06518aa7399f00014ce667b9762f9a4e7a49f485")},
                 { 1040000, uint256S("0x000000000000138e2690b06b1ddd8cf158c3a5cf540ee5278debdcdffcf75839")},
                 { 1186833, uint256S("0x0000000000000d4840d4de1f7d943542c2aed532bd5d6527274fc0142fa1a410")},
-                { 2383550, uint256S("0x0000000000008927ed21a1e3bb87d3e1020646e8cc94354a1f8fc608395e15dc")},
-                { 4487775, uint256S("0x000000000002d64509e06e76ddbbe418c725291687ec62b41ecfc40386a091fd")}
+                { 2383550, uint256S("0x0000000000008927ed21a1e3bb87d3e1020646e8cc94354a1f8fc608395e15dc")}
             }
         };
 
@@ -303,7 +297,6 @@ public:
         consensus.nBIP66Enabled = true;
         consensus.nSegwitEnabled = true;
         consensus.nCSVEnabled = true;
-        consensus.nHeightHeaderCheckActivation = 0;
 
         consensus.powLimit = uint256S("00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         consensus.kawpowLimit = uint256S("000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
@@ -343,19 +336,14 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nTimeout = 1628877600; // UTC: Fri Aug 13 2021 18:00:00
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nOverrideRuleChangeActivationThreshold = 1411; // Approx 70% of 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nOverrideMinerConfirmationWindow = 2016;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].bit = 11;  // Asset transfer overflow check
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nStartTime = 1781222401; // UTC: Fri June 12 2026 12:00:01
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nTimeout = 1812844799; // UTC: Sat June 12 2027 23:59:59
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideRuleChangeActivationThreshold = 1411; // Approx 70% of 2016
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideMinerConfirmationWindow = 2016;
 
-        // RIP-25: force-enabled on testnet for extended interoperability testing.
-        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12;
-        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 1199145601;
-        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1893456000;
+        // RIP-25: Post-Quantum Hybrid Signatures — testnet activates immediately for testing
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 11;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 1199145601; // January 1, 2008 (always active for testnet)
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1893456000; // Far future
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 1310;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 2016;
-        consensus.nPQHybridEnabled = true;
+        consensus.nPQHybridEnabled = true; // Active on testnet
 
         // The best chain should have at least this much work.
         consensus.nMinimumChainWork = uint256S("0x000000000000000000000000000000000000000000000000000168050db560b4");
@@ -453,7 +441,9 @@ public:
         base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,239);
         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x35, 0x87, 0xCF};
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
-        strBech32PQHrp = "trvn"; // RIP-25 Bech32m HRP
+
+        // RIP-25: Bech32m HRP for PQ witness v2 addresses (testnet)
+        strBech32PQHrp = "trvn";
 
         // Raven BIP44 cointype in testnet
         nExtCoinType = 1;
@@ -538,7 +528,6 @@ public:
         consensus.nBIP66Enabled = true;
         consensus.nSegwitEnabled = true;
         consensus.nCSVEnabled = true;
-        consensus.nHeightHeaderCheckActivation = 0;
         consensus.nSubsidyHalvingInterval = 150;
         consensus.powLimit = uint256S("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         consensus.kawpowLimit = uint256S("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
@@ -578,14 +567,7 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nTimeout = 999999999999ULL;
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nOverrideRuleChangeActivationThreshold = 400;
         consensus.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS].nOverrideMinerConfirmationWindow = 500;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].bit = 11;  // Asset transfer overflow check
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nStartTime = 0;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nTimeout = 999999999999ULL;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideRuleChangeActivationThreshold = 400;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideMinerConfirmationWindow = 500;
-
-        // RIP-25: force-enabled on regtest for deterministic functional tests.
-        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 11;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 0;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 999999999999ULL;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 108;
@@ -695,7 +677,9 @@ public:
         base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,239);
         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x35, 0x87, 0xCF};
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
-        strBech32PQHrp = "rcrt"; // RIP-25 Bech32m HRP
+
+        // RIP-25: Bech32m HRP for PQ witness v2 addresses (regtest)
+        strBech32PQHrp = "rcrt";
 
         // Raven BIP44 cointype in regtest
         nExtCoinType = 1;
@@ -734,7 +718,7 @@ public:
         nMinReorganizationAge = 60 * 60 * 12; // 12 hours
 
         nAssetActivationHeight = 0; // Asset activated block height
-        nMessagingActivationBlock = 0; // Messaging activation block height
+        nMessagingActivationBlock = 0; // Messaging activated block height
         nRestrictedActivationBlock = 0; // Restricted activated block height
 
         // TODO, we need to figure out what to do with this for regtest. This effects the unit tests

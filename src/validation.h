@@ -599,12 +599,9 @@ bool AreEnforcedValuesDeployed();
 
 bool AreCoinbaseCheckAssetsDeployed();
 
-bool IsTransferOverflowCheckDeployed();
-
 // Only used by test framework
 void SetEnforcedValues(bool value);
 void SetEnforcedCoinbase(bool value);
-void SetTransferOverflow(bool value);
 
 bool IsRip5Active();
 
@@ -616,6 +613,9 @@ bool IsMessagingActive(unsigned int nBlockNumber);
 bool IsRestrictedActive(unsigned int nBlockNumber);
 
 CAssetsCache* GetCurrentAssetCache();
+
+/** RIP-25: Check if Post-Quantum Hybrid Signatures are deployed */
+bool IsPQHybridDeployed();
 /** RVN END */
 
 #endif // RAVEN_VALIDATION_H

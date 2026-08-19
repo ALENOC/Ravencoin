@@ -36,12 +36,8 @@ const struct VBDeploymentInfo VersionBitsDeploymentInfo[Consensus::MAX_VERSION_B
             /*.gbt_force =*/ true,
     },
     {
-        /*.name =*/ "transfer_overflow",
-        /*.gbt_force =*/ true,
-    },
-    {
-        /*.name =*/ "pq_hybrid",
-        /*.gbt_force =*/ true,
+            /*.name =*/ "pq_hybrid",
+            /*.gbt_force =*/ true,
     }
 };
 
