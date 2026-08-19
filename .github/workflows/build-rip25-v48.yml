@@ -1,0 +1,74 @@
+name: RIP-25 v4.8 Required Builds
+
+on:
+  push:
+    branches:
+      - integration/rip25-v4.8.0
+  workflow_dispatch:
+
+concurrency:
+  group: rip25-v48-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SCRIPTS: ${{ GITHUB.WORKSPACE }}/.github/scripts
+
+jobs:
+  build:
+    name: build (${{ matrix.OS }})
+    runs-on: ubuntu-20.04
+    strategy:
+      fail-fast: false
+      matrix:
+        OS:
+          - arm32v7-disable-wallet
+          - arm32v7
+          - linux-disable-wallet
+          - linux
+          - windows
+
+    steps:
+      - name: Checkout the Code
+        uses: actions/checkout@v4
+
+      - name: Install Build Tools
+        run: sudo ${SCRIPTS}/00-install-deps.sh ${{ matrix.OS }}
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/depends/built
+            ${{ github.workspace }}/depends/sources
+            ${{ github.workspace }}/depends/work
+          key: rip25-v48-${{ matrix.OS }}-${{ hashFiles('depends/**') }}
+          restore-keys: |
+            rip25-v48-${{ matrix.OS }}-
+
+      - name: Build dependencies
+        run: ${SCRIPTS}/02-copy-build-dependencies.sh ${{ matrix.OS }} ${{ github.workspace }} ${{ github.base_ref }} ${{ github.ref }}
+
+      - name: Add Dependencies to PATH
+        run: ${SCRIPTS}/03-export-path.sh ${{ matrix.OS }} ${{ github.workspace }}
+
+      - name: Build Config
+        run: ./autogen.sh
+
+      - name: Configure Build
+        run: ${SCRIPTS}/04-configure-build.sh ${{ matrix.OS }} ${{ github.workspace }}
+
+      - name: Build Raven
+        run: make -j2
+
+      - name: Check Binary Security
+        run: ${SCRIPTS}/05-binary-checks.sh ${{ matrix.OS }} ${{ github.workspace }}
+
+      - name: Package Build
+        run: ${SCRIPTS}/06-package.sh ${{ matrix.OS }} ${{ github.workspace }} ${{ github.base_ref }} ${{ github.ref }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rip25-v48-${{ matrix.OS }}
+          path: ${{ github.workspace }}/release
+          if-no-files-found: error
