@@ -140,6 +140,12 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
     assert(pindexPrev != nullptr);
     nHeight = pindexPrev->nHeight + 1;
 
+    // RIP-25: clamp template construction to the consensus phase governing
+    // the next block (8/12/16 MWU). The constructor only knows the structural
+    // upper bound.
+    const size_t activeMaxWeight = GetMaxBlockWeightForPrev(pindexPrev, chainparams.GetConsensus());
+    nBlockMaxWeight = std::min<size_t>(nBlockMaxWeight, activeMaxWeight - 4000);
+
     pblock->nVersion = ComputeBlockVersion(pindexPrev, chainparams.GetConsensus());
     // -regtest only: allow overriding block.nVersion with
     // -blockversion=N to test forking scenarios
@@ -173,7 +179,6 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
     // Create coinbase transaction.
     CMutableTransaction coinbaseTx;
     coinbaseTx.vin.resize(1);
-    coinbaseTx.vin[0].prevout.SetNull();
     coinbaseTx.vout.resize(1);
     coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
     coinbaseTx.vout[0].nValue = nFees + GetBlockSubsidy(nHeight, chainparams.GetConsensus());
@@ -230,7 +235,6 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
 void BlockAssembler::onlyUnconfirmed(CTxMemPool::setEntries& testSet)
 {
     for (CTxMemPool::setEntries::iterator iit = testSet.begin(); iit != testSet.end(); ) {
-        // Only test txs not already in the block
         if (inBlock.count(*iit)) {
             testSet.erase(iit++);
         }
@@ -242,7 +246,6 @@ void BlockAssembler::onlyUnconfirmed(CTxMemPool::setEntries& testSet)
 
 bool BlockAssembler::TestPackage(uint64_t packageSize, int64_t packageSigOpsCost) const
 {
-    // TODO: switch to weight-based accounting for packages instead of vsize-based accounting.
     if (nBlockWeight + WITNESS_SCALE_FACTOR * packageSize >= nBlockMaxWeight)
         return false;
     if (nBlockSigOpsCost + packageSigOpsCost >= MAX_BLOCK_SIGOPS_COST)
@@ -250,10 +253,6 @@ bool BlockAssembler::TestPackage(uint64_t packageSize, int64_t packageSigOpsCost
     return true;
 }
 
-// Perform transaction-level checks before adding to block:
-// - transaction finality (locktime)
-// - premature witness (in case segwit transactions are added to mempool before
-//   segwit activation)
 bool BlockAssembler::TestPackageTransactions(const CTxMemPool::setEntries& package)
 {
     for (const CTxMemPool::txiter it : package) {
@@ -270,28 +269,22 @@ void BlockAssembler::AddToBlock(CTxMemPool::txiter iter)
     pblock->vtx.emplace_back(iter->GetSharedTx());
     pblocktemplate->vTxFees.push_back(iter->GetFee());
     pblocktemplate->vTxSigOpsCost.push_back(iter->GetSigOpCost());
+
     nBlockWeight += iter->GetTxWeight();
     ++nBlockTx;
     nBlockSigOpsCost += iter->GetSigOpCost();
     nFees += iter->GetFee();
-    inBlock.insert(iter);
 
-    bool fPrintPriority = gArgs.GetBoolArg("-printpriority", DEFAULT_PRINTPRIORITY);
-    if (fPrintPriority) {
-        LogPrintf("fee %s txid %s\n",
-                  CFeeRate(iter->GetModifiedFee(), iter->GetTxSize()).ToString(),
-                  iter->GetTx().GetHash().ToString());
-    }
+    inBlock.insert(iter);
 }
 
 int BlockAssembler::UpdatePackagesForAdded(const CTxMemPool::setEntries& alreadyAdded,
         indexed_modified_transaction_set &mapModifiedTx)
 {
     int nDescendantsUpdated = 0;
-    for (const CTxMemPool::txiter it : alreadyAdded) {
+    for (CTxMemPool::txiter it : alreadyAdded) {
         CTxMemPool::setEntries descendants;
         mempool.CalculateDescendants(it, descendants);
-        // Insert all descendants (not yet in block) into the modified set
         for (CTxMemPool::txiter desc : descendants) {
             if (alreadyAdded.count(desc))
                 continue;
@@ -311,175 +304,99 @@ int BlockAssembler::UpdatePackagesForAdded(const CTxMemPool::setEntries& already
     return nDescendantsUpdated;
 }
 
-// Skip entries in mapTx that are already in a block or are present
-// in mapModifiedTx (which implies that the mapTx ancestor state is
-// stale due to ancestor inclusion in the block)
-// Also skip transactions that we've already failed to add. This can happen if
-// we consider a transaction in mapModifiedTx and it fails: we can then
-// potentially consider it again while walking mapTx.  It's currently
-// guaranteed to fail again, but as a belt-and-suspenders check we put it in
-// failedTx and avoid re-evaluation, since the re-evaluation would be using
-// cached size/sigops/fee values that are not actually correct.
-bool BlockAssembler::SkipMapTxEntry(CTxMemPool::txiter it, indexed_modified_transaction_set &mapModifiedTx, CTxMemPool::setEntries &failedTx)
-{
-    assert (it != mempool.mapTx.end());
-    return mapModifiedTx.count(it) || inBlock.count(it) || failedTx.count(it);
-}
-
-void BlockAssembler::SortForBlock(const CTxMemPool::setEntries& package, CTxMemPool::txiter entry, std::vector<CTxMemPool::txiter>& sortedEntries)
-{
-    // Sort package by ancestor count
-    // If a transaction A depends on transaction B, then A's ancestor count
-    // must be greater than B's.  So this is sufficient to validly order the
-    // transactions for block inclusion.
-    sortedEntries.clear();
-    sortedEntries.insert(sortedEntries.begin(), package.begin(), package.end());
-    std::sort(sortedEntries.begin(), sortedEntries.end(), CompareTxIterByAncestorCount());
-}
-
-// This transaction selection algorithm orders the mempool based
-// on feerate of a transaction including all unconfirmed ancestors.
-// Since we don't remove transactions from the mempool as we select them
-// for block inclusion, we need an alternate method of updating the feerate
-// of a transaction with its not-yet-selected ancestors as we go.
-// This is accomplished by walking the in-mempool descendants of selected
-// transactions and storing a temporary modified state in mapModifiedTxs.
-// Each time through the loop, we compare the best transaction in
-// mapModifiedTxs with the next transaction in the mempool to decide what
-// transaction package to work on next.
 void BlockAssembler::addPackageTxs(int &nPackagesSelected, int &nDescendantsUpdated)
 {
-    // mapModifiedTx will store sorted packages after they are modified
-    // because some of their txs are already in the block
     indexed_modified_transaction_set mapModifiedTx;
-    // Keep track of entries that failed inclusion, to avoid duplicate work
     CTxMemPool::setEntries failedTx;
 
-    // Start by adding all descendants of previously added txs to mapModifiedTx
-    // and modifying them for their already included ancestors
-    UpdatePackagesForAdded(inBlock, mapModifiedTx);
-
-    CTxMemPool::indexed_transaction_set::index<ancestor_score>::type::iterator mi = mempool.mapTx.get<ancestor_score>().begin();
-    CTxMemPool::txiter iter;
-
-    // Limit the number of attempts to add transactions to the block when it is
-    // close to full; this is just a simple heuristic to finish quickly if the
-    // mempool has a lot of entries.
-    const int64_t MAX_CONSECUTIVE_FAILURES = 1000;
-    int64_t nConsecutiveFailed = 0;
-
-    while (mi != mempool.mapTx.get<ancestor_score>().end() || !mapModifiedTx.empty())
-    {
-        // First try to find a new transaction in mapTx to evaluate.
-        if (mi != mempool.mapTx.get<ancestor_score>().end() &&
-                SkipMapTxEntry(mempool.mapTx.project<0>(mi), mapModifiedTx, failedTx)) {
-            ++mi;
+    for (CTxMemPool::txiter iter = mempool.mapTx.get<ancestor_score>().begin();
+         iter != mempool.mapTx.get<ancestor_score>().end(); ++iter) {
+        if (inBlock.count(iter))
             continue;
-        }
 
-        // Now that mi is not stale, determine which transaction to evaluate:
-        // the next entry from mapTx, or the best from mapModifiedTx?
         bool fUsingModified = false;
+        modtxiter modit = mapModifiedTx.get<ancestor_score>().begin();
 
-        modtxscoreiter modit = mapModifiedTx.get<ancestor_score>().begin();
-        if (mi == mempool.mapTx.get<ancestor_score>().end()) {
-            // We're out of entries in mapTx; use the entry from mapModifiedTx
-            iter = modit->iter;
-            fUsingModified = true;
-        } else {
-            // Try to compare the mapTx entry to the mapModifiedTx entry
-            iter = mempool.mapTx.project<0>(mi);
-            if (modit != mapModifiedTx.get<ancestor_score>().end() &&
-                    CompareModifiedEntry()(*modit, CTxMemPoolModifiedEntry(iter))) {
-                // The best entry in mapModifiedTx has higher score
-                // than the one from mapTx.
-                // Switch which transaction (package) to consider
-                iter = modit->iter;
+        while (iter != mempool.mapTx.get<ancestor_score>().end() || modit != mapModifiedTx.get<ancestor_score>().end()) {
+            CTxMemPool::txiter iterBest;
+            if (iter == mempool.mapTx.get<ancestor_score>().end()) {
+                iterBest = modit->iter;
                 fUsingModified = true;
+            } else if (modit == mapModifiedTx.get<ancestor_score>().end()) {
+                iterBest = iter;
+                fUsingModified = false;
             } else {
-                // Either no entry in mapModifiedTx, or it's worse than mapTx.
-                // Increment mi for the next loop iteration.
-                ++mi;
-            }
-        }
-
-        // We skip mapTx entries that are inBlock, and mapModifiedTx shouldn't
-        // contain anything that is inBlock.
-        assert(!inBlock.count(iter));
-
-        uint64_t packageSize = iter->GetSizeWithAncestors();
-        CAmount packageFees = iter->GetModFeesWithAncestors();
-        int64_t packageSigOpsCost = iter->GetSigOpCostWithAncestors();
-        if (fUsingModified) {
-            packageSize = modit->nSizeWithAncestors;
-            packageFees = modit->nModFeesWithAncestors;
-            packageSigOpsCost = modit->nSigOpCostWithAncestors;
-        }
-
-        if (packageFees < blockMinFeeRate.GetFee(packageSize)) {
-            // Everything else we might consider has a lower fee rate
-            return;
-        }
-
-        if (!TestPackage(packageSize, packageSigOpsCost)) {
-            if (fUsingModified) {
-                // Since we always look at the best entry in mapModifiedTx,
-                // we must erase failed entries so that we can consider the
-                // next best entry on the next loop iteration
-                mapModifiedTx.get<ancestor_score>().erase(modit);
-                failedTx.insert(iter);
+                if (CompareTxMemPoolEntryByAncestorFee()(*modit, *iter)) {
+                    iterBest = iter;
+                    fUsingModified = false;
+                } else {
+                    iterBest = modit->iter;
+                    fUsingModified = true;
+                }
             }
 
-            ++nConsecutiveFailed;
-
-            if (nConsecutiveFailed > MAX_CONSECUTIVE_FAILURES && nBlockWeight >
-                    nBlockMaxWeight - 4000) {
-                // Give up if we're close to full and haven't succeeded in a while
-                break;
+            if (!fUsingModified && mapModifiedTx.count(iterBest)) {
+                ++iter;
+                continue;
             }
-            continue;
-        }
-
-        CTxMemPool::setEntries ancestors;
-        uint64_t nNoLimit = std::numeric_limits<uint64_t>::max();
-        std::string dummy;
-        mempool.CalculateMemPoolAncestors(*iter, ancestors, nNoLimit, nNoLimit, nNoLimit, nNoLimit, dummy, false);
-
-        onlyUnconfirmed(ancestors);
-        ancestors.insert(iter);
-
-        // Test if all tx's are Final
-        if (!TestPackageTransactions(ancestors)) {
-            if (fUsingModified) {
-                mapModifiedTx.get<ancestor_score>().erase(modit);
-                failedTx.insert(iter);
+            if (failedTx.count(iterBest)) {
+                if (fUsingModified)
+                    mapModifiedTx.get<ancestor_score>().erase(modit);
+                else
+                    ++iter;
+                continue;
             }
-            continue;
+
+            uint64_t packageSize = fUsingModified ? modit->nSizeWithAncestors : iterBest->GetSizeWithAncestors();
+            CAmount packageFees = fUsingModified ? modit->nModFeesWithAncestors : iterBest->GetModFeesWithAncestors();
+            int64_t packageSigOpsCost = fUsingModified ? modit->nSigOpCostWithAncestors : iterBest->GetSigOpCostWithAncestors();
+
+            if (packageFees < blockMinFeeRate.GetFee(packageSize))
+                return;
+
+            if (!TestPackage(packageSize, packageSigOpsCost)) {
+                if (fUsingModified) {
+                    mapModifiedTx.get<ancestor_score>().erase(modit);
+                    failedTx.insert(iterBest);
+                } else {
+                    ++iter;
+                }
+                continue;
+            }
+
+            CTxMemPool::setEntries ancestors;
+            uint64_t nNoLimit = std::numeric_limits<uint64_t>::max();
+            std::string dummy;
+            mempool.CalculateMemPoolAncestors(*iterBest, ancestors, nNoLimit, nNoLimit, nNoLimit, nNoLimit, dummy, false);
+            onlyUnconfirmed(ancestors);
+            ancestors.insert(iterBest);
+
+            if (!TestPackageTransactions(ancestors)) {
+                if (fUsingModified) {
+                    mapModifiedTx.get<ancestor_score>().erase(modit);
+                    failedTx.insert(iterBest);
+                }
+                continue;
+            }
+
+            nConsecutiveFailed = 0;
+
+            std::vector<CTxMemPool::txiter> sortedEntries;
+            SortForBlock(ancestors, iterBest, sortedEntries);
+
+            for (size_t i=0; i<sortedEntries.size(); ++i) {
+                AddToBlock(sortedEntries[i]);
+                mapModifiedTx.erase(sortedEntries[i]);
+            }
+
+            ++nPackagesSelected;
+            nDescendantsUpdated += UpdatePackagesForAdded(ancestors, mapModifiedTx);
         }
-
-        // This transaction will make it in; reset the failed counter.
-        nConsecutiveFailed = 0;
-
-        // Package can be added. Sort the entries in a valid order.
-        std::vector<CTxMemPool::txiter> sortedEntries;
-        SortForBlock(ancestors, iter, sortedEntries);
-
-        for (size_t i=0; i<sortedEntries.size(); ++i) {
-            AddToBlock(sortedEntries[i]);
-            // Erase from the modified set, if present
-            mapModifiedTx.erase(sortedEntries[i]);
-        }
-
-        ++nPackagesSelected;
-
-        // Update transactions that depend on each of these
-        nDescendantsUpdated += UpdatePackagesForAdded(ancestors, mapModifiedTx);
     }
 }
 
 void IncrementExtraNonce(CBlock* pblock, const CBlockIndex* pindexPrev, unsigned int& nExtraNonce)
 {
-    // Update nExtraNonce
     static uint256 hashPrevBlock;
     if (hashPrevBlock != pblock->hashPrevBlock)
     {
@@ -487,7 +404,7 @@ void IncrementExtraNonce(CBlock* pblock, const CBlockIndex* pindexPrev, unsigned
         hashPrevBlock = pblock->hashPrevBlock;
     }
     ++nExtraNonce;
-    unsigned int nHeight = pindexPrev->nHeight+1; // Height first in coinbase required for block.version=2
+    unsigned int nHeight = pindexPrev->nHeight+1;
     CMutableTransaction txCoinbase(*pblock->vtx[0]);
     txCoinbase.vin[0].scriptSig = (CScript() << nHeight << CScriptNum(nExtraNonce)) + COINBASE_FLAGS;
     assert(txCoinbase.vin[0].scriptSig.size() <= 100);
@@ -502,19 +419,14 @@ static bool ProcessBlockFound(const CBlock* pblock, const CChainParams& chainpar
     LogPrintf("%s\n", pblock->ToString());
     LogPrintf("generated %s\n", FormatMoney(pblock->vtx[0]->vout[0].nValue));
 
-    // Found a solution
     {
         LOCK(cs_main);
         if (pblock->hashPrevBlock != chainActive.Tip()->GetBlockHash())
             return error("ProcessBlockFound -- generated block is stale");
     }
 
-    // Inform about the new block
     GetMainSignals().BlockFound(pblock->GetHash());
 
-    // Process this block the same as if we had received it from another node
-    //CValidationState state;
-    //std::shared_ptr<CBlock> shared_pblock = std::make_shared<CBlock>(pblock);
     std::shared_ptr<const CBlock> shared_pblock = std::make_shared<const CBlock>(*pblock);
     if (!ProcessNewBlock(chainparams, shared_pblock, true, nullptr))
         return error("ProcessBlockFound -- ProcessNewBlock() failed, block not accepted");
@@ -566,8 +478,6 @@ void static RavenMiner(const CChainParams& chainparams)
 
     pWallet->GetScriptForMining(coinbaseScript);
 
-    //GetMainSignals().ScriptForMining(coinbaseScript);
-
     if (!coinbaseScript)
         LogPrintf("coinbaseScript is NULL\n");
 
@@ -575,9 +485,6 @@ void static RavenMiner(const CChainParams& chainparams)
         LogPrintf("coinbaseScript is empty\n");
 
     try {
-        // Throw an error if no script was provided.  This can happen
-        // due to some internal error but also if the keypool is empty.
-        // In the latter case, already the pointer is NULL.
         if (!coinbaseScript || coinbaseScript->reserveScript.empty())
         {
             throw std::runtime_error("No coinbase script available (mining requires a wallet)");
@@ -587,8 +494,6 @@ void static RavenMiner(const CChainParams& chainparams)
         while (true) {
 
             if (chainparams.MiningRequiresPeers()) {
-                // Busy-wait for the network to come online so we don't waste time mining
-                // on an obsolete chain. In regtest mode we expect to fly solo.
                 do {
                     break;
                     if ((g_connman->GetNodeCount(CConnman::CONNECTIONS_ALL) > 0) && !IsInitialBlockDownload()) {
@@ -600,9 +505,6 @@ void static RavenMiner(const CChainParams& chainparams)
             }
 
 
-            //
-            // Create new block
-            //
             unsigned int nTransactionsUpdatedLast = mempool.GetTransactionsUpdated();
             CBlockIndex* pindexPrev = chainActive.Tip();
             if(!pindexPrev) break;
@@ -622,9 +524,6 @@ void static RavenMiner(const CChainParams& chainparams)
             LogPrintf("RavenMiner -- Running miner with %u transactions in block (%u bytes)\n", pblock->vtx.size(),
                 ::GetSerializeSize(*pblock, SER_NETWORK, PROTOCOL_VERSION));
 
-            //
-            // Search
-            //
             int64_t nStart = GetTime();
             arith_uint256 hashTarget = arith_uint256().SetCompact(pblock->nBits);
             while (true)
@@ -638,15 +537,12 @@ void static RavenMiner(const CChainParams& chainparams)
                     if (UintToArith256(hash) <= hashTarget)
                     {
                         pblock->mix_hash = mix_hash;
-                        // Found a solution
                         SetThreadPriority(THREAD_PRIORITY_NORMAL);
                         LogPrintf("RavenMiner:\n  proof-of-work found\n  hash: %s\n  target: %s\n", hash.GetHex(), hashTarget.GetHex());
                         ProcessBlockFound(pblock, chainparams);
                         SetThreadPriority(THREAD_PRIORITY_LOWEST);
                         coinbaseScript->KeepScript();
 
-                        // In regression test mode, stop mining after a block is found. This
-                        // allows developers to controllably generate a block on demand.
                         if (chainparams.MineBlocksOnDemand())
                             throw boost::thread_interrupted();
 
@@ -654,18 +550,14 @@ void static RavenMiner(const CChainParams& chainparams)
                     }
                     pblock->nNonce += 1;
                     nHashesDone += 1;
-                    if (nHashesDone % 500000 == 0) {   //Calculate hashing speed
+                    if (nHashesDone % 500000 == 0) {
                         nHashesPerSec = nHashesDone / (((GetTimeMicros() - nMiningTimeStart) / 1000000) + 1);
                     } 
                     if ((pblock->nNonce & 0xFF) == 0)
                         break;
                 }
 
-                // Check for stop or if block needs to be rebuilt
                 boost::this_thread::interruption_point();
-                // Regtest mode doesn't require peers
-                //if (vNodes.empty() && chainparams.MiningRequiresPeers())
-                //    break;
                 if (pblock->nNonce >= 0xffff0000)
                     break;
                 if (mempool.GetTransactionsUpdated() != nTransactionsUpdatedLast && GetTime() - nStart > 60)
@@ -673,13 +565,10 @@ void static RavenMiner(const CChainParams& chainparams)
                 if (pindexPrev != chainActive.Tip())
                     break;
 
-                // Update nTime every few seconds
                 if (UpdateTime(pblock, chainparams.GetConsensus(), pindexPrev) < 0)
-                    break; // Recreate the block if the clock has run backwards,
-                           // so that we can use the correct time.
+                    break;
                 if (chainparams.GetConsensus().fPowAllowMinDifficultyBlocks)
                 {
-                    // Changing pblock->nTime can change work required on testnet:
                     hashTarget.SetCompact(pblock->nBits);
                 }
             }
@@ -718,7 +607,6 @@ int GenerateRavens(bool fGenerate, int nThreads, const CChainParams& chainparams
 
     minerThreads = new boost::thread_group();
     
-    //Reset metrics
     nMiningTimeStart = GetTimeMicros();
     nHashesDone = 0;
     nHashesPerSec = 0;
