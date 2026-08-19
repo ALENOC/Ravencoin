@@ -3,24 +3,18 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "consensus.h"
-#include <validation.h>
 
 unsigned int GetMaxBlockWeight()
 {
-    // RIP-25: Phase 1 PQ block weight increase
-    if (fPQHybridIsActive)
-        return MAX_BLOCK_WEIGHT_RIP25_PHASE1;
-
-    // RIP-2: Asset block weight
-    return MAX_BLOCK_WEIGHT_RIP2;
+    // Absolute structural ceiling supported by an RIP-25-aware binary.
+    // The active 8/12/16 MWU consensus limit is enforced contextually
+    // from pindexPrev and VersionBits in validation.cpp.
+    return MAX_BLOCK_WEIGHT_RIP25_PHASE2;
 }
 
 unsigned int GetMaxBlockSerializedSize()
 {
-    // RIP-25: Phase 1 PQ block serialized size increase
-    if (fPQHybridIsActive)
-        return MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE1;
-
-    // RIP-2: Asset block serialized size
-    return MAX_BLOCK_SERIALIZED_SIZE_RIP2;
+    // Absolute buffer/import ceiling. The active phased limit is enforced
+    // contextually together with block weight in validation.cpp.
+    return MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE2;
 }
