@@ -1,6 +1,6 @@
 --- a/src/Makefile.test.include
 +++ b/src/Makefile.test.include
-@@ -69,12 +69,14 @@ RAVEN_TESTS =\
+@@ -69,10 +69,12 @@ RAVEN_TESTS =\
    test/pmt_tests.cpp \
    test/pqkey_tests.cpp \
    test/pqkey_hardening_tests.cpp \
