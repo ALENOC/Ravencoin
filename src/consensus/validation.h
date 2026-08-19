@@ -108,42 +108,41 @@ public:
 // using only serialization with and without witness data. As witness_size
 // is equal to total_size - stripped_size, this formula is identical to:
 // weight = (stripped_size * 3) + total_size.
-//
-// RIP-25: the approved ML-DSA-44 witness-v2 discount uses scale factor 8.
-// The original RIP-25 design identifies the PQ witness by its exact
-// [2420-byte signature, 1312-byte public key] shape and discounts those
-// witness bytes from 1 WU/byte to 0.5 WU/byte.
-static inline int64_t GetPQWitnessDiscount(const CTransaction& tx)
+static inline int64_t GetTransactionWeight(const CTransaction& tx)
 {
-    int64_t discount = 0;
+    int64_t weight = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1) + ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+
+    // RIP-25: Apply the approved extra PQ witness discount (8x vs 4x SegWit).
+    // Keep the original RIP-25 stack-shape rule exactly: sig=2420B, pk=1312B.
     for (const auto& txin : tx.vin) {
         const auto& stack = txin.scriptWitness.stack;
         if (stack.size() == 2 && stack[0].size() == 2420 && stack[1].size() == 1312) {
             const int64_t pqBytes = (int64_t)stack[0].size() + (int64_t)stack[1].size();
-            discount += pqBytes * (PQ_WITNESS_SCALE_FACTOR - WITNESS_SCALE_FACTOR) / PQ_WITNESS_SCALE_FACTOR;
+            weight -= pqBytes * (PQ_WITNESS_SCALE_FACTOR - WITNESS_SCALE_FACTOR) / PQ_WITNESS_SCALE_FACTOR;
         }
     }
-    return discount;
-}
-
-static inline int64_t GetTransactionWeight(const CTransaction& tx)
-{
-    const int64_t standardWeight = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1)
-                                 + ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
-    return standardWeight - GetPQWitnessDiscount(tx);
-}
-
-static inline int64_t GetBlockWeightWithoutPQDiscount(const CBlock& block)
-{
-    return ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1)
-         + ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+    return weight;
 }
 
 static inline int64_t GetBlockWeight(const CBlock& block)
 {
-    int64_t weight = GetBlockWeightWithoutPQDiscount(block);
+    // Legacy/RIP-2 weight. Used before RIP-25 activation and for generic RPC display.
+    return ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1) + ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+}
+
+static inline int64_t GetBlockWeightRIP25(const CBlock& block)
+{
+    int64_t weight = GetBlockWeight(block);
+    // Apply exactly the same approved 8x discount as GetTransactionWeight,
+    // but at block-consensus level once RIP-25 is ACTIVE.
     for (const auto& tx : block.vtx) {
-        weight -= GetPQWitnessDiscount(*tx);
+        for (const auto& txin : tx->vin) {
+            const auto& stack = txin.scriptWitness.stack;
+            if (stack.size() == 2 && stack[0].size() == 2420 && stack[1].size() == 1312) {
+                const int64_t pqBytes = (int64_t)stack[0].size() + (int64_t)stack[1].size();
+                weight -= pqBytes * (PQ_WITNESS_SCALE_FACTOR - WITNESS_SCALE_FACTOR) / PQ_WITNESS_SCALE_FACTOR;
+            }
+        }
     }
     return weight;
 }
