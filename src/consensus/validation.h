@@ -109,30 +109,43 @@ public:
 // is equal to total_size - stripped_size, this formula is identical to:
 // weight = (stripped_size * 3) + total_size.
 //
-// RIP-25: PQ witness v2 data receives an additional discount.
-// Standard segwit witness: 1 WU per byte (4x discount vs non-witness).
-// PQ witness v2: WITNESS_SCALE_FACTOR/PQ_WITNESS_SCALE_FACTOR = 0.5 WU per byte (8x discount).
-// Discount per PQ witness byte = 1 - 4/8 = 0.5 WU.
-static inline int64_t GetTransactionWeight(const CTransaction& tx)
+// RIP-25: the approved ML-DSA-44 witness-v2 discount uses scale factor 8.
+// The original RIP-25 design identifies the PQ witness by its exact
+// [2420-byte signature, 1312-byte public key] shape and discounts those
+// witness bytes from 1 WU/byte to 0.5 WU/byte.
+static inline int64_t GetPQWitnessDiscount(const CTransaction& tx)
 {
-    int64_t weight = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1) + ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
-
-    // RIP-25: Apply extra PQ witness discount (8x vs 4x for standard segwit)
+    int64_t discount = 0;
     for (const auto& txin : tx.vin) {
         const auto& stack = txin.scriptWitness.stack;
-        // PQ witness v2: exactly 2 stack items — ML-DSA-44 sig (2420B) + pk (1312B)
         if (stack.size() == 2 && stack[0].size() == 2420 && stack[1].size() == 1312) {
-            int64_t pqBytes = (int64_t)stack[0].size() + (int64_t)stack[1].size();
-            // Reduce weight: each PQ byte goes from 1 WU to 0.5 WU
-            weight -= pqBytes * (PQ_WITNESS_SCALE_FACTOR - WITNESS_SCALE_FACTOR) / PQ_WITNESS_SCALE_FACTOR;
+            const int64_t pqBytes = (int64_t)stack[0].size() + (int64_t)stack[1].size();
+            discount += pqBytes * (PQ_WITNESS_SCALE_FACTOR - WITNESS_SCALE_FACTOR) / PQ_WITNESS_SCALE_FACTOR;
         }
     }
-
-    return weight;
+    return discount;
 }
+
+static inline int64_t GetTransactionWeight(const CTransaction& tx)
+{
+    const int64_t standardWeight = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1)
+                                 + ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+    return standardWeight - GetPQWitnessDiscount(tx);
+}
+
+static inline int64_t GetBlockWeightWithoutPQDiscount(const CBlock& block)
+{
+    return ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1)
+         + ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+}
+
 static inline int64_t GetBlockWeight(const CBlock& block)
 {
-    return ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1) + ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+    int64_t weight = GetBlockWeightWithoutPQDiscount(block);
+    for (const auto& tx : block.vtx) {
+        weight -= GetPQWitnessDiscount(*tx);
+    }
+    return weight;
 }
 
 #endif // RAVEN_CONSENSUS_VALIDATION_H
