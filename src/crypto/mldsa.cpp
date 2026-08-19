@@ -9,25 +9,14 @@
 #include "mldsa.h"
 
 #include <oqs/oqs.h>
-#include <cstring>
-#include <cassert>
 
-// Compile-time checks: ensure our constants match liboqs
+// Compile-time checks: ensure our constants match the pinned liboqs API.
 static_assert(mldsa::PUBLICKEY_BYTES == OQS_SIG_ml_dsa_44_length_public_key,
               "ML-DSA-44 public key size mismatch with liboqs");
 static_assert(mldsa::SECRETKEY_BYTES == OQS_SIG_ml_dsa_44_length_secret_key,
               "ML-DSA-44 secret key size mismatch with liboqs");
 static_assert(mldsa::SIGNATURE_BYTES == OQS_SIG_ml_dsa_44_length_signature,
               "ML-DSA-44 signature size mismatch with liboqs");
-
-// liboqs mldsa-native exports internal keypair functions that accept a 32-byte seed.
-// Declared as weak symbols so we can detect availability at link time.
-extern "C" {
-    int PQCP_MLDSA_NATIVE_MLDSA44_X86_64_keypair_internal(
-        uint8_t *pk, uint8_t *sk, const uint8_t *seed) __attribute__((weak));
-    int PQCP_MLDSA_NATIVE_MLDSA44_C_keypair_internal(
-        uint8_t *pk, uint8_t *sk, const uint8_t *seed) __attribute__((weak));
-}
 
 namespace mldsa {
 
@@ -36,18 +25,12 @@ bool KeyGen(unsigned char* pk, unsigned char* sk, const unsigned char* seed)
     if (!pk || !sk || !seed)
         return false;
 
-    // FIPS 204 ML-DSA-44 deterministic keygen from a 32-byte seed (xi).
-    // Try the internal keypair function that accepts a seed (returns 0 on success).
-    if (PQCP_MLDSA_NATIVE_MLDSA44_X86_64_keypair_internal) {
-        return PQCP_MLDSA_NATIVE_MLDSA44_X86_64_keypair_internal(pk, sk, seed) == 0;
-    }
-    if (PQCP_MLDSA_NATIVE_MLDSA44_C_keypair_internal) {
-        return PQCP_MLDSA_NATIVE_MLDSA44_C_keypair_internal(pk, sk, seed) == 0;
-    }
-
-    // If internal symbols are not available, fall back to random keygen.
-    // Deterministic keygen from seed is not supported in this liboqs build.
-    return KeyGenRandom(pk, sk);
+    // liboqs 0.12.0 exposes no stable public deterministic signature-keygen API.
+    // RIP-25 must not bind consensus/wallet behavior to private implementation
+    // symbols, nor silently replace deterministic key generation with randomness.
+    // Fail closed until a pinned, public API with deterministic ML-DSA-44 keygen is
+    // available and covered by interoperability vectors.
+    return false;
 }
 
 bool KeyGenRandom(unsigned char* pk, unsigned char* sk)
