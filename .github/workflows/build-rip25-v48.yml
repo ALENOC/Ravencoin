@@ -70,6 +70,12 @@ jobs:
       - name: Build Raven
         run: make -j2
 
+      - name: Run RIP-25 security regressions
+        if: matrix.OS == 'linux'
+        run: |
+          ./src/test/test_raven --run_test=pqkey_tests
+          ./src/test/test_raven --run_test=pqkey_hardening_tests
+
       - name: Check Binary Security
         run: ${SCRIPTS}/05-binary-checks.sh ${{ matrix.OS }} ${{ github.workspace }}
 
