@@ -1,8 +1,8 @@
 dnl require autoconf 2.60 (AS_ECHO/AS_ECHO_N)
 AC_PREREQ([2.60])
 define(_CLIENT_VERSION_MAJOR, 4)
-define(_CLIENT_VERSION_MINOR, 6)
-define(_CLIENT_VERSION_REVISION, 1)
+define(_CLIENT_VERSION_MINOR, 8)
+define(_CLIENT_VERSION_REVISION, 0)
 define(_CLIENT_VERSION_BUILD, 0)
 define(_CLIENT_VERSION_RC, 0)
 define(_CLIENT_VERSION_IS_RELEASE, true)
@@ -206,12 +206,6 @@ AC_ARG_ENABLE([zmq],
   [disable ZMQ notifications])],
   [use_zmq=$enableval],
   [use_zmq=yes])
-
-AC_ARG_WITH([liboqs],
-  [AS_HELP_STRING([--with-liboqs],
-  [enable post-quantum signatures via liboqs (default is yes)])],
-  [use_liboqs=$withval],
-  [use_liboqs=yes])
 
 AC_ARG_WITH([protoc-bindir],[AS_HELP_STRING([--with-protoc-bindir=BIN_DIR],[specify protoc bin path])], [protoc_bin_path=$withval], [])
 
@@ -968,22 +962,6 @@ if test x$use_pkgconfig = xyes; then
       else
           AC_DEFINE_UNQUOTED([ENABLE_ZMQ],[0],[Define to 1 to enable ZMQ functions])
       fi
-
-      dnl RIP-25: liboqs for ML-DSA-44 post-quantum signatures
-      if test "x$use_liboqs" = "xyes"; then
-        PKG_CHECK_MODULES([LIBOQS], [liboqs >= 0.9.0],
-          [AC_DEFINE([HAVE_LIBOQS], [1], [Define to 1 if liboqs is available])],
-          [
-            dnl Fallback: check for header and library directly
-            AC_CHECK_HEADER([oqs/oqs.h],
-              [AC_CHECK_LIB([oqs], [OQS_SIG_new],
-                [LIBOQS_LIBS=-loqs; AC_DEFINE([HAVE_LIBOQS], [1], [Define to 1 if liboqs is available])],
-                [AC_MSG_ERROR([liboqs library not found. Install liboqs or use --without-liboqs])])],
-              [AC_MSG_ERROR([liboqs headers not found. Install liboqs-dev or use --without-liboqs])])
-          ])
-        AC_SUBST(LIBOQS_LIBS)
-        AC_SUBST(LIBOQS_CFLAGS)
-      fi
     ]
   )
 else
@@ -1022,17 +1000,6 @@ else
         ZMQ_CFLAGS="$ZMQ_CFLAGS -DZMQ_STATIC"
       ;;
     esac
-  fi
-
-  dnl RIP-25: liboqs fallback check (non-pkg-config path)
-  if test "x$use_liboqs" = "xyes"; then
-    AC_CHECK_HEADER([oqs/oqs.h],
-      [AC_CHECK_LIB([oqs], [OQS_SIG_new],
-        [LIBOQS_LIBS=-loqs; AC_DEFINE([HAVE_LIBOQS], [1], [Define to 1 if liboqs is available])],
-        [AC_MSG_ERROR([liboqs library not found. Install liboqs or use --without-liboqs])])],
-      [AC_MSG_ERROR([liboqs headers not found. Install liboqs-dev or use --without-liboqs])])
-    AC_SUBST(LIBOQS_LIBS)
-    AC_SUBST(LIBOQS_CFLAGS)
   fi
 
   RAVEN_QT_CHECK(AC_CHECK_LIB([protobuf] ,[main],[PROTOBUF_LIBS=-lprotobuf], RAVEN_QT_FAIL(libprotobuf not found)))

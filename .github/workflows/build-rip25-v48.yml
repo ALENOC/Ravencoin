@@ -58,7 +58,7 @@ jobs:
         run: ${SCRIPTS}/04-configure-build.sh ${{ matrix.OS }} ${{ github.workspace }}
 
       - name: Build Raven
-        run: make -j2
+        run: make -j2 LIBOQS_LIBS=-loqs
 
       - name: Check Binary Security
         run: ${SCRIPTS}/05-binary-checks.sh ${{ matrix.OS }} ${{ github.workspace }}
