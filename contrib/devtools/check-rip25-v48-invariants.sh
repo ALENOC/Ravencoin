@@ -21,7 +21,10 @@ require_fixed 'nHeightHeaderCheckActivation = 4487776' src/chainparams.cpp '4.8 
 require_fixed '4487775' src/chainparams.cpp '4.8 checkpoint height missing'
 require_fixed 'DEPLOYMENT_TRANSFER_OVERFLOW' src/consensus/params.h '4.8 transfer-overflow deployment missing'
 require_fixed 'vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].bit = 11' src/chainparams.cpp 'transfer-overflow must remain on BIP9 bit 11'
-require_fixed 'bad-blk-height' src/validation.cpp '4.8 KAWPOW bad-blk-height rejection missing'
+require_fixed 'if (nHeight >= consensusParams.nHeightHeaderCheckActivation &&' src/validation.cpp '4.8 KAWPOW height gate predicate missing'
+require_fixed 'block.nTime >= nKAWPOWActivationTime &&' src/validation.cpp '4.8 KAWPOW time gate predicate missing'
+require_fixed 'block.nHeight != (uint32_t)nHeight)' src/validation.cpp '4.8 declared-vs-contextual height comparison missing'
+require_fixed 'REJECT_INVALID, "bad-blk-height"' src/validation.cpp '4.8 KAWPOW bad-blk-height rejection missing'
 require_fixed 'IsTransferOverflowCheckDeployed' src/validation.cpp '4.8 transfer-overflow validation gate missing'
 
 # RIP-25 approved consensus invariants.
