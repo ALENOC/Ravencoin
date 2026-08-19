@@ -10,6 +10,9 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+class CBlockIndex;
+namespace Consensus { struct Params; }
+
 /** The maximum allowed size for a serialized block, in bytes (only for buffer size limits) */
 static const unsigned int MAX_BLOCK_SERIALIZED_SIZE = 4000000;
 /** The maximum allowed weight for a block, see BIP 141 (network rule) */
@@ -54,10 +57,16 @@ UNUSED_VAR static bool fRip5IsActive = false;
 UNUSED_VAR static bool fTransferScriptIsActive = false;
 UNUSED_VAR static bool fEnforcedValuesIsActive = false;
 UNUSED_VAR static bool fCheckCoinbaseAssetsIsActive = false;
-UNUSED_VAR static bool fPQHybridIsActive = false;
+UNUSED_VAR static bool fCheckTransferOverflowIsActive = false;
 
+/** Absolute structural ceilings. Exact RIP-25 phase limits are contextual. */
 unsigned int GetMaxBlockWeight();
 unsigned int GetMaxBlockSerializedSize();
+
+/** RIP-25 state and resource limits for the block after pindexPrev. */
+bool IsPQHybridActive(const CBlockIndex* pindexPrev, const Consensus::Params& params);
+unsigned int GetMaxBlockWeightForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params);
+unsigned int GetMaxBlockSerializedSizeForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params);
 
 /** Flags for nSequence and nLockTime locks */
 enum {
