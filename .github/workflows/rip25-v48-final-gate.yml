@@ -35,8 +35,8 @@ jobs:
 
       - name: Materialize audited RIP-25 port
         run: |
-          chmod +x contrib/devtools/apply-rip25-v48-port-v3.sh
-          ./contrib/devtools/apply-rip25-v48-port-v3.sh
+          chmod +x contrib/devtools/apply-rip25-v48-port-v4.sh
+          ./contrib/devtools/apply-rip25-v48-port-v4.sh
 
       - name: Verify security and consensus invariants
         run: |
@@ -110,8 +110,8 @@ jobs:
       - name: Materialize audited RIP-25 port
         shell: bash
         run: |
-          chmod +x contrib/devtools/apply-rip25-v48-port-v3.sh
-          ./contrib/devtools/apply-rip25-v48-port-v3.sh
+          chmod +x contrib/devtools/apply-rip25-v48-port-v4.sh
+          ./contrib/devtools/apply-rip25-v48-port-v4.sh
 
       - name: Verify security and consensus invariants
         shell: bash
