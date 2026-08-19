@@ -79,6 +79,7 @@ jobs:
         run: |
           ./src/test/test_raven --run_test=pqkey_tests
           ./src/test/test_raven --run_test=pqkey_hardening_tests
+          ./src/test/test_raven --run_test=rip25_versionbits_tests
           ./src/test/test_raven --run_test=kawpow_v48_hardening_tests
 
       - name: Check Binary Security
