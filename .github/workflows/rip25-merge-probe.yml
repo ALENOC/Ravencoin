@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/rip25-v48-merge-worker
+  pull_request:
+    branches:
+      - integration/rip25-v4.8.0-clean
 
 permissions:
   contents: read
