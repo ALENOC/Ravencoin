@@ -2,8 +2,10 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-// RIP-25: adversarial regression tests for PQ key/wallet hardening.
+// RIP-25: adversarial regression tests for PQ key/wallet and v4.8 port hardening.
 
+#include "chainparams.h"
+#include "consensus/consensus.h"
 #include "crypto/mldsa.h"
 #include "pqkey.h"
 #include "test/test_raven.h"
@@ -11,9 +13,34 @@
 #include <boost/test/unit_test.hpp>
 
 #include <cstring>
+#include <memory>
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(pqkey_hardening_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(rip25_v48_consensus_constants_and_deployment_bits)
+{
+    std::unique_ptr<CChainParams> mainParams = CreateChainParams("main");
+    BOOST_REQUIRE(mainParams);
+    const Consensus::Params& consensus = mainParams->GetConsensus();
+
+    // Ravencoin 4.8.0 owns bit 11; RIP-25 moves only its signaling bit to 12.
+    BOOST_CHECK_EQUAL(consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].bit, 11);
+    BOOST_CHECK_EQUAL(consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit, 12);
+
+    // August-2026 forged header-height protection must remain present.
+    BOOST_CHECK_EQUAL(consensus.nHeightHeaderCheckActivation, 4487776);
+
+    const auto checkpoint = mainParams->Checkpoints().mapCheckpoints.find(4487775);
+    BOOST_REQUIRE(checkpoint != mainParams->Checkpoints().mapCheckpoints.end());
+    BOOST_CHECK(checkpoint->second == uint256S("0x000000000002d64509e06e76ddbbe418c725291687ec62b41ecfc40386a091fd"));
+
+    // Approved RIP-25 resource policy is an invariant of the 4.8 port.
+    BOOST_CHECK_EQUAL(MAX_BLOCK_WEIGHT_RIP2, 8000000u);
+    BOOST_CHECK_EQUAL(MAX_BLOCK_WEIGHT_RIP25_PHASE1, 12000000u);
+    BOOST_CHECK_EQUAL(MAX_BLOCK_WEIGHT_RIP25_PHASE2, 16000000u);
+    BOOST_CHECK_EQUAL(PQ_WITNESS_SCALE_FACTOR, 8);
+}
 
 BOOST_AUTO_TEST_CASE(mldsa_rejects_null_inputs)
 {
