@@ -6,13 +6,13 @@
 
 unsigned int GetMaxBlockWeight()
 {
-    // Structural upper bound. The exact 8/12/16 MWU consensus limit is
-    // derived from pindexPrev and RIP-25 BIP9 state in ContextualCheckBlock.
+    // RIP-25 structural upper bound. The active 8/12/16 MWU rule is enforced
+    // contextually from BIP9 state and chain height in validation.cpp.
     return MAX_BLOCK_WEIGHT_RIP25_PHASE2;
 }
 
 unsigned int GetMaxBlockSerializedSize()
 {
-    // Buffer/import upper bound for all RIP-25 phases.
+    // RIP-25 phase-2 is also the absolute serialized-size ceiling.
     return MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE2;
 }
