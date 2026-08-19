@@ -4,8 +4,10 @@
 
 // RIP-25: adversarial regression tests for PQ key/wallet and v4.8 port hardening.
 
+#include "chain.h"
 #include "chainparams.h"
 #include "consensus/consensus.h"
+#include "consensus/validation.h"
 #include "crypto/mldsa.h"
 #include "pqkey.h"
 #include "test/test_raven.h"
@@ -27,6 +29,10 @@ BOOST_AUTO_TEST_CASE(rip25_v48_consensus_constants_and_deployment_bits)
     // Ravencoin 4.8.0 owns bit 11; RIP-25 moves only its signaling bit to 12.
     BOOST_CHECK_EQUAL(consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].bit, 11);
     BOOST_CHECK_EQUAL(consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit, 12);
+    BOOST_CHECK_EQUAL(consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideRuleChangeActivationThreshold, 1411);
+    BOOST_CHECK_EQUAL(consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideMinerConfirmationWindow, 2016);
+    BOOST_CHECK_EQUAL(consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold, 1714);
+    BOOST_CHECK_EQUAL(consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow, 2016);
 
     // August-2026 forged header-height protection must remain present.
     BOOST_CHECK_EQUAL(consensus.nHeightHeaderCheckActivation, 4487776);
@@ -40,6 +46,67 @@ BOOST_AUTO_TEST_CASE(rip25_v48_consensus_constants_and_deployment_bits)
     BOOST_CHECK_EQUAL(MAX_BLOCK_WEIGHT_RIP25_PHASE1, 12000000u);
     BOOST_CHECK_EQUAL(MAX_BLOCK_WEIGHT_RIP25_PHASE2, 16000000u);
     BOOST_CHECK_EQUAL(PQ_WITNESS_SCALE_FACTOR, 8);
+}
+
+BOOST_AUTO_TEST_CASE(rip25_block_weight_phase_boundaries)
+{
+    std::unique_ptr<CChainParams> mainParams = CreateChainParams("main");
+    std::unique_ptr<CChainParams> regtestParams = CreateChainParams("regtest");
+    BOOST_REQUIRE(mainParams);
+    BOOST_REQUIRE(regtestParams);
+
+    // Mainnet is not force-enabled: with no active chain state the RIP-2 ceiling remains 8 MWU.
+    BOOST_CHECK_EQUAL(GetMaxBlockWeightForPrev(nullptr, mainParams->GetConsensus()), MAX_BLOCK_WEIGHT_RIP2);
+
+    const Consensus::Params& regtest = regtestParams->GetConsensus();
+    BOOST_REQUIRE(regtest.nPQHybridEnabled);
+    BOOST_REQUIRE(regtest.nPowTargetSpacing > 0);
+
+    const int64_t blocksPerYear = (365LL * 24 * 60 * 60) / regtest.nPowTargetSpacing;
+    BOOST_REQUIRE(blocksPerYear > 1);
+
+    CBlockIndex prev;
+    prev.nHeight = 0;
+    BOOST_CHECK_EQUAL(GetMaxBlockWeightForPrev(&prev, regtest), MAX_BLOCK_WEIGHT_RIP25_PHASE1);
+
+    // Candidate height activation + blocksPerYear - 1 is still Phase 1.
+    prev.nHeight = static_cast<int>(blocksPerYear - 2);
+    BOOST_CHECK_EQUAL(GetMaxBlockWeightForPrev(&prev, regtest), MAX_BLOCK_WEIGHT_RIP25_PHASE1);
+
+    // Candidate height activation + blocksPerYear is the first Phase-2 block.
+    prev.nHeight = static_cast<int>(blocksPerYear - 1);
+    BOOST_CHECK_EQUAL(GetMaxBlockWeightForPrev(&prev, regtest), MAX_BLOCK_WEIGHT_RIP25_PHASE2);
+}
+
+BOOST_AUTO_TEST_CASE(rip25_approved_pq_witness_discount_accounting)
+{
+    CMutableTransaction mtx;
+    mtx.vin.resize(1);
+    mtx.vout.resize(1);
+    mtx.vin[0].scriptWitness.stack.emplace_back(mldsa::SIGNATURE_BYTES, 0x11);
+    mtx.vin[0].scriptWitness.stack.emplace_back(mldsa::PUBLICKEY_BYTES, 0x22);
+
+    const CTransaction tx(mtx);
+    const int64_t standardWeight = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1)
+                                 + ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+    const int64_t pqBytes = mldsa::SIGNATURE_BYTES + mldsa::PUBLICKEY_BYTES;
+    const int64_t expectedDiscount = pqBytes * (PQ_WITNESS_SCALE_FACTOR - WITNESS_SCALE_FACTOR) / PQ_WITNESS_SCALE_FACTOR;
+
+    BOOST_CHECK_EQUAL(GetPQWitnessInputDiscount(tx.vin[0]), expectedDiscount);
+    BOOST_CHECK_EQUAL(GetTransactionWeight(tx), standardWeight - expectedDiscount);
+
+    CBlock block;
+    block.vtx.push_back(MakeTransactionRef(mtx));
+    BOOST_CHECK_EQUAL(GetBlockWeightRIP25(block), GetBlockWeight(block) - expectedDiscount);
+
+    // Shape mismatch must not receive the approved PQ discount.
+    CMutableTransaction malformed = mtx;
+    malformed.vin[0].scriptWitness.stack[0].resize(mldsa::SIGNATURE_BYTES - 1);
+    const CTransaction malformedTx(malformed);
+    const int64_t malformedStandardWeight = ::GetSerializeSize(malformedTx, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1)
+                                          + ::GetSerializeSize(malformedTx, SER_NETWORK, PROTOCOL_VERSION);
+    BOOST_CHECK_EQUAL(GetPQWitnessInputDiscount(malformedTx.vin[0]), 0);
+    BOOST_CHECK_EQUAL(GetTransactionWeight(malformedTx), malformedStandardWeight);
 }
 
 BOOST_AUTO_TEST_CASE(mldsa_rejects_null_inputs)
