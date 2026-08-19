@@ -118,7 +118,7 @@ test_test_raven_LDADD =
 if ENABLE_WALLET
 test_test_raven_LDADD += $(LIBRAVEN_WALLET)
 endif
-test_test_raven_LDADD += $(LIBRAVEN_SERVER) $(LIBRAVEN_CLI) $(LIBRAVEN_COMMON) $(LIBRAVEN_UTIL) $(LIBRAVEN_CONSENSUS) $(LIBRAVEN_CRYPTO) $(LIBUNIVALUE) \
+test_test_raven_LDADD += $(LIBRAVEN_SERVER) $(LIBRAVEN_CLI) $(LIBRAVEN_COMMON) $(LIBRAVEN_UTIL) $(LIBRAVEN_CONSENSUS) $(LIBUNIVALUE) \
   $(LIBLEVELDB) $(LIBLEVELDB_SSE42) $(LIBMEMENV) $(BOOST_LIBS) $(BOOST_UNIT_TEST_FRAMEWORK_LIB) $(LIBSECP256K1) $(EVENT_LIBS) $(EVENT_PTHREADS_LIBS)
 test_test_raven_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 
@@ -179,3 +179,21 @@ raven_test_check: $(TEST_BINARY) FORCE
 
 raven_test_clean : FORCE
 	rm -f $(CLEAN_RAVEN_TEST) $(test_test_raven_OBJECTS) $(TEST_BINARY)
+
+check-local:
+	@echo "Running test/util/raven-util-test.py..."
+	$(PYTHON) $(top_builddir)/test/util/raven-util-test.py
+	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C secp256k1 check
+if EMBEDDED_UNIVALUE
+	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C univalue check
+endif
+
+%.json.h: %.json
+	@$(MKDIR_P) $(@D)
+	@{ \
+	 echo "namespace json_tests{" && \
+	 echo "static unsigned const char $(*F)[] = {" && \
+	 $(HEXDUMP) -v -e '8/1 "0x%02x, "' -e '"\n"' $< | $(SED) -e 's/0x  ,//g' && \
+	 echo "};};"; \
+	} > "$@.new" && mv -f "$@.new" "$@"
+	@echo "Generated $@"
