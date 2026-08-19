@@ -69,4 +69,8 @@ if ! grep -A6 'qt_raven_qt_LDADD' src/Makefile.qt.include | grep -Fq '$(LIBOQS_L
   fail 'raven-qt must link LIBOQS_LIBS'
 fi
 
+# Security regressions must actually be part of the test binary after staging.
+require_fixed 'test/rip25_versionbits_tests.cpp' src/Makefile.test.include 'RIP-25 VersionBits regression suite is not wired'
+require_fixed 'test/kawpow_v48_hardening_tests.cpp' src/Makefile.test.include 'v4.8 KAWPOW exploit regression suite is not wired'
+
 echo 'RIP-25 / Ravencoin 4.8 invariants: OK'
