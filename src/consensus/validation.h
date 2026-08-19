@@ -108,16 +108,21 @@ public:
 // using only serialization with and without witness data. As witness_size
 // is equal to total_size - stripped_size, this formula is identical to:
 // weight = (stripped_size * 3) + total_size.
+static inline int64_t GetPQWitnessInputDiscount(const CTxIn& txin)
+{
+    const auto& stack = txin.scriptWitness.stack;
+    if (stack.size() != 2 || stack[0].size() != 2420 || stack[1].size() != 1312)
+        return 0;
+
+    const int64_t pqBytes = (int64_t)stack[0].size() + (int64_t)stack[1].size();
+    return pqBytes * (PQ_WITNESS_SCALE_FACTOR - WITNESS_SCALE_FACTOR) / PQ_WITNESS_SCALE_FACTOR;
+}
+
 static inline int64_t GetPQWitnessDiscount(const CTransaction& tx)
 {
     int64_t discount = 0;
-    for (const auto& txin : tx.vin) {
-        const auto& stack = txin.scriptWitness.stack;
-        if (stack.size() == 2 && stack[0].size() == 2420 && stack[1].size() == 1312) {
-            const int64_t pqBytes = (int64_t)stack[0].size() + (int64_t)stack[1].size();
-            discount += pqBytes * (PQ_WITNESS_SCALE_FACTOR - WITNESS_SCALE_FACTOR) / PQ_WITNESS_SCALE_FACTOR;
-        }
-    }
+    for (const auto& txin : tx.vin)
+        discount += GetPQWitnessInputDiscount(txin);
     return discount;
 }
 
@@ -132,13 +137,15 @@ static inline int64_t GetTransactionWeight(const CTransaction& tx)
 static inline int64_t GetBlockWeight(const CBlock& block)
 {
     // Legacy/RIP-2 consensus weight. The RIP-25 block-level discount is
-    // activation-gated by ContextualCheckBlock via GetBlockWeightRIP25().
+    // activation-gated and UTXO-bound in validation.cpp.
     return ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1)
          + ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
 }
 
 static inline int64_t GetBlockWeightRIP25(const CBlock& block)
 {
+    // Optimistic/structural RIP-25 weight. Consensus validation additionally
+    // binds every discounted input to an actual witness-v2 32-byte prevout.
     int64_t weight = GetBlockWeight(block);
     for (const auto& tx : block.vtx)
         weight -= GetPQWitnessDiscount(*tx);
