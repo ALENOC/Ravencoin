@@ -224,15 +224,19 @@
      pblock->nVersion = ComputeBlockVersion(pindexPrev, chainparams.GetConsensus());
 --- a/configure.ac
 +++ b/configure.ac
-@@ -207,6 +207,12 @@
+@@ -207,6 +207,16 @@
    [use_zmq=$enableval],
    [use_zmq=yes])
  
 +AC_ARG_WITH([liboqs],
 +  [AS_HELP_STRING([--with-liboqs],
-+  [enable post-quantum signatures via liboqs (default is yes)])],
++  [enable post-quantum signatures via liboqs (required by RIP-25)])],
 +  [use_liboqs=$withval],
 +  [use_liboqs=yes])
++
++if test "x$use_liboqs" != "xyes"; then
++  AC_MSG_ERROR([RIP-25 requires liboqs >= 0.12.0])
++fi
 +
  AC_ARG_WITH([protoc-bindir],[AS_HELP_STRING([--with-protoc-bindir=BIN_DIR],[specify protoc bin path])], [protoc_bin_path=$withval], [])
  
