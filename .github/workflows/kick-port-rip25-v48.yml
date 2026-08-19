@@ -1,0 +1,29 @@
+name: Bootstrap RIP-25 v4.8 Port
+
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  kick:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout integration branch
+        uses: actions/checkout@v4
+        with:
+          ref: integration/rip25-v4.8.0
+          fetch-depth: 0
+
+      - name: Trigger hardened port workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          sed -i "/if: github.actor != 'github-actions\[bot\]'/d" .github/workflows/port-rip25-v48.yml
+          printf '\n# bootstrap-trigger: %s\n' "${GITHUB_RUN_ID}" >> .github/workflows/port-rip25-v48.yml
+          git add .github/workflows/port-rip25-v48.yml
+          git commit -m "ci: trigger hardened RIP-25 v4.8 port"
+          git push origin HEAD:integration/rip25-v4.8.0
