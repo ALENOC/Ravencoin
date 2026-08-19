@@ -118,8 +118,15 @@ public:
     bool AddPQKeyPubKey(const CPQKey &key, const CPQPubKey &pubkey) override
     {
         LOCK(cs_KeyStore);
-        uint256 wp = pubkey.GetWitnessProgram();
-        mapPQKeys[wp] = key;
+        if (!key.IsValid() || !pubkey.IsValid())
+            return false;
+
+        CPQKey storedKey = key;
+        if (!storedKey.SetPubKey(pubkey))
+            return false;
+
+        const uint256 wp = pubkey.GetWitnessProgram();
+        mapPQKeys[wp] = storedKey;
         mapPQPubKeys[wp] = pubkey;
         return true;
     }
