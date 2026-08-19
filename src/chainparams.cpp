@@ -168,6 +168,14 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideRuleChangeActivationThreshold = 1411; // Approx 70% of 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideMinerConfirmationWindow = 2016;
 
+        // RIP-25: ML-DSA-44 witness v2 soft fork. Bit 11 is reserved by v4.8.0 transfer_overflow.
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 1798761600; // Placeholder; finalize before deployment
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1830297600;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 1714; // Approx 85% of 2016
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 2016;
+        consensus.nPQHybridEnabled = false; // Mainnet follows BIP9; test chains may force-enable for testing
+
 
         // The best chain should have at least this much work
         consensus.nMinimumChainWork = uint256S("0000000000000000000000000000000000000000000000355cd0ac1503c83052"); // Block 2383567
@@ -203,6 +211,7 @@ public:
         base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,128);
         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x88, 0xB2, 0x1E};
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x88, 0xAD, 0xE4};
+        strBech32PQHrp = "rvn"; // RIP-25 Bech32m HRP
 
         // Raven BIP44 cointype in mainnet is '175'
         nExtCoinType = 175;
@@ -340,6 +349,14 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideRuleChangeActivationThreshold = 1411; // Approx 70% of 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideMinerConfirmationWindow = 2016;
 
+        // RIP-25: force-enabled on testnet for extended interoperability testing.
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 1199145601;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1893456000;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 1310;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 2016;
+        consensus.nPQHybridEnabled = true;
+
         // The best chain should have at least this much work.
         consensus.nMinimumChainWork = uint256S("0x000000000000000000000000000000000000000000000000000168050db560b4");
 
@@ -436,6 +453,7 @@ public:
         base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,239);
         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x35, 0x87, 0xCF};
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
+        strBech32PQHrp = "trvn"; // RIP-25 Bech32m HRP
 
         // Raven BIP44 cointype in testnet
         nExtCoinType = 1;
@@ -566,6 +584,14 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideRuleChangeActivationThreshold = 400;
         consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideMinerConfirmationWindow = 500;
 
+        // RIP-25: force-enabled on regtest for deterministic functional tests.
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 0;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 999999999999ULL;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 108;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 144;
+        consensus.nPQHybridEnabled = true;
+
         // The best chain should have at least this much work.
         consensus.nMinimumChainWork = uint256S("0x00");
 
@@ -669,6 +695,7 @@ public:
         base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,239);
         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x35, 0x87, 0xCF};
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
+        strBech32PQHrp = "rcrt"; // RIP-25 Bech32m HRP
 
         // Raven BIP44 cointype in regtest
         nExtCoinType = 1;
@@ -707,7 +734,7 @@ public:
         nMinReorganizationAge = 60 * 60 * 12; // 12 hours
 
         nAssetActivationHeight = 0; // Asset activated block height
-        nMessagingActivationBlock = 0; // Messaging activated block height
+        nMessagingActivationBlock = 0; // Messaging activation block height
         nRestrictedActivationBlock = 0; // Restricted activated block height
 
         // TODO, we need to figure out what to do with this for regtest. This effects the unit tests
