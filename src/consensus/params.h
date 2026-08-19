@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2016 The Bitcoin Core developers
-// Copyright (c) 2017-2020 The Raven Core developers
+// Copyright (c) 2017-2021 The Raven Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -21,6 +21,8 @@ enum DeploymentPos
     DEPLOYMENT_TRANSFER_SCRIPT_SIZE,
     DEPLOYMENT_ENFORCE_VALUE,
     DEPLOYMENT_COINBASE_ASSETS,
+    DEPLOYMENT_TRANSFER_OVERFLOW,   // Deployment of asset transfer qty overflow check   
+    DEPLOYMENT_PQ_HYBRID, // Deployment of RIP-25: Post-Quantum Hybrid Signatures (ML-DSA-44)
     // DEPLOYMENT_CSV, // Deployment of BIP68, BIP112, and BIP113.
 //    DEPLOYMENT_SEGWIT, // Deployment of BIP141, BIP143, and BIP147.
     // NOTE: Also add new deployments to VersionBitsDeploymentInfo in versionbits.cpp
@@ -78,6 +80,8 @@ struct Params {
     uint256 defaultAssumeValid;
     bool nSegwitEnabled;
     bool nCSVEnabled;
+    bool nPQHybridEnabled; // RIP-25: Post-Quantum Hybrid Signatures
+    int nHeightHeaderCheckActivation;
 };
 } // namespace Consensus
 

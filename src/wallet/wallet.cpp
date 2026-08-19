@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2016 The Bitcoin Core developers
-// Copyright (c) 2017-2020 The Raven Core developers
+// Copyright (c) 2017-2021 The Raven Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -38,6 +38,7 @@
 
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/thread.hpp>
+#include <random>
 #include <tinyformat.h>
 
 #include "assets/assets.h"
@@ -129,6 +130,7 @@ public:
     }
 
     void operator()(const CNoDestination &none) {}
+    void operator()(const WitnessV2PQDestination &dest) {}
 };
 
 const CWalletTx* CWallet::GetWalletTx(const uint256& hash) const
@@ -293,6 +295,17 @@ bool CWallet::AddKeyPubKey(const CKey& secret, const CPubKey &pubkey)
     return CWallet::AddKeyPubKeyWithDB(walletdb, secret, pubkey);
 }
 
+bool CWallet::AddPQKeyPubKey(const CPQKey &key, const CPQPubKey &pubkey)
+{
+    AssertLockHeld(cs_wallet);
+    if (!CCryptoKeyStore::AddPQKeyPubKey(key, pubkey))
+        return false;
+
+    uint256 witnessProgram = pubkey.GetWitnessProgram();
+    std::vector<unsigned char> keyData(key.GetKeyData().begin(), key.GetKeyData().end());
+    return CWalletDB(*dbw).WritePQKey(witnessProgram, pubkey, keyData);
+}
+
 bool CWallet::AddCryptedKey(const CPubKey &vchPubKey,
                             const std::vector<unsigned char> &vchCryptedSecret)
 {
@@ -311,6 +324,21 @@ bool CWallet::AddCryptedKey(const CPubKey &vchPubKey,
     }
 }
 
+bool CWallet::AddCryptedPQKey(const CPQPubKey &pqPubKey,
+                              const std::vector<unsigned char> &vchCryptedSecret)
+{
+    if (!CCryptoKeyStore::AddCryptedPQKey(pqPubKey, vchCryptedSecret))
+        return false;
+    {
+        LOCK(cs_wallet);
+        uint256 witnessProgram = pqPubKey.GetWitnessProgram();
+        if (pwalletdbEncryption)
+            return pwalletdbEncryption->WriteCryptedPQKey(witnessProgram, pqPubKey, vchCryptedSecret);
+        else
+            return CWalletDB(*dbw).WriteCryptedPQKey(witnessProgram, pqPubKey, vchCryptedSecret);
+    }
+}
+
 bool CWallet::LoadKeyMetadata(const CTxDestination& keyID, const CKeyMetadata &meta)
 {
     AssertLockHeld(cs_wallet); // mapKeyMetadata
@@ -322,6 +350,11 @@ bool CWallet::LoadKeyMetadata(const CTxDestination& keyID, const CKeyMetadata &m
 bool CWallet::LoadCryptedKey(const CPubKey &vchPubKey, const std::vector<unsigned char> &vchCryptedSecret)
 {
     return CCryptoKeyStore::AddCryptedKey(vchPubKey, vchCryptedSecret);
+}
+
+bool CWallet::LoadCryptedPQKey(const CPQPubKey &pqPubKey, const std::vector<unsigned char> &vchCryptedSecret)
+{
+    return CCryptoKeyStore::AddCryptedPQKey(pqPubKey, vchCryptedSecret);
 }
 
 bool CWallet::LoadCryptedWords(const uint256& hash, const std::vector<unsigned char> &vchCryptedWords)
@@ -1448,7 +1481,20 @@ bool CWallet::IsMine(const CTransaction& tx) const
 
 bool CWallet::IsFromMe(const CTransaction& tx) const
 {
-    return (GetDebit(tx, ISMINE_ALL) > 0);
+    return (GetDebit(tx, ISMINE_ALL) > 0 || HasMyAssets(tx));
+}
+
+CAmount CWallet::HasMyAssets(const CTransaction& tx) const
+{
+    for (const CTxIn& txin : tx.vin)
+    {
+        CAssetOutputEntry assetData;
+        GetDebit(txin, ISMINE_ALL, assetData);
+        if (assetData.nAmount > 0)
+            return true;
+    }
+
+    return false;
 }
 
 CAmount CWallet::GetDebit(const CTransaction& tx, const isminefilter& filter) const
@@ -1620,45 +1666,6 @@ int64_t CWalletTx::GetTxTime() const
 {
     int64_t n = nTimeSmart;
     return n ? n : nTimeReceived;
-}
-
-int CWalletTx::GetRequestCount() const
-{
-    // Returns -1 if it wasn't being tracked
-    int nRequests = -1;
-    {
-        LOCK(pwallet->cs_wallet);
-        if (IsCoinBase())
-        {
-            // Generated block
-            if (!hashUnset())
-            {
-                std::map<uint256, int>::const_iterator mi = pwallet->mapRequestCount.find(hashBlock);
-                if (mi != pwallet->mapRequestCount.end())
-                    nRequests = (*mi).second;
-            }
-        }
-        else
-        {
-            // Did anyone request this transaction?
-            std::map<uint256, int>::const_iterator mi = pwallet->mapRequestCount.find(GetHash());
-            if (mi != pwallet->mapRequestCount.end())
-            {
-                nRequests = (*mi).second;
-
-                // How about the block it's in?
-                if (nRequests == 0 && !hashUnset())
-                {
-                    std::map<uint256, int>::const_iterator _mi = pwallet->mapRequestCount.find(hashBlock);
-                    if (_mi != pwallet->mapRequestCount.end())
-                        nRequests = (*_mi).second;
-                    else
-                        nRequests = 1; // If it's in someone else's block it must have got out
-                }
-            }
-        }
-    }
-    return nRequests;
 }
 
 void CWalletTx::GetAmounts(std::list<COutputEntry>& listReceived,
@@ -2749,7 +2756,7 @@ bool CWallet::SelectCoinsMinConf(const CAmount& nTargetValue, const int nConfMin
     std::vector<CInputCoin> vValue;
     CAmount nTotalLower = 0;
 
-    random_shuffle(vCoins.begin(), vCoins.end(), GetRandInt);
+    Shuffle(vCoins.begin(), vCoins.end(), FastRandomContext());
 
     for (const COutput &output : vCoins)
     {
@@ -2952,7 +2959,7 @@ bool CWallet::SelectAssetsMinConf(const CAmount& nTargetValue, const int nConfMi
     std::map<COutPoint, CAmount> mapValueAmount;
     CAmount nTotalLower = 0;
 
-    random_shuffle(vCoins.begin(), vCoins.end(), GetRandInt);
+    Shuffle(vCoins.begin(), vCoins.end(), FastRandomContext());
     #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
     for (const COutput &output : vCoins)
     {
@@ -3173,9 +3180,8 @@ bool CWallet::FundTransaction(CMutableTransaction& tx, CAmount& nFeeRet, int& nC
 {
     std::vector<CRecipient> vecSend;
 
-    // Turn the txout set into a CRecipient vector
-    for (size_t idx = 0; idx < tx.vout.size(); idx++)
-    {
+    // Turn the txout set into a CRecipient vector.
+    for (size_t idx = 0; idx < tx.vout.size(); idx++) {
         const CTxOut& txOut = tx.vout[idx];
         CRecipient recipient = {txOut.scriptPubKey, txOut.nValue, setSubtractFeeFromOutputs.count(idx) == 1};
         vecSend.push_back(recipient);
@@ -3183,8 +3189,13 @@ bool CWallet::FundTransaction(CMutableTransaction& tx, CAmount& nFeeRet, int& nC
 
     coinControl.fAllowOtherInputs = true;
 
-    for (const CTxIn& txin : tx.vin)
+    for (const CTxIn& txin : tx.vin) {
         coinControl.Select(txin.prevout);
+    }
+
+    // Acquire the locks to prevent races to the new locked unspents between the
+    // CreateTransaction call and LockCoin calls (when lockUnspents is true).
+    LOCK2(cs_main, cs_wallet);
 
     CReserveKey reservekey(this);
     CWalletTx wtx;
@@ -3194,30 +3205,27 @@ bool CWallet::FundTransaction(CMutableTransaction& tx, CAmount& nFeeRet, int& nC
 
     if (nChangePosInOut != -1) {
         tx.vout.insert(tx.vout.begin() + nChangePosInOut, wtx.tx->vout[nChangePosInOut]);
-        // we don't have the normal Create/Commit cycle, and don't want to risk reusing change,
-        // so just remove the key from the keypool here.
+        // We don't have the normal Create/Commit cycle, and don't want to risk
+        // reusing change, so just remove the key from the keypool here.
         reservekey.KeepKey();
     }
 
-    // Copy output sizes from new transaction; they may have had the fee subtracted from them
-    for (unsigned int idx = 0; idx < tx.vout.size(); idx++)
+    // Copy output sizes from new transaction; they may have had the fee
+    // subtracted from them.
+    for (unsigned int idx = 0; idx < tx.vout.size(); idx++) {
         tx.vout[idx].nValue = wtx.tx->vout[idx].nValue;
+    }
 
-    // Add new txins (keeping original txin scriptSig/order)
-    for (const CTxIn& txin : wtx.tx->vin)
-    {
-        if (!coinControl.IsSelected(txin.prevout))
-        {
+    // Add new txins while keeping original txin scriptSig/order.
+    for (const CTxIn& txin : wtx.tx->vin) {
+        if (!coinControl.IsSelected(txin.prevout)) {
             tx.vin.push_back(txin);
 
-            if (lockUnspents)
-            {
-              LOCK2(cs_main, cs_wallet);
-              LockCoin(txin.prevout);
+            if (lockUnspents) {
+                LockCoin(txin.prevout);
             }
         }
     }
-
 
     return true;
 }
@@ -3871,9 +3879,6 @@ bool CWallet::CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey, CCon
                 NotifyTransactionChanged(this, coin.GetHash(), CT_UPDATED);
             }
         }
-
-        // Track how many getdata requests our transaction gets
-        mapRequestCount[wtxNew.GetHash()] = 0;
 
         if (fBroadcastTransactions)
         {

@@ -1,5 +1,5 @@
 // Copyright (c) 2016 The Bitcoin Core developers
-// Copyright (c) 2017-2020 The Raven Core developers
+// Copyright (c) 2017-2021 The Raven Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -34,6 +34,14 @@ const struct VBDeploymentInfo VersionBitsDeploymentInfo[Consensus::MAX_VERSION_B
     {
             /*.name =*/ "coinbase",
             /*.gbt_force =*/ true,
+    },
+    {
+        /*.name =*/ "transfer_overflow",
+        /*.gbt_force =*/ true,
+    },
+    {
+        /*.name =*/ "pq_hybrid",
+        /*.gbt_force =*/ true,
     }
 };
 

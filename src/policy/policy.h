@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2016 The Bitcoin Core developers
-// Copyright (c) 2017-2019 The Raven Core developers
+// Copyright (c) 2017-2021 The Raven Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -50,6 +50,10 @@ static const unsigned int DUST_RELAY_TX_FEE = 3000;
  * Standard script verification flags that standard transactions will comply
  * with. However scripts violating these flags may still be present in valid
  * blocks and we must accept those blocks.
+ *
+ * RIP-25 is intentionally not included here unconditionally: witness-v2
+ * verification is added by mempool validation only after DEPLOYMENT_PQ_HYBRID
+ * is ACTIVE, preserving the soft-fork activation boundary.
  */
 static const unsigned int STANDARD_SCRIPT_VERIFY_FLAGS = MANDATORY_SCRIPT_VERIFY_FLAGS |
                                                          SCRIPT_VERIFY_DERSIG |

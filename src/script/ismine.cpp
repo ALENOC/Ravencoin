@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2016 The Bitcoin Core developers
-// Copyright (c) 2017-2019 The Raven Core developers
+// Copyright (c) 2017-2021 The Raven Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -121,6 +121,17 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey, bool& 
                 isminetype ret = IsMine(keystore, subscript, isInvalid, SIGVERSION_WITNESS_V0);
                 if (ret == ISMINE_SPENDABLE || ret == ISMINE_WATCH_SOLVABLE || (ret == ISMINE_NO && isInvalid))
                     return ret;
+            }
+            break;
+        }
+
+        case TX_WITNESS_V2_PQ_KEYHASH: {
+            // RIP-25: PQ witness v2 — check if we have the ML-DSA key for this witness program
+            if (vSolutions[0].size() == 32) {
+                uint256 wp;
+                memcpy(wp.begin(), vSolutions[0].data(), 32);
+                if (keystore.HavePQKey(wp))
+                    return ISMINE_SPENDABLE;
             }
             break;
         }

@@ -1,5 +1,5 @@
 // Copyright (c) 2017-2017 The Bitcoin Core developers
-// Copyright (c) 2017-2019 The Raven Core developers
+// Copyright (c) 2017-2020 The Raven Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -27,6 +27,9 @@ class CNullAssetTxData;
 
 /** Context-independent validity checks */
 bool CheckTransaction(const CTransaction& tx, CValidationState& state, bool fCheckDuplicateInputs=true, bool fMempoolCheck = false, bool fBlockCheck = false);
+
+/** Ravencoin 4.8 deployment gate used by asset overflow validation. */
+bool IsTransferOverflowCheckDeployed();
 
 namespace Consensus {
 /**
@@ -78,7 +81,7 @@ bool IsFinalTx(const CTransaction &tx, int nBlockHeight, int64_t nBlockTime);
 /**
  * Calculates the block height and previous block's median time past at
  * which the transaction will be considered final in the context of BIP 68.
- * Also removes from the vector of input heights any entries which did not
+ * Also removes from the vector of input heights any inputs which did not
  * correspond to sequence locked inputs as they do not affect the calculation.
  */
 std::pair<int, int64_t> CalculateSequenceLocks(const CTransaction &tx, int flags, std::vector<int>* prevHeights, const CBlockIndex& block);

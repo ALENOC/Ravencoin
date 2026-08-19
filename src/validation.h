@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2016 The Bitcoin Core developers
-// Copyright (c) 2017-2020 The Raven Core developers
+// Copyright (c) 2017-2021 The Raven Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -613,6 +613,9 @@ bool IsMessagingActive(unsigned int nBlockNumber);
 bool IsRestrictedActive(unsigned int nBlockNumber);
 
 CAssetsCache* GetCurrentAssetCache();
+
+/** RIP-25: Check if Post-Quantum Hybrid Signatures are deployed */
+bool IsPQHybridDeployed();
 /** RVN END */
 
 #endif // RAVEN_VALIDATION_H

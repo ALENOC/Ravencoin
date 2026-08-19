@@ -1,6 +1,6 @@
 // Copyright (c) 2010 Satoshi Nakamoto
 // Copyright (c) 2009-2016 The Bitcoin Core developers
-// Copyright (c) 2017-2019 The Raven Core developers
+// Copyright (c) 2017-2021 The Raven Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -162,6 +162,15 @@ public:
             if (whichType == TX_MULTISIG)
                 obj.push_back(Pair("sigsrequired", nRequired));
         }
+        return obj;
+    }
+
+    UniValue operator()(const WitnessV2PQDestination &dest) const {
+        UniValue obj(UniValue::VOBJ);
+        obj.push_back(Pair("isscript", false));
+        obj.push_back(Pair("ispqaddress", true));
+        obj.push_back(Pair("witness_version", 2));
+        obj.push_back(Pair("witness_program", dest.witnessProgram.GetHex()));
         return obj;
     }
 };

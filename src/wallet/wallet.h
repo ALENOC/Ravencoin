@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2016 The Bitcoin Core developers
-// Copyright (c) 2017-2020 The Raven Core developers
+// Copyright (c) 2017-2021 The Raven Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -196,7 +196,7 @@ struct CAssetOutputEntry
     txnouttype type;
     std::string assetName;
     CTxDestination destination;
-    CAmount nAmount;
+    CAmount nAmount = 0;
     std::string message;
     int64_t expireTime;
     int vout;
@@ -335,7 +335,7 @@ public:
      * on this raven node, and set to 0 for transactions that were created
      * externally and came in through the network or sendrawtransaction RPC.
      */
-    char fFromMe;
+    bool fFromMe;
     std::string strFromAccount;
     int64_t nOrderPos; //!< position in ordered transaction list
 
@@ -406,7 +406,7 @@ public:
     inline void SerializationOp(Stream& s, Operation ser_action) {
         if (ser_action.ForRead())
             Init(nullptr);
-        char fSpent = false;
+        bool fSpent = false;
 
         if (!ser_action.ForRead())
         {
@@ -490,7 +490,6 @@ public:
     bool IsTrusted() const;
 
     int64_t GetTxTime() const;
-    int GetRequestCount() const;
 
     // RelayWalletTransaction may only be called if fBroadcastTransactions!
     bool RelayWalletTransaction(CConnman* connman);
@@ -827,7 +826,6 @@ public:
 
     int64_t nOrderPosNext;
     uint64_t nAccountingEntryNumber;
-    std::map<uint256, int> mapRequestCount;
 
     std::map<CTxDestination, CAddressBookData> mapAddressBook;
 
@@ -921,6 +919,10 @@ public:
     bool AddKeyPubKeyWithDB(CWalletDB &walletdb,const CKey& key, const CPubKey &pubkey);
     //! Adds a key to the store, without saving it to disk (used by LoadWallet)
     bool LoadKey(const CKey& key, const CPubKey &pubkey) { return CCryptoKeyStore::AddKeyPubKey(key, pubkey); }
+    //! Adds a PQ key to the store, and saves it to disk.
+    bool AddPQKeyPubKey(const CPQKey &key, const CPQPubKey &pubkey) override;
+    //! Adds a PQ key to the store, without saving it to disk (used by LoadWallet)
+    bool LoadPQKey(const CPQKey& key, const CPQPubKey &pubkey) { return CCryptoKeyStore::AddPQKeyPubKey(key, pubkey); }
     //! Load metadata (used by LoadWallet)
     bool LoadKeyMetadata(const CTxDestination& pubKey, const CKeyMetadata &metadata);
 
@@ -929,8 +931,12 @@ public:
 
     //! Adds an encrypted key to the store, and saves it to disk.
     bool AddCryptedKey(const CPubKey &vchPubKey, const std::vector<unsigned char> &vchCryptedSecret) override;
+    //! Adds an encrypted PQ key to the store, and saves it to disk.
+    bool AddCryptedPQKey(const CPQPubKey &pqPubKey, const std::vector<unsigned char> &vchCryptedSecret) override;
     //! Adds an encrypted key to the store, without saving it to disk (used by LoadWallet)
     bool LoadCryptedKey(const CPubKey &vchPubKey, const std::vector<unsigned char> &vchCryptedSecret);
+    //! Adds an encrypted PQ key to the store, without saving it to disk (used by LoadWallet)
+    bool LoadCryptedPQKey(const CPQPubKey &pqPubKey, const std::vector<unsigned char> &vchCryptedSecret);
     bool LoadCryptedWords(const uint256& hash, const std::vector<unsigned char> &vchCryptedWords);
     bool LoadCryptedPassphrase(const std::vector<unsigned char> &vchCryptedPassphrase);
     bool LoadCryptedVchSeed(const std::vector<unsigned char> &vchCryptedVchSeed);
@@ -1080,6 +1086,7 @@ public:
     /** should probably be renamed to IsRelevantToMe */
     bool IsFromMe(const CTransaction& tx) const;
     CAmount GetDebit(const CTransaction& tx, const isminefilter& filter) const;
+    CAmount HasMyAssets(const CTransaction& tx) const;
     /** Returns whether all of the inputs match the filter */
     bool IsAllFromMe(const CTransaction& tx, const isminefilter& filter) const;
     CAmount GetCredit(const CTransaction& tx, const isminefilter& filter) const;
@@ -1097,16 +1104,6 @@ public:
     bool DelAddressBook(const CTxDestination& address);
 
     const std::string& GetAccountName(const CScript& scriptPubKey) const;
-
-    void Inventory(const uint256 &hash) override
-    {
-        {
-            LOCK(cs_wallet);
-            std::map<uint256, int>::iterator mi = mapRequestCount.find(hash);
-            if (mi != mapRequestCount.end())
-                (*mi).second++;
-        }
-    }
 
     void GetScriptForMining(std::shared_ptr<CReserveScript> &script); // override;
     
@@ -1301,11 +1298,24 @@ bool CWallet::DummySignTx(CMutableTransaction &txNew, const ContainerType &coins
 
         if (!ProduceSignature(DummySignatureCreator(this), scriptPubKey, sigdata))
         {
-            // just add dummy 256 bytes as sigdata if this fails (can't necessarily sign for all inputs)
-            CScript dummyScript = CScript(cstrZeros, cstrZeros + 256);
-            SignatureData dummyData = SignatureData(dummyScript);
-            UpdateTransaction(txNew, nIn, dummyData);
-            allSigned = false;
+            // RIP-25: For PQ witness v2 outputs, ProduceSignature fails because
+            // VerifyScript can't verify dummy ML-DSA data. Set correctly-sized
+            // dummy witness so fee estimation accounts for PQ witness bytes.
+            int witnessversion = 0;
+            std::vector<unsigned char> witnessprogram;
+            if (scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram) &&
+                witnessversion == 2 && witnessprogram.size() == 32) {
+                SignatureData pqDummy;
+                pqDummy.scriptWitness.stack.push_back(std::vector<unsigned char>(2420, 0)); // ML-DSA-44 sig
+                pqDummy.scriptWitness.stack.push_back(std::vector<unsigned char>(1312, 0)); // ML-DSA-44 pk
+                UpdateTransaction(txNew, nIn, pqDummy);
+            } else {
+                // just add dummy 256 bytes as sigdata if this fails (can't necessarily sign for all inputs)
+                CScript dummyScript = CScript(cstrZeros, cstrZeros + 256);
+                SignatureData dummyData = SignatureData(dummyScript);
+                UpdateTransaction(txNew, nIn, dummyData);
+                allSigned = false;
+            }
         } else {
             UpdateTransaction(txNew, nIn, sigdata);
         }
