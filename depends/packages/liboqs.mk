@@ -2,7 +2,7 @@ package=liboqs
 $(package)_version=0.12.0
 $(package)_download_path=https://github.com/open-quantum-safe/liboqs/archive/refs/tags/
 $(package)_file_name=$($(package)_version).tar.gz
-$(package)_sha256_hash=df999915204eb1eba311d89e83d1edd3a514d5a07374745d6a9e5b2dd0d59c08
+$(package)_sha256_hash=TODO_REPLACE_WITH_ACTUAL_HASH
 $(package)_dependencies=
 $(package)_patches=
 
