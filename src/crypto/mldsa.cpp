@@ -45,9 +45,11 @@ bool KeyGen(unsigned char* pk, unsigned char* sk, const unsigned char* seed)
         return PQCP_MLDSA_NATIVE_MLDSA44_C_keypair_internal(pk, sk, seed) == 0;
     }
 
-    // If internal symbols are not available, fall back to random keygen.
-    // Deterministic keygen from seed is not supported in this liboqs build.
-    return KeyGenRandom(pk, sk);
+    // Deterministic wallet derivation must never silently become random.
+    // A random fallback would make the same seed produce different keys on
+    // different liboqs builds/platforms and could break wallet recovery.
+    // Fail closed when deterministic ML-DSA-44 keygen is unavailable.
+    return false;
 }
 
 bool KeyGenRandom(unsigned char* pk, unsigned char* sk)
