@@ -1,0 +1,100 @@
+name: RIP-25 v4.8 PR Gate
+
+on:
+  pull_request:
+    branches:
+      - ci/rip25-v48-gate2-base
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rip25-v48-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  SCRIPTS: ${{ GITHUB.WORKSPACE }}/.github/scripts
+
+jobs:
+  build:
+    name: build (${{ matrix.OS }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        OS:
+          - arm32v7-disable-wallet
+          - arm32v7
+          - linux-disable-wallet
+          - linux
+          - windows
+
+    steps:
+      - name: Checkout tested head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Apply audited RIP-25 / v4.8 overlap patch
+        run: |
+          git apply --check contrib/devtools/rip25-v48-staging.patch
+          git apply contrib/devtools/rip25-v48-staging.patch
+          git apply --check contrib/devtools/rip25-v48-kawpow-staging.patch
+          git apply contrib/devtools/rip25-v48-kawpow-staging.patch
+          git apply --check contrib/devtools/rip25-v48-doc-staging.patch
+          git apply contrib/devtools/rip25-v48-doc-staging.patch
+          git apply --check contrib/devtools/rip25-v48-test-wiring-staging.patch
+          git apply contrib/devtools/rip25-v48-test-wiring-staging.patch
+
+      - name: Verify RIP-25 / v4.8 consensus invariants
+        run: bash contrib/devtools/check-rip25-v48-invariants.sh
+
+      - name: Install Build Tools
+        run: sudo ${SCRIPTS}/00-install-deps.sh ${{ matrix.OS }}
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/depends/built
+            ${{ github.workspace }}/depends/sources
+            ${{ github.workspace }}/depends/work
+          key: rip25-v48-pr-${{ matrix.OS }}-${{ hashFiles('depends/**') }}
+          restore-keys: |
+            rip25-v48-pr-${{ matrix.OS }}-
+
+      - name: Build dependencies
+        run: ${SCRIPTS}/02-copy-build-dependencies.sh ${{ matrix.OS }} ${{ github.workspace }} ${{ github.base_ref }} ${{ github.head_ref }}
+
+      - name: Add Dependencies to PATH
+        run: ${SCRIPTS}/03-export-path.sh ${{ matrix.OS }} ${{ github.workspace }}
+
+      - name: Build Config
+        run: ./autogen.sh
+
+      - name: Configure Build
+        run: ${SCRIPTS}/04-configure-build.sh ${{ matrix.OS }} ${{ github.workspace }}
+
+      - name: Build Raven
+        run: make -j2
+
+      - name: Run RIP-25 security regressions
+        if: matrix.OS == 'linux'
+        run: |
+          ./src/test/test_raven --run_test=pqkey_tests
+          ./src/test/test_raven --run_test=pqkey_hardening_tests
+          ./src/test/test_raven --run_test=rip25_versionbits_tests
+          ./src/test/test_raven --run_test=kawpow_v48_hardening_tests
+
+      - name: Check Binary Security
+        run: ${SCRIPTS}/05-binary-checks.sh ${{ matrix.OS }} ${{ github.workspace }}
+
+      - name: Package Build
+        run: ${SCRIPTS}/06-package.sh ${{ matrix.OS }} ${{ github.workspace }} ${{ github.base_ref }} ${{ github.head_ref }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rip25-v48-${{ matrix.OS }}
+          path: ${{ github.workspace }}/release
+          if-no-files-found: error
