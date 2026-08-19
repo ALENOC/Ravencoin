@@ -21,20 +21,21 @@ static const size_t SIGNATURE_BYTES  = 2420;
 static const size_t SEED_BYTES       = 32;
 
 /**
- * Generate an ML-DSA-44 keypair from a 32-byte seed.
- * Deterministic: same seed always produces the same keypair.
- * Uses OQS_SIG_ml_dsa_44_keypair_from_seed() internally.
+ * Attempt deterministic ML-DSA-44 key generation from a 32-byte seed.
+ *
+ * The pinned liboqs 0.12.0 public signature API does not provide deterministic
+ * key generation. This function therefore fails closed instead of relying on
+ * private liboqs symbols or silently substituting random key generation.
  *
  * @param[out] pk   Public key buffer (must be PUBLICKEY_BYTES)
  * @param[out] sk   Secret key buffer (must be SECRETKEY_BYTES)
  * @param[in]  seed 32-byte seed
- * @return true on success
+ * @return false with liboqs 0.12.0; reserved for a future pinned public API
  */
 bool KeyGen(unsigned char* pk, unsigned char* sk, const unsigned char* seed);
 
 /**
- * Generate an ML-DSA-44 keypair from random entropy.
- * Uses OQS_SIG_ml_dsa_44_keypair() internally.
+ * Generate an ML-DSA-44 keypair from random entropy using the public liboqs API.
  *
  * @param[out] pk  Public key buffer (must be PUBLICKEY_BYTES)
  * @param[out] sk  Secret key buffer (must be SECRETKEY_BYTES)
@@ -44,7 +45,6 @@ bool KeyGenRandom(unsigned char* pk, unsigned char* sk);
 
 /**
  * Sign a message using ML-DSA-44.
- * Uses OQS_SIG_ml_dsa_44_sign() internally.
  *
  * @param[out] sig     Signature buffer (must be SIGNATURE_BYTES)
  * @param[out] siglen  Actual signature length (always SIGNATURE_BYTES for ML-DSA-44)
@@ -57,17 +57,7 @@ bool Sign(unsigned char* sig, size_t* siglen,
           const unsigned char* msg, size_t msglen,
           const unsigned char* sk);
 
-/**
- * Verify an ML-DSA-44 signature.
- * Uses OQS_SIG_ml_dsa_44_verify() internally.
- *
- * @param[in] sig     Signature (SIGNATURE_BYTES)
- * @param[in] siglen  Signature length
- * @param[in] msg     Message
- * @param[in] msglen  Message length
- * @param[in] pk      Public key (PUBLICKEY_BYTES)
- * @return true if signature is valid
- */
+/** Verify an ML-DSA-44 signature. */
 bool Verify(const unsigned char* sig, size_t siglen,
             const unsigned char* msg, size_t msglen,
             const unsigned char* pk);
