@@ -45,9 +45,11 @@ bool KeyGen(unsigned char* pk, unsigned char* sk, const unsigned char* seed)
         return PQCP_MLDSA_NATIVE_MLDSA44_C_keypair_internal(pk, sk, seed) == 0;
     }
 
-    // If internal symbols are not available, fall back to random keygen.
-    // Deterministic keygen from seed is not supported in this liboqs build.
-    return KeyGenRandom(pk, sk);
+    // Security invariant: deterministic key generation must never silently
+    // become random on a platform/liboqs build where the seeded primitive is
+    // unavailable. A random fallback would make the same wallet seed derive a
+    // different PQ key and can break backup/restore guarantees. Fail closed.
+    return false;
 }
 
 bool KeyGenRandom(unsigned char* pk, unsigned char* sk)
