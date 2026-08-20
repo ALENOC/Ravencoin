@@ -13,6 +13,8 @@ define $(package)_set_vars
   $(package)_config_opts+=-DOQS_USE_OPENSSL=OFF
   $(package)_config_opts+=-DBUILD_SHARED_LIBS=OFF
   $(package)_config_opts+=-DOQS_DIST_BUILD=ON
+  $(package)_config_opts_arm=-DCMAKE_SYSTEM_PROCESSOR=armv7
+  $(package)_config_opts_x86_64=-DCMAKE_SYSTEM_PROCESSOR=x86_64
 endef
 
 define $(package)_preprocess_cmds
