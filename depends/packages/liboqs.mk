@@ -15,6 +15,7 @@ define $(package)_set_vars
   $(package)_config_opts+=-DOQS_DIST_BUILD=ON
   $(package)_config_opts_arm=-DCMAKE_SYSTEM_PROCESSOR=armv7
   $(package)_config_opts_x86_64=-DCMAKE_SYSTEM_PROCESSOR=x86_64
+  $(package)_config_opts_mingw32=-DOQS_DIST_BUILD=OFF
 endef
 
 define $(package)_preprocess_cmds
