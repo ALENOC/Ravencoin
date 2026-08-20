@@ -122,13 +122,14 @@ jobs:
               break
             fi
           done
+          target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           curl --fail-with-body -sS \
             -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            -d "{\"state\":\"$state\",\"context\":\"$context\",\"description\":\"$description\"}"
+            -d "{\"state\":\"$state\",\"context\":\"$context\",\"description\":\"$description\",\"target_url\":\"$target_url\"}"
 
   build:
     name: build (${{ matrix.name }})
@@ -266,10 +267,11 @@ jobs:
               break
             fi
           done
+          target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           curl --fail-with-body -sS \
             -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            -d "{\"state\":\"$state\",\"context\":\"$context\",\"description\":\"$description\"}"
+            -d "{\"state\":\"$state\",\"context\":\"$context\",\"description\":\"$description\",\"target_url\":\"$target_url\"}"
