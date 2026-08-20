@@ -104,5 +104,9 @@ grep -Fq 'PQ_WITNESS_SCALE_FACTOR = 8' src/consensus/consensus.h
 grep -Fq 'MAX_BLOCK_WEIGHT_RIP25_PHASE1 = 12000000' src/consensus/consensus.h
 grep -Fq 'MAX_BLOCK_WEIGHT_RIP25_PHASE2 = 16000000' src/consensus/consensus.h
 grep -Fq 'libravenconsensus_la_LIBADD += /usr/$(host)/lib/libwinpthread.dll.a' src/Makefile.am
+if grep -Fq 'libravenconsensus_la_LIBADD += -Wl,-Bdynamic -lwinpthread -Wl,-Bstatic' src/Makefile.am; then
+  echo '[rip25-v48] stale Automake-invalid winpthread LIBADD line remains' >&2
+  exit 1
+fi
 
 echo '[rip25-v48] final audited port materialized successfully'
