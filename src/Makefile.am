@@ -557,6 +557,10 @@ endif
 
 libravenconsensus_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined $(RELDFLAGS)
 libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS) $(PTHREAD_LIBS)
+
+if TARGET_WINDOWS
+libravenconsensus_la_LIBADD += -lwinpthread
+endif
 libravenconsensus_la_CPPFLAGS = $(AM_CPPFLAGS) $(LIBOQS_CFLAGS) -I$(builddir)/obj -I$(srcdir)/secp256k1/include -DBUILD_RAVEN_INTERNAL
 libravenconsensus_la_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 
