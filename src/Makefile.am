@@ -215,7 +215,6 @@ RAVEN_CORE_H = \
   undo.h \
   util.h \
   utilmoneystr.h \
-  utilstrencodings.h \
   utiltime.h \
   validation.h \
   validationinterface.h \
