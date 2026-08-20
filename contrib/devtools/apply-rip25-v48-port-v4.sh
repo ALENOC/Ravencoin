@@ -82,10 +82,27 @@ elif new not in s:
 p.write_text(s)
 PY
 
+# Automake forbids raw linker flags such as -Wl,* in *_LIBADD. Keep the
+# winpthread import library in LIBADD for correct link ordering, but use the
+# explicit MinGW import-library archive path instead of -Wl,-Bdynamic/-Bstatic.
+python3 - <<'PY'
+from pathlib import Path
+p = Path('src/Makefile.am')
+s = p.read_text()
+old = 'libravenconsensus_la_LIBADD += -Wl,-Bdynamic -lwinpthread -Wl,-Bstatic'
+new = 'libravenconsensus_la_LIBADD += /usr/$(host)/lib/libwinpthread.dll.a'
+if old in s:
+    s = s.replace(old, new, 1)
+elif new not in s:
+    raise SystemExit('Makefile.am: expected winpthread LIBADD line not found')
+p.write_text(s)
+PY
+
 git diff --check
 grep -Fq '  bit:                                    12' doc/RIP-0025-PQ-Signatures.md
 grep -Fq 'PQ_WITNESS_SCALE_FACTOR = 8' src/consensus/consensus.h
 grep -Fq 'MAX_BLOCK_WEIGHT_RIP25_PHASE1 = 12000000' src/consensus/consensus.h
 grep -Fq 'MAX_BLOCK_WEIGHT_RIP25_PHASE2 = 16000000' src/consensus/consensus.h
+grep -Fq 'libravenconsensus_la_LIBADD += /usr/$(host)/lib/libwinpthread.dll.a' src/Makefile.am
 
 echo '[rip25-v48] final audited port materialized successfully'
