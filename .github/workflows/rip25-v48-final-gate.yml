@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: rip25-v48-final-${{ github.ref }}
@@ -22,41 +23,90 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - id: checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install build prerequisites
+      - id: prereqs
+        name: Install build prerequisites
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             automake autotools-dev bsdmainutils build-essential ca-certificates \
             cmake curl git libtool pkg-config python3 ninja-build
 
-      - name: Materialize audited RIP-25 port
+      - id: materialize
+        name: Materialize audited RIP-25 port
         run: |
           chmod +x contrib/devtools/apply-rip25-v48-port-v4.sh
           ./contrib/devtools/apply-rip25-v48-port-v4.sh
 
-      - name: Verify security and consensus invariants
+      - id: invariants
+        name: Verify security and consensus invariants
         run: |
           chmod +x contrib/devtools/check-rip25-v48-invariants.sh
           ./contrib/devtools/check-rip25-v48-invariants.sh
 
-      - name: Build pinned dependencies
+      - id: depends
+        name: Build pinned dependencies
         run: make -C depends $MAKEJOBS HOST=x86_64-pc-linux-gnu NO_QT=1
 
-      - name: Configure Linux test build
+      - id: configure
+        name: Configure Linux test build
         run: |
           ./autogen.sh
           CONFIG_SITE="$PWD/depends/x86_64-pc-linux-gnu/share/config.site" \
             ./configure --without-gui --disable-bench
 
-      - name: Build tests
+      - id: build_tests
+        name: Build tests
         run: make $MAKEJOBS
 
-      - name: Run unit and regression tests
+      - id: unit_tests
+        name: Run unit and regression tests
         run: make check
+
+      - name: Publish security gate status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKOUT: ${{ steps.checkout.outcome }}
+          PREREQS: ${{ steps.prereqs.outcome }}
+          MATERIALIZE: ${{ steps.materialize.outcome }}
+          INVARIANTS: ${{ steps.invariants.outcome }}
+          DEPENDS: ${{ steps.depends.outcome }}
+          CONFIGURE: ${{ steps.configure.outcome }}
+          BUILD_TESTS: ${{ steps.build_tests.outcome }}
+          UNIT_TESTS: ${{ steps.unit_tests.outcome }}
+        shell: bash
+        run: |
+          state=success
+          description="security-tests passed"
+          for pair in \
+            "checkout:$CHECKOUT" \
+            "prereqs:$PREREQS" \
+            "materialize:$MATERIALIZE" \
+            "invariants:$INVARIANTS" \
+            "depends:$DEPENDS" \
+            "configure:$CONFIGURE" \
+            "build-tests:$BUILD_TESTS" \
+            "unit-tests:$UNIT_TESTS"; do
+            name="${pair%%:*}"
+            outcome="${pair#*:}"
+            if [[ "$outcome" == "failure" || "$outcome" == "cancelled" ]]; then
+              state=failure
+              description="failure: $name"
+              break
+            fi
+          done
+          curl --fail-with-body -sS \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "{\"state\":\"$state\",\"context\":\"rip25-final/security-tests\",\"description\":\"$description\"}"
 
   build:
     name: build (${{ matrix.name }})
@@ -94,11 +144,13 @@ jobs:
             run_tests: false
 
     steps:
-      - uses: actions/checkout@v4
+      - id: checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install build prerequisites
+      - id: prereqs
+        name: Install build prerequisites
         shell: bash
         run: |
           sudo apt-get update
@@ -107,34 +159,82 @@ jobs:
             cmake curl git libtool pkg-config python3 ninja-build \
             ${{ matrix.packages }}
 
-      - name: Materialize audited RIP-25 port
+      - id: materialize
+        name: Materialize audited RIP-25 port
         shell: bash
         run: |
           chmod +x contrib/devtools/apply-rip25-v48-port-v4.sh
           ./contrib/devtools/apply-rip25-v48-port-v4.sh
 
-      - name: Verify security and consensus invariants
+      - id: invariants
+        name: Verify security and consensus invariants
         shell: bash
         run: |
           chmod +x contrib/devtools/check-rip25-v48-invariants.sh
           ./contrib/devtools/check-rip25-v48-invariants.sh
 
-      - name: Build pinned dependencies
+      - id: depends
+        name: Build pinned dependencies
         shell: bash
         run: make -C depends $MAKEJOBS HOST=${{ matrix.host }} NO_QT=1
 
-      - name: Configure
+      - id: configure
+        name: Configure
         shell: bash
         run: |
           ./autogen.sh
           CONFIG_SITE="$PWD/depends/${{ matrix.host }}/share/config.site" \
             ./configure ${{ matrix.configure_flags }}
 
-      - name: Build
+      - id: build
+        name: Build
         shell: bash
         run: make $MAKEJOBS
 
-      - name: Run native tests
+      - id: native_tests
+        name: Run native tests
         if: matrix.run_tests
         shell: bash
         run: make check
+
+      - name: Publish build status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKOUT: ${{ steps.checkout.outcome }}
+          PREREQS: ${{ steps.prereqs.outcome }}
+          MATERIALIZE: ${{ steps.materialize.outcome }}
+          INVARIANTS: ${{ steps.invariants.outcome }}
+          DEPENDS: ${{ steps.depends.outcome }}
+          CONFIGURE: ${{ steps.configure.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          NATIVE_TESTS: ${{ steps.native_tests.outcome }}
+          TARGET: ${{ matrix.name }}
+        shell: bash
+        run: |
+          state=success
+          description="$TARGET passed"
+          for pair in \
+            "checkout:$CHECKOUT" \
+            "prereqs:$PREREQS" \
+            "materialize:$MATERIALIZE" \
+            "invariants:$INVARIANTS" \
+            "depends:$DEPENDS" \
+            "configure:$CONFIGURE" \
+            "build:$BUILD" \
+            "native-tests:$NATIVE_TESTS"; do
+            name="${pair%%:*}"
+            outcome="${pair#*:}"
+            if [[ "$outcome" == "failure" || "$outcome" == "cancelled" ]]; then
+              state=failure
+              description="failure: $name"
+              break
+            fi
+          done
+          curl --fail-with-body -sS \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "{\"state\":\"$state\",\"context\":\"rip25-final/$TARGET\",\"description\":\"$description\"}"
