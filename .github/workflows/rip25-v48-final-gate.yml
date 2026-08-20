@@ -82,6 +82,7 @@ jobs:
         shell: bash
         run: |
           state=success
+          context="rip25-final/security-tests"
           description="security-tests passed"
           for pair in \
             "checkout:$CHECKOUT" \
@@ -96,6 +97,7 @@ jobs:
             outcome="${pair#*:}"
             if [[ "$outcome" == "failure" || "$outcome" == "cancelled" ]]; then
               state=failure
+              context="rip25-final/security-tests/$name"
               description="failure: $name"
               break
             fi
@@ -106,7 +108,7 @@ jobs:
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            -d "{\"state\":\"$state\",\"context\":\"rip25-final/security-tests\",\"description\":\"$description\"}"
+            -d "{\"state\":\"$state\",\"context\":\"$context\",\"description\":\"$description\"}"
 
   build:
     name: build (${{ matrix.name }})
@@ -213,6 +215,7 @@ jobs:
         shell: bash
         run: |
           state=success
+          context="rip25-final/$TARGET"
           description="$TARGET passed"
           for pair in \
             "checkout:$CHECKOUT" \
@@ -227,6 +230,7 @@ jobs:
             outcome="${pair#*:}"
             if [[ "$outcome" == "failure" || "$outcome" == "cancelled" ]]; then
               state=failure
+              context="rip25-final/$TARGET/$name"
               description="failure: $name"
               break
             fi
@@ -237,4 +241,4 @@ jobs:
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            -d "{\"state\":\"$state\",\"context\":\"rip25-final/$TARGET\",\"description\":\"$description\"}"
+            -d "{\"state\":\"$state\",\"context\":\"$context\",\"description\":\"$description\"}"
