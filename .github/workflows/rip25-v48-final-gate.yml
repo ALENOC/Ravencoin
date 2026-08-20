@@ -181,6 +181,10 @@ jobs:
             automake autotools-dev bsdmainutils build-essential ca-certificates \
             cmake curl git libtool pkg-config python3 ninja-build \
             ${{ matrix.packages }}
+          if [ "${{ matrix.host }}" = "x86_64-w64-mingw32" ]; then
+            sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+            sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+          fi
 
       - id: materialize
         name: Materialize audited RIP-25 port
