@@ -44,9 +44,14 @@ jobs:
 
       - id: invariants
         name: Verify security and consensus invariants
+        shell: bash
         run: |
           chmod +x contrib/devtools/check-rip25-v48-invariants.sh
-          ./contrib/devtools/check-rip25-v48-invariants.sh
+          set +e
+          ./contrib/devtools/check-rip25-v48-invariants.sh 2>&1 | tee .rip25-invariants.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          exit "$rc"
 
       - id: depends
         name: Build pinned dependencies
@@ -99,6 +104,12 @@ jobs:
               state=failure
               context="rip25-final/security-tests/$name"
               description="failure: $name"
+              if [[ "$name" == "invariants" && -s .rip25-invariants.log ]]; then
+                detail="$(tail -n 1 .rip25-invariants.log | sed 's/^RIP-25\/v4\.8 invariant failure: //' | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-//;s/-$//' | cut -c1-45)"
+                if [[ -n "$detail" ]]; then
+                  context="rip25-final/security-tests/invariants/$detail"
+                fi
+              fi
               break
             fi
           done
