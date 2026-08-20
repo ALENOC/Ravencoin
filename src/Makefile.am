@@ -6,7 +6,7 @@
 DIST_SUBDIRS = secp256k1 univalue
 
 AM_LDFLAGS = $(PTHREAD_CFLAGS) $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS)
-AM_CXXFLAGS = $(PTHREAD_CFLAGS) $(HARDENED_CXXFLAGS) $(ERROR_CXXFLAGS)
+AM_CXXFLAGS = $(HARDENED_CXXFLAGS) $(ERROR_CXXFLAGS)
 AM_CPPFLAGS = $(HARDENED_CPPFLAGS)
 EXTRA_LIBRARIES =
 
@@ -557,6 +557,20 @@ endif
 
 libravenconsensus_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined $(RELDFLAGS)
 libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS) $(PTHREAD_LIBS)
+
+if TARGET_WINDOWS
+# The windows DLL archive_cmds (configure.ac) forces -static into the link
+# line so libgcc/libstdc++/libssp are linked statically. That -static also
+# forces ld to resolve subsequent -l lookups against plain .a archives only,
+# so a bare -lwinpthread would bind against libwinpthread.a, which does not
+# export the __imp_-prefixed symbols that older mingw-w64 headers (as shipped
+# on the CI runner) require when pthread.h is compiled with DLL_EXPORT defined
+# (as libtool does for PIC/shared objects). Bracket the winpthread lookup in
+# -Bdynamic/-Bstatic so it resolves against libwinpthread.dll.a (the import
+# library) instead, then restore -Bstatic for anything linked after it.
+libravenconsensus_la_LDFLAGS += -Wl,-Bdynamic -lwinpthread -Wl,-Bstatic
+endif
+
 libravenconsensus_la_CPPFLAGS = $(AM_CPPFLAGS) $(LIBOQS_CFLAGS) -I$(builddir)/obj -I$(srcdir)/secp256k1/include -DBUILD_RAVEN_INTERNAL
 libravenconsensus_la_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 
