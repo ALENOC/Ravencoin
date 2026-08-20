@@ -215,6 +215,7 @@ RAVEN_CORE_H = \
   undo.h \
   util.h \
   utilmoneystr.h \
+  utilstrencodings.h \
   utiltime.h \
   validation.h \
   validationinterface.h \
@@ -568,7 +569,7 @@ if TARGET_WINDOWS
 # (as libtool does for PIC/shared objects). Bracket the winpthread lookup in
 # -Bdynamic/-Bstatic so it resolves against libwinpthread.dll.a (the import
 # library) instead, then restore -Bstatic for anything linked after it.
-libravenconsensus_la_LDFLAGS += -Wl,-Bdynamic -lwinpthread -Wl,-Bstatic
+libravenconsensus_la_LIBADD += -Wl,-Bdynamic -lwinpthread -Wl,-Bstatic
 endif
 
 libravenconsensus_la_CPPFLAGS = $(AM_CPPFLAGS) $(LIBOQS_CFLAGS) -I$(builddir)/obj -I$(srcdir)/secp256k1/include -DBUILD_RAVEN_INTERNAL
