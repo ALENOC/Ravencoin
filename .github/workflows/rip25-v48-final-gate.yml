@@ -55,7 +55,13 @@ jobs:
 
       - id: depends
         name: Build pinned dependencies
-        run: make -C depends $MAKEJOBS HOST=x86_64-pc-linux-gnu NO_QT=1
+        shell: bash
+        run: |
+          set +e
+          make -C depends $MAKEJOBS HOST=x86_64-pc-linux-gnu NO_QT=1 2>&1 | tee .rip25-depends.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          exit "$rc"
 
       - id: configure
         name: Configure Linux test build
@@ -106,9 +112,12 @@ jobs:
               description="failure: $name"
               if [[ "$name" == "invariants" && -s .rip25-invariants.log ]]; then
                 detail="$(tail -n 1 .rip25-invariants.log | sed 's/^RIP-25\/v4\.8 invariant failure: //' | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-//;s/-$//' | cut -c1-45)"
-                if [[ -n "$detail" ]]; then
-                  context="rip25-final/security-tests/invariants/$detail"
-                fi
+                [[ -n "$detail" ]] && context="rip25-final/security-tests/invariants/$detail"
+              elif [[ "$name" == "depends" && -s .rip25-depends.log ]]; then
+                detail="$(grep -Ei 'liboqs|checksum|sha256|hash mismatch|CMake Error|No such file|Error [0-9]+|error:' .rip25-depends.log | tail -n 1 || true)"
+                [[ -z "$detail" ]] && detail="$(tail -n 2 .rip25-depends.log | head -n 1)"
+                detail="$(printf '%s' "$detail" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-//;s/-$//' | cut -c1-50)"
+                [[ -n "$detail" ]] && context="rip25-final/security-tests/depends/$detail"
               fi
               break
             fi
@@ -189,7 +198,12 @@ jobs:
       - id: depends
         name: Build pinned dependencies
         shell: bash
-        run: make -C depends $MAKEJOBS HOST=${{ matrix.host }} NO_QT=1
+        run: |
+          set +e
+          make -C depends $MAKEJOBS HOST=${{ matrix.host }} NO_QT=1 2>&1 | tee .rip25-depends.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          exit "$rc"
 
       - id: configure
         name: Configure
@@ -243,6 +257,12 @@ jobs:
               state=failure
               context="rip25-final/$TARGET/$name"
               description="failure: $name"
+              if [[ "$name" == "depends" && -s .rip25-depends.log ]]; then
+                detail="$(grep -Ei 'liboqs|checksum|sha256|hash mismatch|CMake Error|No such file|Error [0-9]+|error:' .rip25-depends.log | tail -n 1 || true)"
+                [[ -z "$detail" ]] && detail="$(tail -n 2 .rip25-depends.log | head -n 1)"
+                detail="$(printf '%s' "$detail" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-//;s/-$//' | cut -c1-45)"
+                [[ -n "$detail" ]] && context="rip25-final/$TARGET/depends/$detail"
+              fi
               break
             fi
           done
