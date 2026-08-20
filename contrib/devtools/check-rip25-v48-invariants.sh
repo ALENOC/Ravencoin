@@ -8,12 +8,12 @@ fail() {
 
 require_fixed() {
   local needle="$1" file="$2" message="$3"
-  grep -Fq "$needle" "$file" || fail "$message"
+  grep -Fq -- "$needle" "$file" || fail "$message"
 }
 
 reject_fixed() {
   local needle="$1" file="$2" message="$3"
-  if grep -Fq "$needle" "$file"; then fail "$message"; fi
+  if grep -Fq -- "$needle" "$file"; then fail "$message"; fi
 }
 
 # Ravencoin 4.8 exploit/overflow invariants.
