@@ -36,9 +36,14 @@ apply_exact src/validation.cpp \
   rip25-v48-final-validation.patch
 
 # liboqs is consensus-critical. Refuse builds that disable it or provide <0.12.
+# The same postimage replaces the blunt -static in the Windows DLL archive_cmds
+# with -Bstatic around the libtool libraries plus -static-libgcc/-static-libstdc++
+# and a trailing -Bdynamic, so the -lpthread that the mingw-w64 posix driver adds
+# from its own spec resolves against the winpthread import library that
+# libravenconsensus already links, instead of pulling a second, static copy in.
 apply_exact configure.ac \
   7a657d5526f6fa57c5920a123622df54c77e5405 \
-  ba2ea6e6bae23553ddb76a54dca1c9f408e367f9 \
+  b525e9f056decdc4c6b55bfb38b7132e3e050bc4 \
   rip25-v48-final-configure.patch
 
 # Miner must construct only blocks valid under the currently active phase.
@@ -150,6 +155,11 @@ grep -Fq 'libravenconsensus_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined $(RELDFLAGS
 grep -Fq 'libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS)' src/Makefile.am
 grep -Fq 'libravenconsensus_la_LIBADD += /usr/$(host)/lib/libwinpthread.dll.a' src/Makefile.am
 grep -Fq 'libravenconsensus_la_LIBADD += $(PTHREAD_LIBS)' src/Makefile.am
+grep -Fq '${wl}-Bstatic \$deplibs \$compiler_flags -static-libgcc -static-libstdc++ ${wl}-Bdynamic' configure.ac
+if grep -Fq '\$libobjs \$deplibs \$compiler_flags -static -o' configure.ac; then
+  echo '[rip25-v48] stale blunt -static remains in the Windows DLL archive_cmds' >&2
+  exit 1
+fi
 if grep -Fq 'libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS) $(PTHREAD_LIBS)' src/Makefile.am; then
   echo '[rip25-v48] stale unconditional PTHREAD_LIBS remains on libravenconsensus' >&2
   exit 1
