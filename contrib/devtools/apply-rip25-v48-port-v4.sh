@@ -82,15 +82,27 @@ elif new not in s:
 p.write_text(s)
 PY
 
-# libravenconsensus is a shared DLL on MinGW. AX_PTHREAD supplies -lpthread,
-# which the custom archive_cmds_CXX -static mode resolves to libpthread.a.
-# PIC objects, however, reference __imp_pthread_* symbols and therefore need
-# the DLL import archive. Do not link both implementations: keep PTHREAD_LIBS
-# for non-Windows targets and use only libwinpthread.dll.a on MinGW.
+# libravenconsensus is a shared DLL on MinGW. AX_PTHREAD selects -pthread as
+# PTHREAD_CFLAGS on the CI toolchain; AM_LDFLAGS would therefore make GCC add
+# libpthread.a when the custom archive_cmds_CXX later forces -static. The PIC
+# objects need __imp_pthread_* from libwinpthread.dll.a instead. On Windows,
+# remove the pthread driver flag from this DLL's link and use only the import
+# archive. Keep the normal PTHREAD_CFLAGS/PTHREAD_LIBS behavior elsewhere.
 python3 - <<'PY'
 from pathlib import Path
 p = Path('src/Makefile.am')
 s = p.read_text()
+
+ld_old = 'libravenconsensus_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined $(RELDFLAGS)'
+ld_new = '''if TARGET_WINDOWS
+libravenconsensus_la_LDFLAGS = $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS) -no-undefined $(RELDFLAGS)
+else
+libravenconsensus_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined $(RELDFLAGS)
+endif'''
+if ld_old in s:
+    s = s.replace(ld_old, ld_new, 1)
+elif ld_new not in s:
+    raise SystemExit('Makefile.am: expected libravenconsensus LDFLAGS line not found')
 
 base_old = 'libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS) $(PTHREAD_LIBS)'
 base_new = 'libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS)'
@@ -115,11 +127,11 @@ comment_old = '''# The windows DLL archive_cmds (configure.ac) forces -static in
 # (as libtool does for PIC/shared objects). Bracket the winpthread lookup in
 # -Bdynamic/-Bstatic so it resolves against libwinpthread.dll.a (the import
 # library) instead, then restore -Bstatic for anything linked after it.'''
-comment_new = '''# The Windows DLL archive_cmds (configure.ac) forces the GCC driver into
-# static mode. An ordinary PTHREAD_LIBS/-lpthread therefore resolves to
-# libpthread.a, while the PIC objects used by libravenconsensus reference the
-# DLL import symbols (__imp_pthread_*). Link only the import archive here;
-# the non-Windows branch below keeps the normal PTHREAD_LIBS behavior.'''
+comment_new = '''# AX_PTHREAD selected -pthread for this MinGW toolchain. The target-specific
+# LDFLAGS above intentionally omit PTHREAD_CFLAGS here because -pthread plus
+# archive_cmds_CXX -static would inject libpthread.a. The PIC objects instead
+# need the DLL import symbols (__imp_pthread_*), so link only the import archive.
+# Non-Windows targets retain the normal AM_LDFLAGS and PTHREAD_LIBS paths.'''
 if comment_old in s:
     s = s.replace(comment_old, comment_new, 1)
 elif comment_new not in s:
@@ -133,6 +145,8 @@ grep -Fq '  bit:                                    12' doc/RIP-0025-PQ-Signatur
 grep -Fq 'PQ_WITNESS_SCALE_FACTOR = 8' src/consensus/consensus.h
 grep -Fq 'MAX_BLOCK_WEIGHT_RIP25_PHASE1 = 12000000' src/consensus/consensus.h
 grep -Fq 'MAX_BLOCK_WEIGHT_RIP25_PHASE2 = 16000000' src/consensus/consensus.h
+grep -Fq 'libravenconsensus_la_LDFLAGS = $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS) -no-undefined $(RELDFLAGS)' src/Makefile.am
+grep -Fq 'libravenconsensus_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined $(RELDFLAGS)' src/Makefile.am
 grep -Fq 'libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS)' src/Makefile.am
 grep -Fq 'libravenconsensus_la_LIBADD += /usr/$(host)/lib/libwinpthread.dll.a' src/Makefile.am
 grep -Fq 'libravenconsensus_la_LIBADD += $(PTHREAD_LIBS)' src/Makefile.am
