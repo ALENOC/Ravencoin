@@ -82,19 +82,49 @@ elif new not in s:
 p.write_text(s)
 PY
 
-# Automake forbids raw linker flags such as -Wl,* in *_LIBADD. Keep the
-# winpthread import library in LIBADD for correct link ordering, but use the
-# explicit MinGW import-library archive path instead of -Wl,-Bdynamic/-Bstatic.
+# libravenconsensus is a shared DLL on MinGW. AX_PTHREAD supplies -lpthread,
+# which the custom archive_cmds_CXX -static mode resolves to libpthread.a.
+# PIC objects, however, reference __imp_pthread_* symbols and therefore need
+# the DLL import archive. Do not link both implementations: keep PTHREAD_LIBS
+# for non-Windows targets and use only libwinpthread.dll.a on MinGW.
 python3 - <<'PY'
 from pathlib import Path
 p = Path('src/Makefile.am')
 s = p.read_text()
-old = 'libravenconsensus_la_LIBADD += -Wl,-Bdynamic -lwinpthread -Wl,-Bstatic'
-new = 'libravenconsensus_la_LIBADD += /usr/$(host)/lib/libwinpthread.dll.a'
-if old in s:
-    s = s.replace(old, new, 1)
-elif new not in s:
-    raise SystemExit('Makefile.am: expected winpthread LIBADD line not found')
+
+base_old = 'libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS) $(PTHREAD_LIBS)'
+base_new = 'libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS)'
+if base_old in s:
+    s = s.replace(base_old, base_new, 1)
+elif base_new not in s:
+    raise SystemExit('Makefile.am: expected libravenconsensus LIBADD base line not found')
+
+win_old = 'libravenconsensus_la_LIBADD += -Wl,-Bdynamic -lwinpthread -Wl,-Bstatic'
+win_new = 'libravenconsensus_la_LIBADD += /usr/$(host)/lib/libwinpthread.dll.a\nelse\nlibravenconsensus_la_LIBADD += $(PTHREAD_LIBS)'
+if win_old in s:
+    s = s.replace(win_old, win_new, 1)
+elif win_new not in s:
+    raise SystemExit('Makefile.am: expected winpthread LIBADD block not found')
+
+comment_old = '''# The windows DLL archive_cmds (configure.ac) forces -static into the link
+# line so libgcc/libstdc++/libssp are linked statically. That -static also
+# forces ld to resolve subsequent -l lookups against plain .a archives only,
+# so a bare -lwinpthread would bind against libwinpthread.a, which does not
+# export the __imp_-prefixed symbols that older mingw-w64 headers (as shipped
+# on the CI runner) require when pthread.h is compiled with DLL_EXPORT defined
+# (as libtool does for PIC/shared objects). Bracket the winpthread lookup in
+# -Bdynamic/-Bstatic so it resolves against libwinpthread.dll.a (the import
+# library) instead, then restore -Bstatic for anything linked after it.'''
+comment_new = '''# The Windows DLL archive_cmds (configure.ac) forces the GCC driver into
+# static mode. An ordinary PTHREAD_LIBS/-lpthread therefore resolves to
+# libpthread.a, while the PIC objects used by libravenconsensus reference the
+# DLL import symbols (__imp_pthread_*). Link only the import archive here;
+# the non-Windows branch below keeps the normal PTHREAD_LIBS behavior.'''
+if comment_old in s:
+    s = s.replace(comment_old, comment_new, 1)
+elif comment_new not in s:
+    raise SystemExit('Makefile.am: expected winpthread explanatory comment not found')
+
 p.write_text(s)
 PY
 
@@ -103,7 +133,13 @@ grep -Fq '  bit:                                    12' doc/RIP-0025-PQ-Signatur
 grep -Fq 'PQ_WITNESS_SCALE_FACTOR = 8' src/consensus/consensus.h
 grep -Fq 'MAX_BLOCK_WEIGHT_RIP25_PHASE1 = 12000000' src/consensus/consensus.h
 grep -Fq 'MAX_BLOCK_WEIGHT_RIP25_PHASE2 = 16000000' src/consensus/consensus.h
+grep -Fq 'libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS)' src/Makefile.am
 grep -Fq 'libravenconsensus_la_LIBADD += /usr/$(host)/lib/libwinpthread.dll.a' src/Makefile.am
+grep -Fq 'libravenconsensus_la_LIBADD += $(PTHREAD_LIBS)' src/Makefile.am
+if grep -Fq 'libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS) $(PTHREAD_LIBS)' src/Makefile.am; then
+  echo '[rip25-v48] stale unconditional PTHREAD_LIBS remains on libravenconsensus' >&2
+  exit 1
+fi
 if grep -Fq 'libravenconsensus_la_LIBADD += -Wl,-Bdynamic -lwinpthread -Wl,-Bstatic' src/Makefile.am; then
   echo '[rip25-v48] stale Automake-invalid winpthread LIBADD line remains' >&2
   exit 1
