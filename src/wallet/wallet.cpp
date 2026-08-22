@@ -301,6 +301,11 @@ bool CWallet::AddPQKeyPubKey(const CPQKey &key, const CPQPubKey &pubkey)
     if (!CCryptoKeyStore::AddPQKeyPubKey(key, pubkey))
         return false;
 
+    // The encrypted keystore path has already persisted an encrypted cpqkey
+    // record through AddCryptedPQKey(). Never recreate a plaintext pqkey.
+    if (IsCrypted())
+        return true;
+
     uint256 witnessProgram = pubkey.GetWitnessProgram();
     std::vector<unsigned char> keyData(key.GetKeyData().begin(), key.GetKeyData().end());
     return CWalletDB(*dbw).WritePQKey(witnessProgram, pubkey, keyData);
