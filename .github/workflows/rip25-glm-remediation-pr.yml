@@ -1,0 +1,57 @@
+name: RIP-25 GLM remediation runner
+
+on:
+  pull_request:
+    branches:
+      - ci/rip25-glm-remediation-base
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout remediation head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: fix/rip25-v48-glm-remediation
+          fetch-depth: 0
+
+      - name: Apply security remediation
+        shell: bash
+        run: |
+          chmod +x contrib/devtools/one-shot-glm-remediation.sh
+          ./contrib/devtools/one-shot-glm-remediation.sh
+
+      - name: Commit exact remediated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "RIP-25 Security Remediation"
+          git config user.email "185200505+ALENOC@users.noreply.github.com"
+
+          # Remove temporary orchestration files. Historical port patches remain
+          # only as provenance and are no longer invoked by the final gate.
+          git rm -f -- .github/workflows/rip25-glm-remediation.yml contrib/devtools/one-shot-glm-remediation.sh .glm-remediation-trigger
+
+          git add -- \
+            src/validation.cpp \
+            configure.ac \
+            src/miner.cpp \
+            src/init.cpp \
+            src/validation.h \
+            src/wallet/rpcwallet.cpp \
+            src/Makefile.am \
+            src/wallet/wallet.cpp \
+            src/Makefile.test.include \
+            doc/RIP-0025-PQ-Signatures.md \
+            contrib/devtools/check-rip25-v48-invariants.sh \
+            .github/workflows/rip25-v48-final-gate.yml \
+            .github/workflows/build-raven.yml
+
+          git diff --cached --check
+          git status --short
+          git commit -m "security: commit RIP-25 enforcement and remediate GLM findings"
+          git push origin HEAD:fix/rip25-v48-glm-remediation
