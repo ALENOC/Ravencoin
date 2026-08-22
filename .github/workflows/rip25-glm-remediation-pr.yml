@@ -62,7 +62,8 @@ jobs:
             .github/workflows/rip25-v48-final-gate.yml \
             .github/workflows/rip25-glm-remediation.yml \
             .github/workflows/rip25-glm-remediate-once.yml \
-            .github/workflows/rip25-glm-remediate-pr.yml; do
+            .github/workflows/rip25-glm-remediate-pr.yml \
+            contrib/devtools/apply-rip25-v48-port-v4.sh; do
             if git ls-files --error-unmatch "$p" >/dev/null 2>&1; then
               git restore --source=HEAD -- "$p"
             fi
