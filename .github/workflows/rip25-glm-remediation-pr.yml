@@ -19,13 +19,21 @@ jobs:
           ref: fix/rip25-v48-glm-remediation
           fetch-depth: 0
 
-      - name: Apply approved port and all GLM code remediations
+      - name: Materialize approved RIP-25 port and apply GLM remediations
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x contrib/devtools/one-shot-glm-remediation.sh
-          ./contrib/devtools/one-shot-glm-remediation.sh
+          git merge-base --is-ancestor 94c3369b647799bc53f23e570feb303722ce7f06 HEAD
+
+          # First make the checked-out source identical to the already-tested
+          # RIP-25 + v4.8 postimage. The resulting files are committed below;
+          # final CI will no longer materialize source at build time.
+          chmod +x contrib/devtools/apply-rip25-v48-port-v4.sh
+          ./contrib/devtools/apply-rip25-v48-port-v4.sh
+
+          # Then apply the single deterministic GLM remediation pass.
           python3 contrib/devtools/remediate-glm-rip25-v48.py
+
           git diff --check
           chmod +x contrib/devtools/check-rip25-v48-invariants.sh
           ./contrib/devtools/check-rip25-v48-invariants.sh
@@ -47,15 +55,18 @@ jobs:
           git config user.name 'RIP-25 Security Remediation'
           git config user.email '185200505+ALENOC@users.noreply.github.com'
 
-          # Workflow changes are published separately through the GitHub connector,
-          # because GITHUB_TOKEN is intentionally not allowed to update workflows.
-          git restore --source=HEAD -- \
+          # Workflow hardening is published separately through the GitHub
+          # connector. GITHUB_TOKEN deliberately does not write workflow files.
+          for p in \
             .github/workflows/build-raven.yml \
             .github/workflows/rip25-v48-final-gate.yml \
             .github/workflows/rip25-glm-remediation.yml \
             .github/workflows/rip25-glm-remediate-once.yml \
-            .github/workflows/rip25-glm-remediate-pr.yml \
-            contrib/devtools/apply-rip25-v48-port-v4.sh
+            .github/workflows/rip25-glm-remediate-pr.yml; do
+            if git ls-files --error-unmatch "$p" >/dev/null 2>&1; then
+              git restore --source=HEAD -- "$p"
+            fi
+          done
 
           git rm --ignore-unmatch -- \
             .glm-remediation-trigger \
