@@ -87,7 +87,7 @@ bool IsStandard(const CScript& scriptPubKey, txnouttype& whichType, const bool w
     else if (!witnessEnabled && (whichType == TX_WITNESS_V0_KEYHASH || whichType == TX_WITNESS_V0_SCRIPTHASH))
         return false;
     else if (whichType == TX_WITNESS_V2_PQ_KEYHASH)
-        return true; // RIP-25: PQ witness v2 outputs are always standard when solved
+        return true; // RIP-25: structurally standard; activation relay policy is enforced in validation.cpp
 
     return whichType != TX_NONSTANDARD ;
 }

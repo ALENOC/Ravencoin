@@ -1,0 +1,226 @@
+name: RIP-25 GLM one-shot remediation
+
+on:
+  push:
+    branches:
+      - fix/rip25-v48-glm-remediation
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout remediation branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: fix/rip25-v48-glm-remediation
+          fetch-depth: 0
+
+      - name: Materialize approved RIP-25 architecture into committed source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" != "" || true
+          chmod +x contrib/devtools/apply-rip25-v48-port-v4.sh
+          ./contrib/devtools/apply-rip25-v48-port-v4.sh
+
+      - name: Apply GLM security remediations without changing RIP-25 architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              s = p.read_text()
+              if new in s:
+                  return
+              if old not in s:
+                  raise SystemExit(f"{path}: cannot locate {label}")
+              if s.count(old) != 1:
+                  raise SystemExit(f"{path}: non-unique {label}: {s.count(old)}")
+              p.write_text(s.replace(old, new, 1))
+
+          # RVN-GLM wallet finding: CCryptoKeyStore::AddPQKeyPubKey already
+          # dispatches AddCryptedPQKey() and persists ciphertext for encrypted
+          # wallets. Do not subsequently persist the same private key in clear.
+          old = '''    uint256 witnessProgram = pubkey.GetWitnessProgram();
+              std::vector<unsigned char> keyData(key.GetKeyData().begin(), key.GetKeyData().end());
+              return CWalletDB(*dbw).WritePQKey(witnessProgram, pubkey, keyData);'''.replace('              ', '')
+          new = '''    // CCryptoKeyStore::AddPQKeyPubKey() routes encrypted wallets through
+              // virtual AddCryptedPQKey(), which has already persisted ciphertext.
+              // Never write the plaintext ML-DSA secret after that succeeds.
+              if (IsCrypted())
+                  return true;
+
+              uint256 witnessProgram = pubkey.GetWitnessProgram();
+              std::vector<unsigned char> keyData(key.GetKeyData().begin(), key.GetKeyData().end());
+              return CWalletDB(*dbw).WritePQKey(witnessProgram, pubkey, keyData);'''.replace('              ', '')
+          replace_once('src/wallet/wallet.cpp', old, new, 'encrypted PQ wallet persistence')
+
+          # RVN-GLM liboqs finding: do not accept an unversioned fallback system
+          # library. liboqs 0.12.0 is the first final FIPS-204 ML-DSA release;
+          # pkg-config must prove >=0.12.0. The pinned depends package remains 0.12.0.
+          p = Path('configure.ac')
+          s = p.read_text()
+          old = '''        PKG_CHECK_MODULES([LIBOQS], [liboqs >= 0.12.0],
+          [AC_DEFINE([HAVE_LIBOQS], [1], [Define to 1 if liboqs is available])],
+          [
+            dnl Fallback: check for header and library directly
+            AC_CHECK_HEADER([oqs/oqs.h],
+              [AC_CHECK_LIB([oqs], [OQS_SIG_new],
+                [LIBOQS_LIBS=-loqs; AC_DEFINE([HAVE_LIBOQS], [1], [Define to 1 if liboqs is available])],
+                [AC_MSG_ERROR([RIP-25 requires liboqs >= 0.12.0; liboqs library not found])])],
+              [AC_MSG_ERROR([RIP-25 requires liboqs >= 0.12.0; liboqs headers not found])])
+          ])'''
+          new = '''        PKG_CHECK_MODULES([LIBOQS], [liboqs >= 0.12.0],
+          [AC_DEFINE([HAVE_LIBOQS], [1], [Define to 1 if liboqs is available])],
+          [AC_MSG_ERROR([RIP-25 requires liboqs >= 0.12.0 discoverable via pkg-config; refusing an unversioned system-library fallback])])'''
+          if new not in s:
+              if old not in s:
+                  raise SystemExit('configure.ac: pkg-config liboqs fallback block not found')
+              s = s.replace(old, new, 1)
+
+          old2 = '''  dnl RIP-25: liboqs fallback check (non-pkg-config path)
+  if test "x$use_liboqs" = "xyes"; then
+    AC_CHECK_HEADER([oqs/oqs.h],
+      [AC_CHECK_LIB([oqs], [OQS_SIG_new],
+        [LIBOQS_LIBS=-loqs; AC_DEFINE([HAVE_LIBOQS], [1], [Define to 1 if liboqs is available])],
+        [AC_MSG_ERROR([RIP-25 requires liboqs >= 0.12.0; liboqs library not found])])],
+      [AC_MSG_ERROR([RIP-25 requires liboqs >= 0.12.0; liboqs headers not found])])
+    AC_SUBST(LIBOQS_LIBS)
+    AC_SUBST(LIBOQS_CFLAGS)
+  fi'''
+          new2 = '''  dnl RIP-25: consensus-critical ML-DSA must have a version-proven liboqs.
+  if test "x$use_liboqs" = "xyes"; then
+    AC_MSG_ERROR([RIP-25 requires pkg-config so liboqs >= 0.12.0 can be version-verified; unversioned fallback linkage is forbidden])
+  fi'''
+          if new2 not in s:
+              if old2 not in s:
+                  raise SystemExit('configure.ac: non-pkg-config liboqs fallback block not found')
+              s = s.replace(old2, new2, 1)
+          p.write_text(s)
+
+          # Ensure the dedicated versionbits and v4.8 KAWPOW regression suites
+          # are part of make check, not merely present in the source tree.
+          p = Path('src/Makefile.test.include')
+          s = p.read_text()
+          if 'test/kawpow_v48_hardening_tests.cpp' not in s:
+              s = s.replace('  test/kawpow_tests.cpp \\\n', '  test/kawpow_tests.cpp \\\n  test/kawpow_v48_hardening_tests.cpp \\\n', 1)
+          if 'test/rip25_versionbits_tests.cpp' not in s:
+              s = s.replace('  test/pqkey_hardening_tests.cpp \\\n', '  test/pqkey_hardening_tests.cpp \\\n  test/rip25_versionbits_tests.cpp \\\n', 1)
+          p.write_text(s)
+
+          # Keep the approved architecture, but correct the deployment wording:
+          # witness-v2 enforcement uses BIP9 while the approved 8->12->16 MWU
+          # expansion is a coordinated consensus relaxation for old nodes.
+          p = Path('doc/RIP-0025-PQ-Signatures.md')
+          s = p.read_text()
+          old = 'The upgrade is deployed as a **soft fork** following the SegWit extensibility model. A phased block weight increase from 8 MWU to 16 MWU, combined with a PQ witness discount factor, ensures that network throughput remains adequate during and after migration.'
+          new = 'Witness-v2 ML-DSA enforcement is activated through **BIP9** following the SegWit extensibility model. The separately approved phased block-weight expansion (8 → 12 → 16 MWU) and 8× PQ witness discount are preserved unchanged; because the higher limits relax block validity relative to legacy 8-MWU nodes, deployment of those phases requires coordinated network adoption. This clarification changes no RIP-25 consensus parameter.'
+          if new not in s:
+              if old not in s:
+                  raise SystemExit('RIP-25 doc: deployment wording not found')
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # Final gate must test the committed tree directly. It may verify that
+          # the worktree is clean, but must never mutate consensus source first.
+          p = Path('.github/workflows/rip25-v48-final-gate.yml')
+          s = p.read_text()
+          if 'pull_request:\n    branches:\n      - integration/rip25-v4.8.0' not in s:
+              s = s.replace('  workflow_dispatch:\n', '  pull_request:\n    branches:\n      - integration/rip25-v4.8.0\n  workflow_dispatch:\n', 1)
+          s = s.replace('uses: actions/checkout@v4', 'uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683')
+          old_step = '''      - id: materialize
+        name: Materialize audited RIP-25 port
+        run: |
+          chmod +x contrib/devtools/apply-rip25-v48-port-v4.sh
+          ./contrib/devtools/apply-rip25-v48-port-v4.sh'''
+          new_step = '''      - id: materialize
+        name: Verify committed RIP-25 source tree is pristine
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain)"'''
+          s = s.replace(old_step, new_step)
+          old_step_shell = '''      - id: materialize
+        name: Materialize audited RIP-25 port
+        shell: bash
+        run: |
+          chmod +x contrib/devtools/apply-rip25-v48-port-v4.sh
+          ./contrib/devtools/apply-rip25-v48-port-v4.sh'''
+          new_step_shell = '''      - id: materialize
+        name: Verify committed RIP-25 source tree is pristine
+        shell: bash
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain)"'''
+          s = s.replace(old_step_shell, new_step_shell)
+          if 'apply-rip25-v48-port-v4.sh' in s:
+              raise SystemExit('final gate still materializes source')
+          p.write_text(s)
+
+          # Pin every third-party action in the legacy/manual build workflow and
+          # reduce token permissions. This workflow is not consensus logic.
+          p = Path('.github/workflows/build-raven.yml')
+          s = p.read_text()
+          s = s.replace('uses: fkirc/skip-duplicate-actions@master', 'uses: fkirc/skip-duplicate-actions@a09bf677ad5e5dedb31a42070b6a180fde0ab6ce')
+          s = s.replace('uses: actions/checkout@v1', 'uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683')
+          s = s.replace('uses: actions/cache@v4', 'uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684')
+          s = s.replace('uses: actions/upload-artifact@master', 'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02')
+          s = s.replace('name: Build Evrmore', 'name: Build Ravencoin')
+          if '\npermissions:\n' not in s:
+              s = s.replace('\nenv:\n', '\npermissions:\n  contents: read\n\nenv:\n', 1)
+          p.write_text(s)
+
+          # Strengthen the invariant gate around the remediated findings.
+          p = Path('contrib/devtools/check-rip25-v48-invariants.sh')
+          s = p.read_text()
+          marker = "require_fixed 'AC_SUBST(LIBOQS_CFLAGS)' configure.ac 'LIBOQS_CFLAGS not exported by configure'\n"
+          additions = """require_fixed 'refusing an unversioned system-library fallback' configure.ac 'configure must reject unversioned liboqs fallback linkage'\nreject_fixed 'AC_CHECK_LIB([oqs], [OQS_SIG_new]' configure.ac 'unversioned liboqs fallback must not exist'\nrequire_fixed 'if (IsCrypted())' src/wallet/wallet.cpp 'encrypted PQ wallet keys must not fall through to plaintext WritePQKey'\nrequire_fixed 'test/rip25_versionbits_tests.cpp' src/Makefile.test.include 'RIP-25 versionbits tests are not wired into make check'\nrequire_fixed 'test/kawpow_v48_hardening_tests.cpp' src/Makefile.test.include 'v4.8 KAWPOW hardening tests are not wired into make check'\n"""
+          if additions not in s:
+              if marker not in s:
+                  raise SystemExit('invariant insertion point missing')
+              s = s.replace(marker, marker + additions, 1)
+          p.write_text(s)
+          PY
+
+          git diff --check
+          ./contrib/devtools/check-rip25-v48-invariants.sh
+
+          # The final candidate no longer uses a build-time materializer. Retain
+          # historical patch artifacts only as provenance; CI is forbidden from
+          # invoking them.
+          if grep -R -n 'apply-rip25-v48-port-v4.sh' .github/workflows/rip25-v48-final-gate.yml; then
+            echo 'ERROR: final gate still mutates source before testing' >&2
+            exit 1
+          fi
+
+      - name: Commit remediated source and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "RIP-25 Security Remediation"
+          git config user.email "185200505+ALENOC@users.noreply.github.com"
+          git rm -- .github/workflows/rip25-glm-remediation.yml
+          git add -- \
+            src/validation.cpp \
+            configure.ac \
+            src/miner.cpp \
+            src/init.cpp \
+            src/validation.h \
+            src/wallet/rpcwallet.cpp \
+            src/Makefile.am \
+            doc/RIP-0025-PQ-Signatures.md \
+            src/wallet/wallet.cpp \
+            src/Makefile.test.include \
+            contrib/devtools/check-rip25-v48-invariants.sh \
+            .github/workflows/rip25-v48-final-gate.yml \
+            .github/workflows/build-raven.yml
+          git diff --cached --check
+          git status --short
+          git commit -m "security: commit RIP-25 enforcement and remediate GLM findings"
+          git push origin HEAD:fix/rip25-v48-glm-remediation

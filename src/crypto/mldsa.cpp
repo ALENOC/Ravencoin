@@ -10,6 +10,10 @@
 
 #include <oqs/oqs.h>
 
+#if !defined(OQS_VERSION_MAJOR) || !defined(OQS_VERSION_MINOR) ||     (OQS_VERSION_MAJOR == 0 && OQS_VERSION_MINOR < 12)
+#error "RIP-25 requires liboqs >= 0.12.0 (final FIPS 204 ML-DSA)"
+#endif
+
 #include <array>
 #include <cstring>
 #include <mutex>

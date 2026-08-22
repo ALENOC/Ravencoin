@@ -555,20 +555,22 @@ if GLIBC_BACK_COMPAT
   libravenconsensus_la_SOURCES += compat/glibc_compat.cpp
 endif
 
+if TARGET_WINDOWS
+libravenconsensus_la_LDFLAGS = $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS) -no-undefined $(RELDFLAGS)
+else
 libravenconsensus_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined $(RELDFLAGS)
-libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS) $(PTHREAD_LIBS)
+endif
+libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS)
 
 if TARGET_WINDOWS
-# The windows DLL archive_cmds (configure.ac) forces -static into the link
-# line so libgcc/libstdc++/libssp are linked statically. That -static also
-# forces ld to resolve subsequent -l lookups against plain .a archives only,
-# so a bare -lwinpthread would bind against libwinpthread.a, which does not
-# export the __imp_-prefixed symbols that older mingw-w64 headers (as shipped
-# on the CI runner) require when pthread.h is compiled with DLL_EXPORT defined
-# (as libtool does for PIC/shared objects). Bracket the winpthread lookup in
-# -Bdynamic/-Bstatic so it resolves against libwinpthread.dll.a (the import
-# library) instead, then restore -Bstatic for anything linked after it.
-libravenconsensus_la_LIBADD += -Wl,-Bdynamic -lwinpthread -Wl,-Bstatic
+# AX_PTHREAD selected -pthread for this MinGW toolchain. The target-specific
+# LDFLAGS above intentionally omit PTHREAD_CFLAGS here because -pthread plus
+# archive_cmds_CXX -static would inject libpthread.a. The PIC objects instead
+# need the DLL import symbols (__imp_pthread_*), so link only the import archive.
+# Non-Windows targets retain the normal AM_LDFLAGS and PTHREAD_LIBS paths.
+libravenconsensus_la_LIBADD += /usr/$(host)/lib/libwinpthread.dll.a
+else
+libravenconsensus_la_LIBADD += $(PTHREAD_LIBS)
 endif
 
 libravenconsensus_la_CPPFLAGS = $(AM_CPPFLAGS) $(LIBOQS_CFLAGS) -I$(builddir)/obj -I$(srcdir)/secp256k1/include -DBUILD_RAVEN_INTERNAL
