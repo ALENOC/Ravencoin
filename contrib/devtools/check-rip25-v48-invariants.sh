@@ -73,4 +73,9 @@ if ! grep -A8 'qt_raven_qt_LDADD' src/Makefile.qt.include | grep -Fq '$(LIBOQS_L
   fail 'raven-qt must link LIBOQS_LIBS'
 fi
 
+
+# GLM follow-up source invariants.
+require_fixed 'premature-pq-witness' src/validation.cpp 'pre-activation PQ output relay gate missing'
+require_fixed 'OQS_VERSION_MINOR' src/crypto/mldsa.cpp 'compile-time liboqs >=0.12 gate missing'
+
 echo 'RIP-25/v4.8 invariants: OK'

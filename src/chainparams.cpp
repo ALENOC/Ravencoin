@@ -168,7 +168,7 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideRuleChangeActivationThreshold = 1411; // Approx 70% of 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideMinerConfirmationWindow = 2016;
 
-        // RIP-25: Post-Quantum Hybrid Signatures (ECDSA + ML-DSA-44)
+        // RIP-25: ML-DSA-44 witness-v2 deployment (historical DEPLOYMENT_PQ_HYBRID enum name retained)
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 1798761600; // placeholder
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1830297600; // placeholder

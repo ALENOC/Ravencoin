@@ -235,7 +235,7 @@ With PQ discount: 3732 / 8 = ~467 weight units
 
 ```
 Deployment parameters:
-  bit:                                    11
+  bit:                                    12
   nStartTime:                             <6 months after release>
   nTimeout:                               <18 months after start>
   nOverrideRuleChangeActivationThreshold: 1714  (85% of 2016 blocks)
