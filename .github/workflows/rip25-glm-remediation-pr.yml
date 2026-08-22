@@ -19,22 +19,48 @@ jobs:
           ref: fix/rip25-v48-glm-remediation
           fetch-depth: 0
 
-      - name: Apply security remediation
-        shell: bash
-        run: |
-          chmod +x contrib/devtools/one-shot-glm-remediation.sh
-          ./contrib/devtools/one-shot-glm-remediation.sh
-
-      - name: Commit exact remediated source
+      - name: Apply approved port and all GLM code remediations
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "RIP-25 Security Remediation"
-          git config user.email "185200505+ALENOC@users.noreply.github.com"
+          chmod +x contrib/devtools/one-shot-glm-remediation.sh
+          ./contrib/devtools/one-shot-glm-remediation.sh
+          python3 contrib/devtools/remediate-glm-rip25-v48.py
+          git diff --check
+          chmod +x contrib/devtools/check-rip25-v48-invariants.sh
+          ./contrib/devtools/check-rip25-v48-invariants.sh
 
-          # Remove temporary orchestration files. Historical port patches remain
-          # only as provenance and are no longer invoked by the final gate.
-          git rm -f -- .github/workflows/rip25-glm-remediation.yml contrib/devtools/one-shot-glm-remediation.sh .glm-remediation-trigger
+          # Architecture is immutable for this remediation.
+          grep -Fq 'vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12' src/chainparams.cpp
+          grep -Fq 'MAX_BLOCK_WEIGHT_RIP25_PHASE1 = 12000000' src/consensus/consensus.h
+          grep -Fq 'MAX_BLOCK_WEIGHT_RIP25_PHASE2 = 16000000' src/consensus/consensus.h
+          grep -Fq 'PQ_WITNESS_SCALE_FACTOR = 8' src/consensus/consensus.h
+          grep -Fq 'VersionBitsStateSinceHeight' src/validation.cpp
+          grep -Fq 'SCRIPT_VERIFY_PQ_HYBRID' src/validation.cpp
+          grep -Fq 'premature-pq-witness' src/validation.cpp
+          grep -Fq 'OQS_VERSION_MINOR' src/crypto/mldsa.cpp
+
+      - name: Commit code and tests only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'RIP-25 Security Remediation'
+          git config user.email '185200505+ALENOC@users.noreply.github.com'
+
+          # Workflow changes are published separately through the GitHub connector,
+          # because GITHUB_TOKEN is intentionally not allowed to update workflows.
+          git restore --source=HEAD -- \
+            .github/workflows/build-raven.yml \
+            .github/workflows/rip25-v48-final-gate.yml \
+            .github/workflows/rip25-glm-remediation.yml \
+            .github/workflows/rip25-glm-remediate-once.yml \
+            .github/workflows/rip25-glm-remediate-pr.yml \
+            contrib/devtools/apply-rip25-v48-port-v4.sh
+
+          git rm --ignore-unmatch -- \
+            .glm-remediation-trigger \
+            contrib/devtools/one-shot-glm-remediation.sh \
+            contrib/devtools/remediate-glm-rip25-v48.py
 
           git add -- \
             src/validation.cpp \
@@ -44,14 +70,17 @@ jobs:
             src/validation.h \
             src/wallet/rpcwallet.cpp \
             src/Makefile.am \
-            src/wallet/wallet.cpp \
-            src/Makefile.test.include \
             doc/RIP-0025-PQ-Signatures.md \
-            contrib/devtools/check-rip25-v48-invariants.sh \
-            .github/workflows/rip25-v48-final-gate.yml \
-            .github/workflows/build-raven.yml
+            src/policy/policy.cpp \
+            src/wallet/wallet.cpp \
+            src/crypto/mldsa.cpp \
+            src/Makefile.test.include \
+            src/chainparams.cpp \
+            contrib/devtools/check-rip25-v48-invariants.sh
 
           git diff --cached --check
+          git diff --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
           git status --short
-          git commit -m "security: commit RIP-25 enforcement and remediate GLM findings"
+          git commit -m 'security: commit RIP-25 enforcement and remediate GLM findings'
           git push origin HEAD:fix/rip25-v48-glm-remediation
