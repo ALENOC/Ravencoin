@@ -487,15 +487,20 @@ case $host in
      ;;
 esac
 
-if test x$use_pkgconfig = xyes; then
-  m4_ifndef([PKG_PROG_PKG_CONFIG], [AC_MSG_ERROR(PKG_PROG_PKG_CONFIG macro not found. Please install pkg-config and re-run autogen.sh.)])
-  m4_ifdef([PKG_PROG_PKG_CONFIG], [
-  PKG_PROG_PKG_CONFIG
-  if test x"$PKG_CONFIG" = "x"; then
-    AC_MSG_ERROR(pkg-config not found.)
-  fi
-  ])
+m4_ifndef([PKG_PROG_PKG_CONFIG], [m4_fatal([PKG_PROG_PKG_CONFIG macro not found. Please install pkg-config and re-run autogen.sh.])])
+m4_ifndef([PKG_CHECK_MODULES], [m4_fatal([PKG_CHECK_MODULES macro not found. Please install pkg-config and re-run autogen.sh.])])
+PKG_PROG_PKG_CONFIG
+if test x"$PKG_CONFIG" = x; then
+  AC_MSG_ERROR([pkg-config is required to prove liboqs >= 0.12.0 compatibility])
 fi
+
+dnl RIP-25 consensus signatures require final FIPS-204 ML-DSA-44 semantics.
+dnl Refuse unversioned probes: the pre-final interface can be size-compatible.
+PKG_CHECK_MODULES([LIBOQS], [liboqs >= 0.12.0],
+  [AC_DEFINE([HAVE_LIBOQS], [1], [Define to 1 if liboqs is available])],
+  [AC_MSG_ERROR([RIP-25 requires liboqs >= 0.12.0 discoverable via pkg-config; refusing an unversioned system-library fallback])])
+AC_SUBST([LIBOQS_LIBS])
+AC_SUBST([LIBOQS_CFLAGS])
 
 if test x$use_extended_functional_tests != xno; then
   AC_SUBST(EXTENDED_FUNCTIONAL_TESTS, --extended)
@@ -977,22 +982,6 @@ if test x$use_pkgconfig = xyes; then
       else
           AC_DEFINE_UNQUOTED([ENABLE_ZMQ],[0],[Define to 1 to enable ZMQ functions])
       fi
-
-      dnl RIP-25: liboqs for ML-DSA-44 post-quantum signatures
-      if test "x$use_liboqs" = "xyes"; then
-        PKG_CHECK_MODULES([LIBOQS], [liboqs >= 0.12.0],
-          [AC_DEFINE([HAVE_LIBOQS], [1], [Define to 1 if liboqs is available])],
-          [
-            dnl Fallback: check for header and library directly
-            AC_CHECK_HEADER([oqs/oqs.h],
-              [AC_CHECK_LIB([oqs], [OQS_SIG_new],
-                [LIBOQS_LIBS=-loqs; AC_DEFINE([HAVE_LIBOQS], [1], [Define to 1 if liboqs is available])],
-                [AC_MSG_ERROR([RIP-25 requires liboqs >= 0.12.0; liboqs library not found])])],
-              [AC_MSG_ERROR([RIP-25 requires liboqs >= 0.12.0; liboqs headers not found])])
-          ])
-        AC_SUBST(LIBOQS_LIBS)
-        AC_SUBST(LIBOQS_CFLAGS)
-      fi
     ]
   )
 else
@@ -1032,18 +1021,6 @@ else
       ;;
     esac
   fi
-
-  dnl RIP-25: liboqs fallback check (non-pkg-config path)
-  if test "x$use_liboqs" = "xyes"; then
-    AC_CHECK_HEADER([oqs/oqs.h],
-      [AC_CHECK_LIB([oqs], [OQS_SIG_new],
-        [LIBOQS_LIBS=-loqs; AC_DEFINE([HAVE_LIBOQS], [1], [Define to 1 if liboqs is available])],
-        [AC_MSG_ERROR([RIP-25 requires liboqs >= 0.12.0; liboqs library not found])])],
-      [AC_MSG_ERROR([RIP-25 requires liboqs >= 0.12.0; liboqs headers not found])])
-    AC_SUBST(LIBOQS_LIBS)
-    AC_SUBST(LIBOQS_CFLAGS)
-  fi
-
   RAVEN_QT_CHECK(AC_CHECK_LIB([protobuf] ,[main],[PROTOBUF_LIBS=-lprotobuf], RAVEN_QT_FAIL(libprotobuf not found)))
   if test x$use_qr != xno; then
     RAVEN_QT_CHECK([AC_CHECK_LIB([qrencode], [main],[QR_LIBS=-lqrencode], [have_qrencode=no])])
