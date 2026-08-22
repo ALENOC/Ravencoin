@@ -19,20 +19,18 @@ jobs:
           ref: fix/rip25-v48-glm-remediation
           fetch-depth: 0
 
-      - name: Materialize approved RIP-25 port and apply GLM remediations
+      - name: Apply remaining GLM remediations
         shell: bash
         run: |
           set -euo pipefail
           git merge-base --is-ancestor 94c3369b647799bc53f23e570feb303722ce7f06 HEAD
 
-          # First make the checked-out source identical to the already-tested
-          # RIP-25 + v4.8 postimage. The resulting files are committed below;
-          # final CI will no longer materialize source at build time.
-          chmod +x contrib/devtools/apply-rip25-v48-port-v4.sh
-          ./contrib/devtools/apply-rip25-v48-port-v4.sh
-
-          # Then apply the single deterministic GLM remediation pass.
-          python3 contrib/devtools/remediate-glm-rip25-v48.py
+          # The current branch already contains the consensus activation wiring,
+          # pre-activation relay guard and compile-time liboqs guard. This pass
+          # closes the remaining wallet/configure/test-wiring findings and is
+          # idempotent with respect to the already-materialized port.
+          chmod +x contrib/devtools/one-shot-glm-remediation.sh
+          ./contrib/devtools/one-shot-glm-remediation.sh
 
           git diff --check
           chmod +x contrib/devtools/check-rip25-v48-invariants.sh
@@ -47,6 +45,11 @@ jobs:
           grep -Fq 'SCRIPT_VERIFY_PQ_HYBRID' src/validation.cpp
           grep -Fq 'premature-pq-witness' src/validation.cpp
           grep -Fq 'OQS_VERSION_MINOR' src/crypto/mldsa.cpp
+          grep -Fq 'refusing an unversioned system-library fallback' configure.ac
+          ! grep -Fq 'AC_CHECK_LIB([oqs], [OQS_SIG_new]' configure.ac
+          grep -Fq 'if (IsCrypted())' src/wallet/wallet.cpp
+          grep -Fq 'test/rip25_versionbits_tests.cpp' src/Makefile.test.include
+          grep -Fq 'test/kawpow_v48_hardening_tests.cpp' src/Makefile.test.include
 
       - name: Commit code and tests only
         shell: bash
@@ -94,5 +97,5 @@ jobs:
           git diff --exit-code
           test -z "$(git ls-files --others --exclude-standard)"
           git status --short
-          git commit -m 'security: commit RIP-25 enforcement and remediate GLM findings'
+          git commit -m 'security: close remaining GLM wallet liboqs and test findings'
           git push origin HEAD:fix/rip25-v48-glm-remediation
