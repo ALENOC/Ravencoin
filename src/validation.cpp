@@ -4250,9 +4250,9 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
 
     // The height declared inside the KAWPOW header feeds the PoW hash, the DAG epoch
     // and the ProgPoW period. It must match the actual height of the block.
-    if (nHeight >= consensusParams.nHeightHeaderCheckActivation &&
-        block.nTime >= nKAWPOWActivationTime &&
-        block.nHeight != (uint32_t)nHeight) {
+    if (!IsKAWPOWHeaderHeightValid(block, nHeight,
+                                   consensusParams.nHeightHeaderCheckActivation,
+                                   nKAWPOWActivationTime)) {
         return state.DoS(100,
                          error("%s: declared header height %u does not match chain height %d",
                                __func__, block.nHeight, nHeight),

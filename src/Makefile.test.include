@@ -74,7 +74,9 @@ RAVEN_TESTS =\
   test/pow_tests.cpp \
   test/prevector_tests.cpp \
   test/kawpow_tests.cpp \
+  test/kawpow_v48_hardening_tests.cpp \
   test/raii_event_tests.cpp \
+  test/rip25_versionbits_tests.cpp \
   test/random_tests.cpp \
   test/reverselock_tests.cpp \
   test/rpc_tests.cpp \
@@ -109,6 +111,7 @@ RAVEN_TESTS += \
   wallet/test/wallet_test_fixture.h \
   wallet/test/accounting_tests.cpp \
   wallet/test/wallet_tests.cpp \
+  wallet/test/pq_wallet_tests.cpp \
   wallet/test/crypto_tests.cpp
 endif
 

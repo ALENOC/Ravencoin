@@ -269,8 +269,11 @@ bool ProduceSignature(const BaseSignatureCreator& creator, const CScript& fromPu
     }
     sigdata.scriptSig = PushAll(result);
 
-    // Test solution
-    return solved && VerifyScript(sigdata.scriptSig, fromPubKey, &sigdata.scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS, creator.Checker());
+    // Test the completed solution. PQ signing must validate under the active
+    // witness-v2 rules even though activation is applied contextually elsewhere.
+    unsigned int verifyFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
+    if (whichType == TX_WITNESS_V2_PQ_KEYHASH) verifyFlags |= SCRIPT_VERIFY_PQ_HYBRID;
+    return solved && VerifyScript(sigdata.scriptSig, fromPubKey, &sigdata.scriptWitness, verifyFlags, creator.Checker());
 }
 
 SignatureData DataFromTransaction(const CMutableTransaction& tx, unsigned int nIn)

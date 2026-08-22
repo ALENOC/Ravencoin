@@ -9,7 +9,13 @@
 #include "consensus/consensus.h"
 #include "consensus/validation.h"
 #include "crypto/mldsa.h"
+#include "keystore.h"
+#include "policy/policy.h"
 #include "pqkey.h"
+#include "primitives/transaction.h"
+#include "script/interpreter.h"
+#include "script/sign.h"
+#include "script/standard.h"
 #include "test/test_raven.h"
 
 #include <boost/test/unit_test.hpp>
@@ -226,6 +232,66 @@ BOOST_AUTO_TEST_CASE(import_rejects_wrong_secret_size)
     BOOST_CHECK(!key.IsValid());
     BOOST_CHECK(!key.SetKeyData(tooLong, pubSource.GetPubKey()));
     BOOST_CHECK(!key.IsValid());
+}
+
+BOOST_AUTO_TEST_CASE(witness_v2_active_rules_accept_valid_and_reject_invalid_mldsa)
+{
+    CPQKey key;
+    key.MakeNewKey();
+    BOOST_REQUIRE(key.IsValid());
+    const CPQPubKey pubkey = key.GetPubKey();
+    const uint256 witnessProgram = pubkey.GetWitnessProgram();
+
+    CBasicKeyStore keystore;
+    BOOST_REQUIRE(keystore.AddPQKeyPubKey(key, pubkey));
+
+    const CAmount amount = 10 * COIN;
+    CMutableTransaction funding;
+    funding.vout.emplace_back(amount, GetScriptForWitnessV2PQ(witnessProgram));
+    const CTransaction fundingTx(funding);
+
+    CMutableTransaction spend;
+    spend.vin.emplace_back(COutPoint(fundingTx.GetHash(), 0));
+    spend.vout.emplace_back(amount - 1000, CScript() << OP_TRUE);
+    BOOST_REQUIRE(SignSignature(keystore, fundingTx, spend, 0, SIGHASH_ALL));
+    BOOST_REQUIRE_EQUAL(spend.vin[0].scriptWitness.stack.size(), 2U);
+    BOOST_REQUIRE_EQUAL(spend.vin[0].scriptWitness.stack[0].size(), mldsa::SIGNATURE_BYTES);
+    BOOST_REQUIRE_EQUAL(spend.vin[0].scriptWitness.stack[1].size(), mldsa::PUBLICKEY_BYTES);
+
+    auto verifySpend = [&](const CMutableTransaction& candidate,
+                           unsigned int flags,
+                           ScriptError& error) {
+        const CTransaction tx(candidate);
+        return VerifyScript(tx.vin[0].scriptSig,
+                            fundingTx.vout[0].scriptPubKey,
+                            &tx.vin[0].scriptWitness,
+                            flags,
+                            TransactionSignatureChecker(&tx, 0, amount),
+                            &error);
+    };
+
+    const unsigned int preActivationFlags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS;
+    const unsigned int activeFlags = preActivationFlags | SCRIPT_VERIFY_PQ_HYBRID;
+    ScriptError error = SCRIPT_ERR_UNKNOWN_ERROR;
+
+    BOOST_CHECK(verifySpend(spend, activeFlags, error));
+    BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
+
+    CMutableTransaction emptyWitness = spend;
+    emptyWitness.vin[0].scriptWitness.stack.clear();
+
+    // Before activation, witness-v2 retains normal future-witness consensus
+    // semantics. Relay separately rejects newly-created v2 outputs.
+    BOOST_CHECK(verifySpend(emptyWitness, preActivationFlags, error));
+    BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
+
+    BOOST_CHECK(!verifySpend(emptyWitness, activeFlags, error));
+    BOOST_CHECK_EQUAL(error, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+
+    CMutableTransaction malformedSignature = spend;
+    malformedSignature.vin[0].scriptWitness.stack[0][0] ^= 0x01;
+    BOOST_CHECK(!verifySpend(malformedSignature, activeFlags, error));
+    BOOST_CHECK_EQUAL(error, SCRIPT_ERR_PQ_SIGNATURE_VERIFY_FAILED);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
