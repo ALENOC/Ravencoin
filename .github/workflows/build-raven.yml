@@ -1,65 +1,26 @@
 name: Build Raven
 
 on:
-#  push:
-#    branches:
-#      - release*
-#  pull_request:
-#    branches:
-#      - master
-#      - develop
-#      - release*
-#    paths-ignore:
-#      - 'binaries/**'
-#      - 'doc/**'
-#      - 'whitepaper/**'
-#      - '*.md'
+  push:
+    branches:
+      - fix/rip25-v48-glm-remediation
   workflow_dispatch:
-    # This creates a "Run workflow" button on the github repo webpage when the "Build Ravencoin" 
-    #     workflow is selected on the "Actions" tab. But only if this workflow is in
-    #     the branch which is selected on github as the "default branch".
-    inputs:
-      target:
-        description: 'Target branch to run'
-        required: true
+
+permissions:
+  contents: read
 
 env:
   SCRIPTS: ${{ GITHUB.WORKSPACE }}/.github/scripts
 
 jobs:
-  check-jobs:
-      # continue-on-error: true # Uncomment once integration is finished
-    runs-on: ubuntu-20.04
-    # Map a step output to a job output
-    outputs:
-      should_skip: ${{ steps.skip_check.outputs.should_skip }}
-    steps:
-      - id: skip_check
-        uses: fkirc/skip-duplicate-actions@master
-        with:
-          # All of these options are optional, so you can remove them if you are happy with the defaults
-          concurrent_skipping: 'never'
-          skip_after_successful_duplicate: 'true'
-          paths_ignore: '[
-                          "binaries/**",
-                          "community/**",
-                          "contrib/**",
-                          "doc/**",
-                          "roadmap/**",
-                          "share/**",
-                          "static-builds/**",
-                          "whitepaper/**",
-                          "**/*.md"
-                          ]'
-          do_not_skip: '["workflow_dispatch", "schedule"]'
-
   build:
-    needs: check-jobs
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
     
     strategy:
+      fail-fast: false
       matrix:
-       OS: [ 'windows', 'linux', 'linux-disable-wallet', 'osx', 'arm32v7', 'arm32v7-disable-wallet', 'aarch64', 'aarch64-disable-wallet' ]
+       OS: [ 'windows', 'osx' ]
 
 #&&&&&& Beginning- section to free up space on root for the builds and for 30GB of swap
     steps:
@@ -134,56 +95,74 @@ jobs:
         echo
 #&&&&&& End- section to free up space on root for the builds and for 30GB of swap
 
-    - if: ${{ needs.check-jobs.outputs.should_skip != 'true' }}
-      name: Checkout the Code
-      uses: actions/checkout@v1
-
-    - if: ${{ needs.check-jobs.outputs.should_skip != 'true' }}
-      name: Install Build Tools
-      run: sudo ${SCRIPTS}/00-install-deps.sh ${{ MATRIX.OS }}
-
-    - if: ${{ needs.check-jobs.outputs.should_skip != 'true' }}
-      name: Cache dependencies.
-      uses: actions/cache@v4
+    - name: Checkout the Code
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       with:
-       path: |
-        ${{ GITHUB.WORKSPACE }}/depends/built
-        ${{ GITHUB.WORKSPACE }}/depends/sources
-        ${{ GITHUB.WORKSPACE }}/depends/work
-       key: ${{ MATRIX.OS }}
-      
-    - if: ${{ needs.check-jobs.outputs.should_skip != 'true' }}
-      name: Build dependencies.
-      run: ${SCRIPTS}/02-copy-build-dependencies.sh ${{ MATRIX.OS }} ${{ GITHUB.WORKSPACE }} ${{ GITHUB.BASE_REF }} ${{ GITHUB.REF }}
+        fetch-depth: 0
+        persist-credentials: false
 
-    - if: ${{ needs.check-jobs.outputs.should_skip != 'true' }}
-      name: Add Dependencies to the System PATH
-      run: ${SCRIPTS}/03-export-path.sh ${{ MATRIX.OS }} ${{ GITHUB.WORKSPACE }}
+    - name: Verify Checked-Out Commit Is Pristine
+      shell: bash
+      run: |
+        test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+        git diff --exit-code
+        git diff --cached --exit-code
+        test -z "$(git status --porcelain)"
 
-    - if: ${{ needs.check-jobs.outputs.should_skip != 'true' }}
-      name: Build Config
-      run: cd ${{ GITHUB.WORKSPACE }} && ./autogen.sh
+    - name: Verify Security and Consensus Invariants
+      shell: bash
+      run: ./contrib/devtools/check-rip25-v48-invariants.sh
 
-    - if: ${{ needs.check-jobs.outputs.should_skip != 'true' }}
-      name: Configure Build
-      run: ${SCRIPTS}/04-configure-build.sh ${{ MATRIX.OS }} ${{ GITHUB.WORKSPACE }}
+    - name: Install Build Tools
+      run: sudo bash -Eeuo pipefail "${SCRIPTS}/00-install-deps.sh" "${{ matrix.OS }}"
 
-    - if: ${{ needs.check-jobs.outputs.should_skip != 'true' }}
-      name: Build Evrmore
+    - name: Cache Dependencies
+      uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+      with:
+        path: |
+          ${{ github.workspace }}/depends/built
+          ${{ github.workspace }}/depends/sources
+          ${{ github.workspace }}/depends/work
+        key: ${{ matrix.OS }}-${{ hashFiles('depends/**') }}
+
+    - name: Build Dependencies
+      run: bash -Eeuo pipefail "${SCRIPTS}/02-copy-build-dependencies.sh" "${{ matrix.OS }}" "$GITHUB_WORKSPACE" "$GITHUB_REF"
+
+    - name: Add Dependencies to the System PATH
+      shell: bash
+      run: |
+        if [[ "${{ matrix.OS }}" == "windows" ]]; then
+          echo "$GITHUB_WORKSPACE/depends/x86_64-w64-mingw32/native/bin" >> "$GITHUB_PATH"
+        else
+          echo "$GITHUB_WORKSPACE/depends/x86_64-apple-darwin14/native/bin" >> "$GITHUB_PATH"
+        fi
+
+    - name: Build Config
+      run: ./autogen.sh
+
+    - name: Configure Build
+      run: bash -Eeuo pipefail "${SCRIPTS}/04-configure-build.sh" "${{ matrix.OS }}" "$GITHUB_WORKSPACE"
+
+    - name: Verify Tracked Source Remains Unchanged
+      shell: bash
+      run: |
+        git diff --exit-code
+        git diff --cached --exit-code
+
+    - name: Build Raven
       run: make -j2
 
 # Skip the binary checks for now.
-#    - if: ${{ needs.check-jobs.outputs.should_skip != 'true' }}
 #      name: Check Binary Security
 #      run: ${SCRIPTS}/05-binary-checks.sh ${{ MATRIX.OS }} ${{ GITHUB.WORKSPACE }}
 
-    - if: ${{ needs.check-jobs.outputs.should_skip != 'true' }}
-      name: Package Up the Build
-      run: ${SCRIPTS}/06-package.sh ${{ MATRIX.OS }} ${{ GITHUB.WORKSPACE }} ${{ GITHUB.BASE_REF }} ${{ GITHUB.REF }}
+    - name: Package Up the Build
+      run: bash -Eeuo pipefail "${SCRIPTS}/06-package.sh" "${{ matrix.OS }}" "$GITHUB_WORKSPACE" "${{ github.base_ref || github.ref_name }}"
     
-    - if: ${{ needs.check-jobs.outputs.should_skip != 'true' }}
-      name: Upload Artifacts to Job
-      uses: actions/upload-artifact@master
+    - name: Upload Artifacts to Job
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
-        name: ${{ MATRIX.OS }}
-        path: ${{ GITHUB.WORKSPACE }}/release
+        name: raven-${{ matrix.OS }}-${{ github.sha }}
+        path: ${{ github.workspace }}/release
+        if-no-files-found: error
+        retention-days: 14

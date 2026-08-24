@@ -16,56 +16,92 @@ reject_fixed() {
   if grep -Fq -- "$needle" "$file"; then fail "$message"; fi
 }
 
-# Ravencoin 4.8 exploit/overflow invariants.
-require_fixed 'nHeightHeaderCheckActivation = 4487776' src/chainparams.cpp '4.8 KAWPOW header-height activation missing'
-require_fixed '4487775' src/chainparams.cpp '4.8 checkpoint height missing'
-require_fixed 'DEPLOYMENT_TRANSFER_OVERFLOW' src/consensus/params.h '4.8 transfer-overflow deployment missing'
-require_fixed 'vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].bit = 11' src/chainparams.cpp 'transfer-overflow must remain on BIP9 bit 11'
-require_fixed 'if (nHeight >= consensusParams.nHeightHeaderCheckActivation &&' src/validation.cpp '4.8 KAWPOW height gate predicate missing'
-require_fixed 'block.nTime >= nKAWPOWActivationTime &&' src/validation.cpp '4.8 KAWPOW time gate predicate missing'
-require_fixed 'block.nHeight != (uint32_t)nHeight)' src/validation.cpp '4.8 declared-vs-contextual height comparison missing'
-require_fixed 'REJECT_INVALID, "bad-blk-height"' src/validation.cpp '4.8 KAWPOW bad-blk-height rejection missing'
-require_fixed 'IsTransferOverflowCheckDeployed' src/validation.cpp '4.8 transfer-overflow validation gate missing'
+require_text() {
+  local text="$1" needle="$2" message="$3"
+  grep -Fq -- "$needle" <<<"$text" || fail "$message"
+}
 
-# RIP-25 approved consensus invariants.
-require_fixed 'vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12' src/chainparams.cpp 'PQ deployment must use BIP9 bit 12'
-require_fixed '  bit:                                    12' doc/RIP-0025-PQ-Signatures.md 'RIP-25 specification must document BIP9 bit 12 after the v4.8 port'
-require_fixed 'MAX_BLOCK_WEIGHT_RIP25_PHASE1 = 12000000' src/consensus/consensus.h 'RIP-25 phase-1 must remain 12 MWU'
-require_fixed 'MAX_BLOCK_WEIGHT_RIP25_PHASE2 = 16000000' src/consensus/consensus.h 'RIP-25 phase-2 must remain 16 MWU'
-require_fixed 'PQ_WITNESS_SCALE_FACTOR = 8' src/consensus/consensus.h 'approved PQ witness discount must remain 8x'
+require_min_count() {
+  local needle="$1" file="$2" minimum="$3" message="$4"
+  local count
+  count="$(grep -Fc -- "$needle" "$file" || true)"
+  (( count >= minimum )) || fail "$message"
+}
+
+# Approved RIP-25 protocol architecture.
+require_fixed 'DEPLOYMENT_PQ_HYBRID' src/consensus/params.h 'PQ BIP9 deployment missing'
+require_fixed 'vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12' src/chainparams.cpp 'PQ deployment must remain on BIP9 bit 12'
+require_fixed '  bit:                                    12' doc/RIP-0025-PQ-Signatures.md 'RIP-25 specification must document BIP9 bit 12'
+require_fixed 'MAX_BLOCK_WEIGHT_RIP2 = 8000000' src/consensus/consensus.h 'pre-RIP-25 limit must remain 8 MWU'
+require_fixed 'MAX_BLOCK_WEIGHT_RIP25_PHASE1 = 12000000' src/consensus/consensus.h 'RIP-25 phase 1 must remain 12 MWU'
+require_fixed 'MAX_BLOCK_WEIGHT_RIP25_PHASE2 = 16000000' src/consensus/consensus.h 'RIP-25 phase 2 must remain 16 MWU'
+require_fixed 'PQ_WITNESS_SCALE_FACTOR = 8' src/consensus/consensus.h 'PQ witness discount must remain 8x'
+require_fixed 'witversion == 2 && (flags & SCRIPT_VERIFY_PQ_HYBRID)' src/script/interpreter.cpp 'witness-v2 ML-DSA verifier missing'
+require_fixed 'mldsa::PUBLICKEY_BYTES' src/script/interpreter.cpp 'ML-DSA-44 public-key size check missing'
+require_fixed 'mldsa::SIGNATURE_BYTES' src/script/interpreter.cpp 'ML-DSA-44 signature size check missing'
 reject_fixed 'fPQHybridIsActive' src/consensus/consensus.h 'forbidden mutable/static PQ activation state'
 reject_fixed 'SetPQHybridBlockLimitsActive' src/consensus/consensus.h 'forbidden mutable block-limit state'
 
-# Contextual, reorg-safe activation/resource enforcement.
-require_fixed 'IsPQHybridActiveLocked' src/validation.cpp 'missing contextual RIP-25 activation helper'
-require_fixed 'IsPQWitnessDiscountActive' src/validation.cpp 'missing contextual RIP-25 discount activation helper'
-require_fixed 'GetMaxBlockWeightForPrev' src/validation.cpp 'missing contextual 8/12/16 block-weight helper'
-require_fixed 'VersionBitsStateSinceHeight' src/validation.cpp 'missing deterministic phase-2 boundary'
-require_fixed 'SCRIPT_VERIFY_PQ_HYBRID' src/validation.cpp 'missing consensus/mempool PQ script gate'
-require_fixed 'IsPQWitnessV2Prevout' src/validation.cpp 'PQ discount is not bound to the spent witness-v2 prevout'
-require_fixed 'GetContextualPQWitnessDiscount' src/validation.cpp 'missing UTXO-bound PQ discount calculation'
-require_fixed 'GetMaxBlockWeightForPrev(pindexPrev, chainparams.GetConsensus())' src/miner.cpp 'miner is not clamped to the active 8/12/16 MWU consensus phase'
-
-# Policy/wallet activation boundaries.
+# GLM-002: contextual BIP9 activation must reach consensus script flags.
+block_flags="$(sed -n '/^static unsigned int GetBlockScriptFlags(/,/^[[:space:]]*return flags;/p' src/validation.cpp)"
+require_text "$block_flags" 'IsPQHybridActiveLocked(pindex->pprev, consensusparams)' 'GetBlockScriptFlags is not driven by contextual PQ BIP9 state'
+require_text "$block_flags" 'flags |= SCRIPT_VERIFY_PQ_HYBRID' 'GetBlockScriptFlags does not enable PQ verification after activation'
+require_fixed 'unsigned int flags = GetBlockScriptFlags(pindex, chainparams.GetConsensus())' src/validation.cpp 'ConnectBlock does not use contextual script flags'
+require_fixed 'scriptVerifyFlags |= SCRIPT_VERIFY_PQ_HYBRID' src/validation.cpp 'active mempool validation does not enable PQ verification'
+require_fixed 'premature-pq-witness' src/validation.cpp 'pre-activation witness-v2 output relay rejection missing'
+require_fixed 'witness.stack.size() != 2' src/script/interpreter.cpp 'active witness-v2 must require exactly two witness elements'
+require_fixed 'SCRIPT_ERR_PQ_SIGNATURE_VERIFY_FAILED' src/script/interpreter.cpp 'invalid ML-DSA signatures are not rejected'
 if grep -A30 'STANDARD_SCRIPT_VERIFY_FLAGS' src/policy/policy.h | grep -Fq 'SCRIPT_VERIFY_PQ_HYBRID'; then
-  fail 'SCRIPT_VERIFY_PQ_HYBRID must not be unconditional in STANDARD_SCRIPT_VERIFY_FLAGS'
+  fail 'SCRIPT_VERIFY_PQ_HYBRID must not be unconditional in standard flags'
 fi
-require_fixed 'NODE_PQ_HYBRID' src/init.cpp 'PQ service capability is not advertised'
-require_fixed 'IsPQHybridDeployed()' src/wallet/rpcwallet.cpp 'wallet must check RIP-25 activation before generating witness-v2 addresses'
-require_fixed 'refusing to generate an unprotected witness-v2 address' src/wallet/rpcwallet.cpp 'wallet pre-activation safety gate missing'
 
-# liboqs is consensus-critical: pinned/cross-aware and linked by every target.
+# GLM-003: contextual 8 -> 12 -> 16 MWU and UTXO-bound 8x discount.
+require_fixed 'VersionBitsStateSinceHeight' src/validation.cpp 'deterministic RIP-25 phase boundary missing'
+require_fixed 'return MAX_BLOCK_WEIGHT_RIP2;' src/validation.cpp '8 MWU pre-activation branch missing'
+require_fixed 'return MAX_BLOCK_WEIGHT_RIP25_PHASE1' src/validation.cpp '12 MWU phase-1 branch missing'
+require_fixed 'return MAX_BLOCK_WEIGHT_RIP25_PHASE2' src/validation.cpp '16 MWU phase-2 branch missing'
+require_fixed 'IsPQWitnessV2Prevout' src/validation.cpp 'PQ discount is not bound to a witness-v2 prevout'
+require_fixed 'GetContextualPQWitnessDiscount' src/validation.cpp 'UTXO-bound PQ discount calculation missing'
+require_fixed 'contextualBlockWeight -= GetContextualPQWitnessDiscount(tx, view)' src/validation.cpp 'ConnectBlock does not apply the contextual PQ discount'
+require_fixed 'contextualBlockWeight > activeBlockWeightLimit' src/validation.cpp 'ConnectBlock does not enforce the active contextual limit'
+require_fixed 'preliminaryWeight > activeWeightLimit' src/validation.cpp 'contextual preliminary block-weight check missing'
+require_fixed 'const size_t activeMaxWeight = GetMaxBlockWeightForPrev(pindexPrev, chainparams.GetConsensus())' src/miner.cpp 'miner does not query the active contextual limit'
+require_fixed 'std::min<size_t>(nBlockMaxWeight, activeMaxWeight - 4000)' src/miner.cpp 'miner is not clamped below the active contextual limit'
+
+# Encrypted PQ wallet persistence: ciphertext path must return before plaintext.
+wallet_pq_function="$(sed -n '/^bool CWallet::AddPQKeyPubKey(/,/^}/p' src/wallet/wallet.cpp)"
+require_text "$wallet_pq_function" 'CCryptoKeyStore::AddPQKeyPubKey' 'wallet PQ insertion bypasses the crypto keystore'
+require_text "$wallet_pq_function" 'if (IsCrypted())' 'encrypted PQ wallet path lacks an early return'
+require_text "$wallet_pq_function" 'WritePQKey' 'unencrypted PQ wallet persistence missing'
+if ! grep -A1 -F 'if (IsCrypted())' <<<"$wallet_pq_function" | grep -Fq 'return true;'; then
+  fail 'encrypted PQ wallet path can fall through instead of returning'
+fi
+encrypted_line="$(grep -nF 'if (IsCrypted())' <<<"$wallet_pq_function" | head -n1 | cut -d: -f1 || true)"
+plaintext_line="$(grep -nF 'WritePQKey' <<<"$wallet_pq_function" | head -n1 | cut -d: -f1 || true)"
+[[ -n "$encrypted_line" && -n "$plaintext_line" ]] || fail 'cannot locate wallet PQ persistence branches'
+(( encrypted_line < plaintext_line )) || fail 'encrypted-wallet return must precede plaintext PQ persistence'
+require_fixed 'wallet/test/pq_wallet_tests.cpp' src/Makefile.test.include 'PQ wallet persistence regressions are not wired into make check'
+require_fixed 'encrypted_pq_keys_are_ciphertext_only_after_reload_and_backup' src/wallet/test/pq_wallet_tests.cpp 'encrypted PQ wallet reload/backup regression missing'
+require_fixed 'std::string("pqkey")' src/wallet/test/pq_wallet_tests.cpp 'PQ wallet regression does not inspect plaintext DB records'
+require_fixed 'std::string("cpqkey")' src/wallet/test/pq_wallet_tests.cpp 'PQ wallet regression does not inspect ciphertext DB records'
+
+# liboqs is consensus-critical and must be version-proven.
 require_fixed 'liboqs' depends/packages/packages.mk 'liboqs missing from depends package graph'
-require_fixed '$(package)_version=0.12.0' depends/packages/liboqs.mk 'liboqs depends version must remain 0.12.0'
-require_fixed 'df999915204eb1eba311d89e83d1edd3a514d5a07374745d6a9e5b2dd0d59c08' depends/packages/liboqs.mk 'liboqs checksum changed'
-require_fixed '$(package)_build_subdir=build' depends/packages/liboqs.mk 'liboqs must use out-of-tree depends build'
-require_fixed '$($(package)_cmake) ..' depends/packages/liboqs.mk 'liboqs must use cross-aware depends CMake wrapper'
-require_fixed 'RIP-25 requires liboqs >= 0.12.0' configure.ac 'configure must fail closed on liboqs < 0.12.0 or disabled'
-require_fixed '--without-liboqs is not supported' configure.ac 'configure must reject disabling consensus-critical liboqs'
-require_fixed 'liboqs >= 0.12.0' configure.ac 'configure must require liboqs >= 0.12.0'
-require_fixed 'AC_SUBST(LIBOQS_LIBS)' configure.ac 'LIBOQS_LIBS not exported by configure'
-require_fixed 'AC_SUBST(LIBOQS_CFLAGS)' configure.ac 'LIBOQS_CFLAGS not exported by configure'
-
+require_fixed '$(package)_version=0.12.0' depends/packages/liboqs.mk 'pinned liboqs version must remain 0.12.0'
+require_fixed 'df999915204eb1eba311d89e83d1edd3a514d5a07374745d6a9e5b2dd0d59c08' depends/packages/liboqs.mk 'pinned liboqs checksum changed'
+require_fixed 'PKG_PROG_PKG_CONFIG' configure.ac 'configure does not require pkg-config'
+require_fixed 'PKG_CHECK_MODULES([LIBOQS], [liboqs >= 0.12.0]' configure.ac 'configure does not prove liboqs >= 0.12.0'
+require_fixed 'refusing an unversioned system-library fallback' configure.ac 'configure does not document fail-closed liboqs behavior'
+require_fixed '--without-liboqs is not supported' configure.ac 'configure permits disabling consensus-critical liboqs'
+reject_fixed 'AC_CHECK_LIB([oqs]' configure.ac 'unversioned liboqs symbol fallback is forbidden'
+reject_fixed 'AC_CHECK_HEADER([oqs/oqs.h]' configure.ac 'unversioned liboqs header fallback is forbidden'
+reject_fixed 'LIBOQS_LIBS=-loqs' configure.ac 'manual unversioned liboqs linker fallback is forbidden'
+require_fixed 'PKG_CONFIG_LIBDIR=$depends_prefix/share/pkgconfig:$depends_prefix/lib/pkgconfig' depends/config.site.in 'depends does not isolate target pkg-config metadata'
+reject_fixed 'PKGCONFIG_LIBDIR' depends/config.site.in 'misspelled PKG_CONFIG_LIBDIR defeats cross-build isolation'
+require_fixed '!defined(OQS_VERSION_MAJOR)' src/crypto/mldsa.cpp 'compile-time liboqs major-version guard missing'
+require_fixed '!defined(OQS_VERSION_MINOR)' src/crypto/mldsa.cpp 'compile-time liboqs minor-version guard missing'
+require_fixed 'OQS_VERSION_MAJOR == 0 && OQS_VERSION_MINOR < 12' src/crypto/mldsa.cpp 'compile-time liboqs >=0.12 guard missing'
+require_fixed 'OQS_SIG_ml_dsa_44_length_public_key' src/crypto/mldsa.cpp 'ML-DSA-44 interface size guard missing'
 if ! grep -A4 'libravenconsensus_la_LIBADD' src/Makefile.am | grep -Fq '$(LIBOQS_LIBS)'; then
   fail 'libravenconsensus must link LIBOQS_LIBS'
 fi
@@ -73,9 +109,78 @@ if ! grep -A8 'qt_raven_qt_LDADD' src/Makefile.qt.include | grep -Fq '$(LIBOQS_L
   fail 'raven-qt must link LIBOQS_LIBS'
 fi
 
+# Security regression tests must compile and execute through make check.
+require_fixed 'test/rip25_versionbits_tests.cpp' src/Makefile.test.include 'RIP-25 versionbits test is not wired into make check'
+require_fixed 'test/kawpow_v48_hardening_tests.cpp' src/Makefile.test.include 'KAWPOW v4.8 hardening test is not wired into make check'
+require_fixed 'witness_v2_active_rules_accept_valid_and_reject_invalid_mldsa' src/test/pqkey_hardening_tests.cpp 'active witness-v2 regression missing'
+require_fixed 'SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH' src/test/pqkey_hardening_tests.cpp 'empty active witness-v2 rejection is untested'
+require_fixed 'SCRIPT_ERR_PQ_SIGNATURE_VERIFY_FAILED' src/test/pqkey_hardening_tests.cpp 'malformed ML-DSA rejection is untested'
+require_fixed 'verifyFlags |= SCRIPT_VERIFY_PQ_HYBRID' src/script/sign.cpp 'PQ transaction signing does not self-check under witness-v2 rules'
 
-# GLM follow-up source invariants.
-require_fixed 'premature-pq-witness' src/validation.cpp 'pre-activation PQ output relay gate missing'
-require_fixed 'OQS_VERSION_MINOR' src/crypto/mldsa.cpp 'compile-time liboqs >=0.12 gate missing'
+# Ravencoin Core 4.8.0 security and recovery protections.
+require_fixed 'nHeightHeaderCheckActivation = 4487776' src/chainparams.cpp '4.8 KAWPOW height activation missing'
+require_fixed '4487775, uint256S("0x000000000002d64509e06e76ddbbe418c725291687ec62b41ecfc40386a091fd")' src/chainparams.cpp '4.8 checkpoint baseline changed'
+require_fixed 'IsKAWPOWHeaderHeightValid(block, nHeight,' src/validation.cpp 'production validation bypasses the tested KAWPOW predicate'
+require_fixed 'block.nHeight == static_cast<uint32_t>(actualHeight)' src/consensus/validation.h 'KAWPOW declared-height predicate changed'
+require_fixed 'REJECT_INVALID, "bad-blk-height"' src/validation.cpp 'KAWPOW bad-height rejection missing'
+require_fixed 'vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].bit = 11' src/chainparams.cpp 'transfer-overflow deployment must remain on bit 11'
+require_fixed 'bad-txns-input-asset-totalInputs-toolarge' src/consensus/tx_verify.cpp 'asset input overflow protection missing'
+require_fixed 'bad-txns-transfer-asset-totalOutputs-toolarge' src/consensus/tx_verify.cpp 'asset output overflow protection missing'
+require_fixed 'fRetryWithChainStateRebuild' src/init.cpp 'chainstate-ahead automatic rebuild handling missing'
+require_fixed 'fCoinsAheadOfIndex = !mapBlockIndex.count(pcoinsTip->GetBestBlock())' src/init.cpp 'chainstate-ahead detection missing'
+require_fixed 'passetsdb = new CAssetsDB(nBlockTreeDBCache, false, fReset || fReindexChainState)' src/init.cpp 'asset DB is not wiped on chainstate rebuild'
+require_fixed 'prestricteddb = new CRestrictedDB(nBlockTreeDBCache, false, fReset || fReindexChainState)' src/init.cpp 'restricted-asset DB is not wiped on chainstate rebuild'
+
+# GLM-001 and CI supply-chain integrity: checkout commit is the tested tree.
+final_gate=.github/workflows/rip25-v48-final-gate.yml
+require_min_count 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5' "$final_gate" 2 'final gate checkout is not immutably pinned in every job'
+require_min_count 'persist-credentials: false' "$final_gate" 2 'final gate checkout credentials are not disabled'
+require_min_count 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' "$final_gate" 2 'final gate does not bind checkout HEAD to the reported SHA'
+require_min_count 'test -z "$(git status --porcelain)"' "$final_gate" 2 'final gate does not assert a pristine checkout'
+require_min_count 'id: prebuild_integrity' "$final_gate" 2 'final gate does not recheck tracked source before compilation'
+require_min_count 'run: ./contrib/devtools/check-rip25-v48-invariants.sh' "$final_gate" 2 'final gate does not run the read-only invariant checker in every job'
+reject_fixed 'statuses: write' "$final_gate" 'final gate has unnecessary status write permission'
+reject_fixed 'pull_request_target' "$final_gate" 'final gate must not execute branch code via pull_request_target'
+reject_fixed 'secrets.' "$final_gate" 'final gate must not expose repository secrets'
+reject_fixed 'apply-rip25-v48-port' "$final_gate" 'final gate must not materialize source'
+reject_fixed 'materializ' "$final_gate" 'final gate still describes source materialization'
+
+if grep -RFn -- 'apply-rip25-v48-port' .github/workflows; then
+  fail 'a workflow still invokes or references the RIP-25 materializer'
+fi
+if grep -RFin -- 'materializ' .github/workflows; then
+  fail 'a workflow still contains remediation materialization machinery'
+fi
+if grep -ERn --include='*.yml' --include='*.yaml' 'uses:[[:space:]]+[^[:space:]#]+@(master|main|v[0-9]+)([[:space:]#]|$)' .github/workflows; then
+  fail 'a workflow action still uses a mutable branch or version tag'
+fi
+reject_fixed 'fkirc/skip-duplicate-actions' .github/workflows/build-raven.yml 'redundant third-party duplicate-skip action remains'
+require_fixed 'actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809' .github/workflows/build-raven.yml 'actions/cache pin changed'
+require_fixed 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' .github/workflows/build-raven.yml 'actions/upload-artifact pin changed'
+require_fixed 'permissions:' .github/workflows/build-raven.yml 'build workflow lacks explicit permissions'
+require_fixed '  contents: read' .github/workflows/build-raven.yml 'build workflow permissions are not read-only'
+release_workflow=.github/workflows/build-raven.yml
+require_fixed '      - fix/rip25-v48-glm-remediation' "$release_workflow" 'release workflow does not build remediation-branch pushes'
+require_fixed 'runs-on: ubuntu-22.04' "$release_workflow" 'release workflow uses an unsupported runner'
+require_fixed "OS: [ 'windows', 'osx' ]" "$release_workflow" 'release workflow is not statically limited to Windows and macOS'
+require_fixed 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' "$release_workflow" 'release workflow does not bind source to the reported SHA'
+require_fixed 'test -z "$(git status --porcelain)"' "$release_workflow" 'release workflow does not require a pristine checkout'
+require_min_count 'bash -Eeuo pipefail' "$release_workflow" 4 'release helper scripts are not invoked fail closed'
+require_fixed 'if-no-files-found: error' "$release_workflow" 'release artifact upload permits missing output'
+require_fixed '436df6dfc7073365d12f8ef6c1fdb060777c720602cc67c2dcf9a59d94290e38' .github/scripts/02-copy-build-dependencies.sh 'macOS SDK checksum pin changed'
+require_fixed 'sha256sum --check' .github/scripts/02-copy-build-dependencies.sh 'macOS SDK is not verified before extraction'
+reject_fixed 'pip3 install ds-store' .github/scripts/00-install-deps.sh 'release workflow uses an unpinned PyPI ds-store package'
+
+temporary_paths=(
+  .glm-remediation-trigger
+  contrib/devtools/one-shot-glm-remediation.sh
+  contrib/devtools/remediate-glm-rip25-v48.py
+  .github/workflows/rip25-glm-remediation.yml
+  .github/workflows/rip25-glm-remediate-once.yml
+  .github/workflows/rip25-glm-remediate-pr.yml
+)
+for path in "${temporary_paths[@]}"; do
+  [[ ! -e "$path" ]] || fail "temporary remediation infrastructure remains: $path"
+done
 
 echo 'RIP-25/v4.8 invariants: OK'

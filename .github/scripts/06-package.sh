@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+
 OS=${1}
 GITHUB_WORKSPACE=${2}
 GITHUB_BASE_REF=${3}
 
-echo "----------------------------------------"
-env
-echo "----------------------------------------"
 
 if [[ ! ${OS} || ! ${GITHUB_WORKSPACE} || ! ${GITHUB_BASE_REF} ]]; then
     echo "Error: Invalid options"
