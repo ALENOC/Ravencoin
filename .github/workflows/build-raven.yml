@@ -138,7 +138,9 @@ jobs:
         fi
 
     - name: Build Config
-      run: ./autogen.sh
+      run: |
+        ./autogen.sh
+        mkdir -p "$HOME/.ccache"
 
     - name: Configure Build
       run: bash -Eeuo pipefail "${SCRIPTS}/04-configure-build.sh" "${{ matrix.OS }}" "$GITHUB_WORKSPACE"

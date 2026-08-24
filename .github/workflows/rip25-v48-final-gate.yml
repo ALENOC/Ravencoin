@@ -67,6 +67,7 @@ jobs:
         name: Configure Linux test build
         run: |
           ./autogen.sh
+          mkdir -p "$HOME/.ccache"
           CONFIG_SITE="$PWD/depends/x86_64-pc-linux-gnu/share/config.site" \
             ./configure --without-gui --disable-bench
 
@@ -165,6 +166,7 @@ jobs:
         shell: bash
         run: |
           ./autogen.sh
+          mkdir -p "$HOME/.ccache"
           CONFIG_SITE="$PWD/depends/${{ matrix.host }}/share/config.site" \
             ./configure ${{ matrix.configure_flags }}
 
