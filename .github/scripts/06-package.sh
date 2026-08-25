@@ -58,7 +58,11 @@ if [[ ${OS} == "windows" ]]; then
     make install DESTDIR=${STAGE_DIR}/${DISTNAME}
 
     cd ${STAGE_DIR}
-    mv ${DISTNAME}/bin/*.dll ${DISTNAME}/lib/
+    # Depends builds link statically, so there may be no DLLs to move;
+    # a hard glob failure here would discard an otherwise complete build.
+    if compgen -G "${DISTNAME}/bin/*.dll" > /dev/null; then
+        mv ${DISTNAME}/bin/*.dll ${DISTNAME}/lib/
+    fi
     find . -name "lib*.la" -delete
     find . -name "lib*.a" -delete
     rm -rf ${DISTNAME}/lib/pkgconfig
@@ -95,7 +99,11 @@ if [[ ${OS} == "windows" ]]; then
     done
     
 elif [[ ${OS} == "osx" ]]; then
-    
+
+    # macdeploy's custom_dsstore.py needs the ds_store module; use the
+    # checksum-pinned depends build rather than an unpinned PyPI install.
+    export PYTHONPATH="${GITHUB_WORKSPACE}/depends/x86_64-apple-darwin14/native/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+
     make install-strip DESTDIR=${STAGE_DIR}/${DISTNAME}
 
     make osx_volname
