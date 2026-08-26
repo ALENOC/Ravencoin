@@ -599,12 +599,15 @@ bool AreEnforcedValuesDeployed();
 
 bool AreCoinbaseCheckAssetsDeployed();
 
+/** Transfer-overflow enforcement for the block after pindexPrev. */
+bool IsTransferOverflowCheckActive(const CBlockIndex* pindexPrev, const Consensus::Params& params);
+
+/** Transfer-overflow state for active-tip policy callers. */
 bool IsTransferOverflowCheckDeployed();
 
 // Only used by test framework
 void SetEnforcedValues(bool value);
 void SetEnforcedCoinbase(bool value);
-void SetTransferOverflow(bool value);
 
 bool IsRip5Active();
 

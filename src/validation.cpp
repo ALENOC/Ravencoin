@@ -123,6 +123,7 @@ CTxMemPool mempool(&feeEstimator);
 
 static void CheckBlockIndex(const Consensus::Params& consensusParams);
 static bool IsPQHybridActiveLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params);
+static bool IsTransferOverflowCheckActiveLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params);
 
 /** Constant stuff for coinbase transactions we create: */
 CScript COINBASE_FLAGS;
@@ -540,6 +541,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
     // Reject transactions with witness before segregated witness activates (override with -prematurewitness)
     bool witnessEnabled = IsWitnessEnabled(chainActive.Tip(), chainparams.GetConsensus());
     const bool pqEnabled = IsPQHybridActiveLocked(chainActive.Tip(), chainparams.GetConsensus());
+    const bool transferOverflowActive = IsTransferOverflowCheckActiveLocked(chainActive.Tip(), chainparams.GetConsensus());
     if (!gArgs.GetBoolArg("-prematurewitness", false) && tx.HasWitness() && !witnessEnabled) {
         return state.DoS(0, false, REJECT_NONSTANDARD, "no-witness-yet", true);
     }
@@ -681,7 +683,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
         }
 
         if (AreAssetsDeployed()) {
-            if (!Consensus::CheckTxAssets(tx, state, view, GetCurrentAssetCache(), true, vReissueAssets))
+            if (!Consensus::CheckTxAssets(tx, state, view, GetCurrentAssetCache(), true, vReissueAssets, transferOverflowActive))
                 return error("%s: Consensus::CheckTxAssets: %s, %s", __func__, tx.GetHash().ToString(),
                              FormatStateMessage(state));
         }
@@ -2309,6 +2311,18 @@ void ThreadScriptCheck() {
 // Protected by cs_main
 VersionBitsCache versionbitscache;
 
+static bool IsTransferOverflowCheckActiveLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    AssertLockHeld(cs_main);
+    return VersionBitsState(pindexPrev, params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW, versionbitscache) == THRESHOLD_ACTIVE;
+}
+
+bool IsTransferOverflowCheckActive(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    LOCK(cs_main);
+    return IsTransferOverflowCheckActiveLocked(pindexPrev, params);
+}
+
 static bool IsPQHybridActiveLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params)
 {
     AssertLockHeld(cs_main);
@@ -2578,6 +2592,7 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     // Get the script flags and active resource limits for this block.
     unsigned int flags = GetBlockScriptFlags(pindex, chainparams.GetConsensus());
     const bool pqWitnessDiscountActive = IsPQWitnessDiscountActive(pindex->pprev, chainparams.GetConsensus());
+    const bool transferOverflowActive = IsTransferOverflowCheckActiveLocked(pindex->pprev, chainparams.GetConsensus());
     const unsigned int activeBlockWeightLimit = GetMaxBlockWeightForPrevLocked(pindex->pprev, chainparams.GetConsensus());
     int64_t contextualBlockWeight = GetBlockWeight(block);
 
@@ -2645,7 +2660,7 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
 
             if (AreAssetsDeployed()) {
                 std::vector<std::pair<std::string, uint256>> vReissueAssets;
-                if (!Consensus::CheckTxAssets(tx, state, view, assetsCache, false, vReissueAssets, false, &setMessages, block.nTime, &myNullAssetData)) {
+                if (!Consensus::CheckTxAssets(tx, state, view, assetsCache, false, vReissueAssets, transferOverflowActive, false, &setMessages, block.nTime, &myNullAssetData)) {
                     state.SetFailedTransaction(tx.GetHash());
                     return error("%s: Consensus::CheckTxAssets: %s, %s", __func__, tx.GetHash().ToString(),
                                  FormatStateMessage(state));
@@ -3451,7 +3466,11 @@ bool static ConnectTip(CValidationState& state, const CChainParams& chainparams,
     int64_t nTime5 = GetTimeMicros(); nTimeChainState += nTime5 - nTime4;
     LogPrint(BCLog::BENCH, "  - Writing chainstate: %.2fms [%.2fs (%.2fms/blk)]\n", (nTime5 - nTime4) * MILLI, nTimeChainState * MICRO, nTimeChainState * MILLI / nBlocksTotal);
     // Remove conflicting transactions from the mempool.;
-    mempool.removeForBlock(blockConnecting.vtx, pindexNew->nHeight, assetDataFromBlock);
+    // The mempool is revalidated for the block *after* pindexNew.  Resolve the
+    // deployment against pindexNew itself even though chainActive is updated
+    // a few lines below.
+    const bool transferOverflowActive = IsTransferOverflowCheckActiveLocked(pindexNew, chainparams.GetConsensus());
+    mempool.removeForBlock(blockConnecting.vtx, pindexNew->nHeight, assetDataFromBlock, transferOverflowActive);
     disconnectpool.removeForBlock(blockConnecting.vtx);
     // Update chainActive & related variables.
     UpdateTip(pindexNew, chainparams);
@@ -5925,11 +5944,6 @@ void SetEnforcedCoinbase(bool value)
     fCheckCoinbaseAssetsIsActive = value;
 }
 
-// Only used by test framework
-void SetTransferOverflow(bool value) {
-    fCheckTransferOverflowIsActive = value;
-}
-
 bool AreEnforcedValuesDeployed()
 {
     if (fEnforcedValuesIsActive)
@@ -6024,14 +6038,8 @@ bool IsRestrictedActive(unsigned int nBlockNumber)
 
 bool IsTransferOverflowCheckDeployed()
 {
-    if (fCheckTransferOverflowIsActive)
-        return true;
-
-    const ThresholdState thresholdState = VersionBitsTipState(GetParams().GetConsensus(), Consensus::DEPLOYMENT_TRANSFER_OVERFLOW);
-    if (thresholdState == THRESHOLD_ACTIVE)
-        fCheckTransferOverflowIsActive = true;
-
-    return fCheckTransferOverflowIsActive;
+    LOCK(cs_main);
+    return IsTransferOverflowCheckActiveLocked(chainActive.Tip(), GetParams().GetConsensus());
 }
 
 CAssetsCache* GetCurrentAssetCache()

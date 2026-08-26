@@ -604,7 +604,7 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
 }
 
 //! Check to make sure that the inputs and outputs CAmount match exactly.
-bool Consensus::CheckTxAssets(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, CAssetsCache* assetCache, bool fCheckMempool, std::vector<std::pair<std::string, uint256> >& vPairReissueAssets, const bool fRunningUnitTests, std::set<CMessage>* setMessages, int64_t nBlocktime,   std::vector<std::pair<std::string, CNullAssetTxData>>* myNullAssetData)
+bool Consensus::CheckTxAssets(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, CAssetsCache* assetCache, bool fCheckMempool, std::vector<std::pair<std::string, uint256> >& vPairReissueAssets, const bool fTransferOverflowActive, const bool fRunningUnitTests, std::set<CMessage>* setMessages, int64_t nBlocktime,   std::vector<std::pair<std::string, CNullAssetTxData>>* myNullAssetData)
 {
     // are the actual inputs available?
     if (!inputs.HaveInputs(tx)) {
@@ -627,7 +627,7 @@ bool Consensus::CheckTxAssets(const CTransaction& tx, CValidationState& state, c
             if (!GetAssetData(coin.out.scriptPubKey, data))
                 return state.DoS(100, false, REJECT_INVALID, "bad-txns-failed-to-get-asset-from-script", false, "", tx.GetHash());
 
-            if (IsTransferOverflowCheckDeployed()) {
+            if (fTransferOverflowActive) {
                 if (data.nAmount < 0)
                     return state.DoS(100, false, REJECT_INVALID, "bad-txns-input-asset-amount-negative", false, "", tx.GetHash());
                 if (data.nAmount > MAX_MONEY)
@@ -645,7 +645,7 @@ bool Consensus::CheckTxAssets(const CTransaction& tx, CValidationState& state, c
             else
                 totalInputs.insert(make_pair(data.assetName, data.nAmount));
 
-            if (IsTransferOverflowCheckDeployed()) {
+            if (fTransferOverflowActive) {
                 if (!MoneyRange(totalInputs.at(data.assetName)))
                     return state.DoS(100, false, REJECT_INVALID, "bad-txns-input-asset-totalInputs-toolarge", false, "", tx.GetHash());
             } else {
@@ -712,7 +712,7 @@ bool Consensus::CheckTxAssets(const CTransaction& tx, CValidationState& state, c
             if (!ContextualCheckTransferAsset(assetCache, transfer, address, strError))
                 return state.DoS(100, false, REJECT_INVALID, strError, false, "", tx.GetHash());
 
-            if (IsTransferOverflowCheckDeployed()) {
+            if (fTransferOverflowActive) {
                 if (transfer.nAmount < 0)
                     return state.DoS(100, false, REJECT_INVALID, "bad-txns-transfer-asset-amount-negative", false, "", tx.GetHash());
                 if (transfer.nAmount > MAX_MONEY)
@@ -730,7 +730,7 @@ bool Consensus::CheckTxAssets(const CTransaction& tx, CValidationState& state, c
             else
                 totalOutputs.insert(make_pair(transfer.strName, transfer.nAmount));
 
-            if (IsTransferOverflowCheckDeployed()) {
+            if (fTransferOverflowActive) {
                 if (!MoneyRange(totalOutputs.at(transfer.strName)))
                     return state.DoS(100, false, REJECT_INVALID, "bad-txns-transfer-asset-totalOutputs-toolarge", false, "", tx.GetHash());
             } else {

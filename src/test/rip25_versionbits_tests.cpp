@@ -3,7 +3,10 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "chain.h"
+#include "chainparams.h"
 #include "consensus/params.h"
+#include "test/test_raven.h"
+#include "validation.h"
 #include "versionbits.h"
 
 #include <boost/test/unit_test.hpp>
@@ -18,20 +21,23 @@ namespace {
 class SyntheticVersionBitsChain
 {
 private:
+    CBlockIndex* base;
     std::vector<std::unique_ptr<CBlockIndex>> blocks;
 
 public:
-    const CBlockIndex* Tip() const
+    explicit SyntheticVersionBitsChain(CBlockIndex* baseIn = nullptr) : base(baseIn) {}
+
+    CBlockIndex* Tip() const
     {
-        return blocks.empty() ? nullptr : blocks.back().get();
+        return blocks.empty() ? base : blocks.back().get();
     }
 
     void Mine(unsigned int count, int32_t version)
     {
         for (unsigned int i = 0; i < count; ++i) {
             auto block = std::make_unique<CBlockIndex>();
-            block->nHeight = static_cast<int>(blocks.size());
-            block->pprev = blocks.empty() ? nullptr : blocks.back().get();
+            block->pprev = Tip();
+            block->nHeight = block->pprev ? block->pprev->nHeight + 1 : 0;
             block->nTime = 100000 + block->nHeight;
             block->nVersion = version;
             block->BuildSkip();
@@ -120,6 +126,77 @@ BOOST_AUTO_TEST_CASE(overflow_bit11_does_not_signal_pq_bit12)
 
     BOOST_CHECK_EQUAL(VersionBitsState(chain.Tip(), params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW, cache), THRESHOLD_LOCKED_IN);
     BOOST_CHECK_EQUAL(VersionBitsState(chain.Tip(), params, Consensus::DEPLOYMENT_PQ_HYBRID, cache), THRESHOLD_STARTED);
+}
+
+BOOST_AUTO_TEST_CASE(transfer_overflow_state_rewinds_across_forks)
+{
+    Consensus::Params params = MakeRIP25VersionBitsParams();
+    VersionBitsCache cache;
+    SyntheticVersionBitsChain common;
+    const uint32_t overflowMask = VersionBitsMask(params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW);
+
+    common.Mine(4, VERSIONBITS_TOP_BITS);
+
+    SyntheticVersionBitsChain activeBranch(common.Tip());
+    activeBranch.Mine(3, VERSIONBITS_TOP_BITS | overflowMask);
+    activeBranch.Mine(1, VERSIONBITS_TOP_BITS);
+    activeBranch.Mine(4, VERSIONBITS_TOP_BITS);
+
+    SyntheticVersionBitsChain startedBranch(common.Tip());
+    startedBranch.Mine(8, VERSIONBITS_TOP_BITS);
+
+    // Query ACTIVE first using the same cache, then rewind to the alternate
+    // STARTED fork.  Activation must be a property of pindexPrev, not history.
+    BOOST_REQUIRE_EQUAL(VersionBitsState(activeBranch.Tip(), params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW, cache), THRESHOLD_ACTIVE);
+    BOOST_CHECK_EQUAL(VersionBitsState(startedBranch.Tip(), params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW, cache), THRESHOLD_STARTED);
+    BOOST_CHECK(IsTransferOverflowCheckActive(activeBranch.Tip(), params));
+    BOOST_CHECK(!IsTransferOverflowCheckActive(startedBranch.Tip(), params));
+}
+
+struct TransferOverflowRegtestSetup : BasicTestingSetup
+{
+    TransferOverflowRegtestSetup() : BasicTestingSetup(CBaseChainParams::REGTEST) {}
+};
+
+BOOST_FIXTURE_TEST_CASE(transfer_overflow_active_tip_policy_is_not_sticky, TransferOverflowRegtestSetup)
+{
+    const Consensus::Params& params = GetParams().GetConsensus();
+    const uint32_t overflowMask = VersionBitsMask(params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW);
+    const unsigned int period = params.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideMinerConfirmationWindow;
+    const unsigned int threshold = params.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideRuleChangeActivationThreshold;
+    BOOST_REQUIRE(period > 0);
+    BOOST_REQUIRE(threshold > 0);
+    BOOST_REQUIRE(threshold <= period);
+
+    SyntheticVersionBitsChain common;
+    common.Mine(period, VERSIONBITS_TOP_BITS);
+
+    SyntheticVersionBitsChain activeBranch(common.Tip());
+    activeBranch.Mine(threshold, VERSIONBITS_TOP_BITS | overflowMask);
+    activeBranch.Mine(period - threshold, VERSIONBITS_TOP_BITS);
+    activeBranch.Mine(period, VERSIONBITS_TOP_BITS);
+
+    SyntheticVersionBitsChain startedBranch(common.Tip());
+    startedBranch.Mine(2 * period, VERSIONBITS_TOP_BITS);
+
+    CBlockIndex* originalTip = nullptr;
+    {
+        LOCK(cs_main);
+        originalTip = chainActive.Tip();
+        chainActive.SetTip(activeBranch.Tip());
+    }
+    BOOST_REQUIRE(IsTransferOverflowCheckDeployed());
+
+    {
+        LOCK(cs_main);
+        chainActive.SetTip(startedBranch.Tip());
+    }
+    BOOST_CHECK(!IsTransferOverflowCheckDeployed());
+
+    {
+        LOCK(cs_main);
+        chainActive.SetTip(originalTip);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
