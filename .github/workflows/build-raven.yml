@@ -111,7 +111,7 @@ jobs:
 
     - name: Verify Security and Consensus Invariants
       shell: bash
-      run: ./contrib/devtools/check-rip25-v48-invariants.sh
+      run: ./contrib/devtools/check-rip25-v48-invariants.sh --structural-only
 
     - name: Install Build Tools
       run: sudo bash -Eeuo pipefail "${SCRIPTS}/00-install-deps.sh" "${{ matrix.OS }}"

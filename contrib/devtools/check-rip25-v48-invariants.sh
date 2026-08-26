@@ -28,6 +28,15 @@ require_min_count() {
   (( count >= minimum )) || fail "$message"
 }
 
+mode="${1:---run-tests}"
+if (( $# > 1 )); then
+  fail 'usage: check-rip25-v48-invariants.sh [--structural-only|--run-tests]'
+fi
+case "$mode" in
+  --structural-only|--run-tests) ;;
+  *) fail 'usage: check-rip25-v48-invariants.sh [--structural-only|--run-tests]' ;;
+esac
+
 # Approved RIP-25 protocol architecture.
 require_fixed 'DEPLOYMENT_PQ_HYBRID' src/consensus/params.h 'PQ BIP9 deployment missing'
 require_fixed 'vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12' src/chainparams.cpp 'PQ deployment must remain on BIP9 bit 12'
@@ -51,6 +60,8 @@ require_fixed 'scriptVerifyFlags |= SCRIPT_VERIFY_PQ_HYBRID' src/validation.cpp 
 require_fixed 'premature-pq-witness' src/validation.cpp 'pre-activation witness-v2 output relay rejection missing'
 require_fixed 'witness.stack.size() != 2' src/script/interpreter.cpp 'active witness-v2 must require exactly two witness elements'
 require_fixed 'SCRIPT_ERR_PQ_SIGNATURE_VERIFY_FAILED' src/script/interpreter.cpp 'invalid ML-DSA signatures are not rejected'
+sigop_function="$(sed -n '/^size_t static WitnessSigOps(/,/^}/p' src/script/interpreter.cpp)"
+require_text "$sigop_function" '(flags & SCRIPT_VERIFY_PQ_HYBRID)' 'witness-v2 sigops are not activation-gated'
 if grep -A30 'STANDARD_SCRIPT_VERIFY_FLAGS' src/policy/policy.h | grep -Fq 'SCRIPT_VERIFY_PQ_HYBRID'; then
   fail 'SCRIPT_VERIFY_PQ_HYBRID must not be unconditional in standard flags'
 fi
@@ -67,6 +78,19 @@ require_fixed 'contextualBlockWeight > activeBlockWeightLimit' src/validation.cp
 require_fixed 'preliminaryWeight > activeWeightLimit' src/validation.cpp 'contextual preliminary block-weight check missing'
 require_fixed 'const size_t activeMaxWeight = GetMaxBlockWeightForPrev(pindexPrev, chainparams.GetConsensus())' src/miner.cpp 'miner does not query the active contextual limit'
 require_fixed 'std::min<size_t>(nBlockMaxWeight, activeMaxWeight - 4000)' src/miner.cpp 'miner is not clamped below the active contextual limit'
+require_fixed 'GetMaxBlockSerializedSizeForPrev(pindexPrev, chainparams.GetConsensus())' src/miner.cpp 'miner does not query the contextual serialized-size limit'
+require_fixed 'GetContextualTransactionWeight(tx, view, fApplyPQDiscount)' src/miner.cpp 'miner weight is not bound to the UTXO context'
+require_fixed 'nBlockSerializedSize + resources.serializedSize' src/miner.cpp 'miner does not enforce serialized bytes while selecting packages'
+
+# Remediated high-risk resource paths. These checks are structural lint; the
+# executable tests below are the security evidence.
+require_fixed 'MAX_BLOCK_WEIGHT_RIP25_PHASE2 / MIN_TRANSACTION_INPUT_WEIGHT' src/undo.h 'undo deserialization does not use the structural 16-MWU bound'
+reject_fixed 'fCheckTransferOverflowIsActive' src/consensus/consensus.h 'forbidden sticky transfer-overflow activation state'
+require_fixed 'const bool fTransferOverflowActive' src/consensus/tx_verify.h 'asset overflow validation lacks an explicit contextual gate'
+require_fixed 'IsTransferOverflowCheckActiveLocked(pindex->pprev' src/validation.cpp 'block validation does not derive transfer-overflow state from the candidate parent'
+require_fixed 'class CNetMessageBuffer' src/net.h 'incomplete P2P payloads lack connection-wide accounting'
+require_fixed 'recvBuffer.TryReserve' src/net.cpp 'P2P receive path allocates without reserving incomplete payload memory'
+require_fixed 'recvBuffer.Release(msg.vRecv.capacity())' src/net.cpp 'P2P completion does not release incomplete payload memory'
 
 # Encrypted PQ wallet persistence: ciphertext path must return before plaintext.
 wallet_pq_function="$(sed -n '/^bool CWallet::AddPQKeyPubKey(/,/^}/p' src/wallet/wallet.cpp)"
@@ -84,6 +108,10 @@ require_fixed 'wallet/test/pq_wallet_tests.cpp' src/Makefile.test.include 'PQ wa
 require_fixed 'encrypted_pq_keys_are_ciphertext_only_after_reload_and_backup' src/wallet/test/pq_wallet_tests.cpp 'encrypted PQ wallet reload/backup regression missing'
 require_fixed 'std::string("pqkey")' src/wallet/test/pq_wallet_tests.cpp 'PQ wallet regression does not inspect plaintext DB records'
 require_fixed 'std::string("cpqkey")' src/wallet/test/pq_wallet_tests.cpp 'PQ wallet regression does not inspect ciphertext DB records'
+require_fixed 'if (!EraseIC(std::make_pair(std::string("pqkey")' src/wallet/walletdb.cpp 'encrypted PQ persistence ignores plaintext erase failure'
+require_fixed 'HasPlaintextPQKeys' src/wallet/wallet.cpp 'encrypted backup does not scan for plaintext PQ records'
+require_fixed 'if (!dbw->Rewrite())' src/wallet/wallet.cpp 'wallet encryption/backup does not propagate rewrite failure'
+require_fixed '!mapKeys.empty() || !mapPQKeys.empty()' src/wallet/crypter.cpp 'crypted mode permits resident plaintext PQ keys'
 
 # liboqs is consensus-critical and must be version-proven.
 require_fixed 'liboqs' depends/packages/packages.mk 'liboqs missing from depends package graph'
@@ -138,7 +166,8 @@ require_min_count 'persist-credentials: false' "$final_gate" 2 'final gate check
 require_min_count 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' "$final_gate" 2 'final gate does not bind checkout HEAD to the reported SHA'
 require_min_count 'test -z "$(git status --porcelain)"' "$final_gate" 2 'final gate does not assert a pristine checkout'
 require_min_count 'id: prebuild_integrity' "$final_gate" 2 'final gate does not recheck tracked source before compilation'
-require_min_count 'run: ./contrib/devtools/check-rip25-v48-invariants.sh' "$final_gate" 2 'final gate does not run the read-only invariant checker in every job'
+require_min_count 'run: ./contrib/devtools/check-rip25-v48-invariants.sh --structural-only' "$final_gate" 2 'final gate does not run structural lint in every job'
+require_fixed 'run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests' "$final_gate" 'final gate does not run the behavioral invariant suite'
 reject_fixed 'statuses: write' "$final_gate" 'final gate has unnecessary status write permission'
 reject_fixed 'pull_request_target' "$final_gate" 'final gate must not execute branch code via pull_request_target'
 reject_fixed 'secrets.' "$final_gate" 'final gate must not expose repository secrets'
@@ -183,4 +212,34 @@ for path in "${temporary_paths[@]}"; do
   [[ ! -e "$path" ]] || fail "temporary remediation infrastructure remains: $path"
 done
 
-echo 'RIP-25/v4.8 invariants: OK'
+if [[ "$mode" == '--structural-only' ]]; then
+  echo 'RIP-25/v4.8 structural lint: OK (behavior not certified)'
+  exit 0
+fi
+
+test_binary=src/test/test_raven
+[[ -x "$test_binary" ]] || fail "behavioral test binary is missing or not executable: $test_binary"
+newer_source="$(find src -type f \( -name '*.cpp' -o -name '*.h' \) -newer "$test_binary" -print -quit)"
+[[ -z "$newer_source" ]] || fail "behavioral test binary is stale relative to: $newer_source"
+
+behavioral_tests=(
+  sigopcount_tests/rip25_v2_sigops_activation_gated
+  rip25_versionbits_tests
+  asset_tx_tests/transfer_overflow_checks_follow_explicit_context
+  coins_tests/txundo_large_roundtrip_test
+  coins_tests/txundo_deserialization_limit_test
+  rip25_miner_tests
+  net_tests/incomplete_message_buffer_concurrent_global_limit
+  net_tests/incomplete_message_buffer_releases_reservations
+  net_tests/maximum_message_completes_with_global_buffer_limit
+  pqkey_hardening_tests
+  kawpow_v48_hardening_tests
+  pq_wallet_tests
+)
+
+for test_filter in "${behavioral_tests[@]}"; do
+  echo "RIP-25/v4.8 behavioral invariant: $test_filter"
+  "$test_binary" --run_test="$test_filter" --log_level=test_suite
+done
+
+echo 'RIP-25/v4.8 structural + behavioral invariants: OK'

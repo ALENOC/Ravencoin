@@ -47,9 +47,9 @@ jobs:
             cmake curl git libtool pkg-config python3 ninja-build
 
       - id: invariants
-        name: Verify security and consensus invariants
+        name: Lint security and consensus invariants
         shell: bash
-        run: ./contrib/devtools/check-rip25-v48-invariants.sh
+        run: ./contrib/devtools/check-rip25-v48-invariants.sh --structural-only
 
       - id: depends
         name: Build pinned dependencies
@@ -78,6 +78,11 @@ jobs:
       - id: unit_tests
         name: Run unit and regression tests
         run: make check
+
+      - id: behavioral_invariants
+        name: Verify behavioral security invariants
+        shell: bash
+        run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests
 
   build:
     name: build (${{ matrix.name }})
@@ -145,9 +150,9 @@ jobs:
           fi
 
       - id: invariants
-        name: Verify security and consensus invariants
+        name: Lint security and consensus invariants
         shell: bash
-        run: ./contrib/devtools/check-rip25-v48-invariants.sh
+        run: ./contrib/devtools/check-rip25-v48-invariants.sh --structural-only
 
       - id: depends
         name: Build pinned dependencies
