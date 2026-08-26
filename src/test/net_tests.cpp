@@ -14,6 +14,38 @@
 #include "chainparams.h"
 #include "util.h"
 
+#include <atomic>
+#include <thread>
+
+static std::unique_ptr<CNode> MakeTestNode(NodeId id, CNetMessageBuffer& recvBuffer)
+{
+    return std::unique_ptr<CNode>(new CNode(id, NODE_NETWORK, 0, INVALID_SOCKET,
+                                            CAddress(), 0, 0, CAddress(), recvBuffer));
+}
+
+static void ReceiveHeader(CNode& node, unsigned int nMessageSize)
+{
+    CDataStream header(SER_NETWORK, INIT_PROTO_VERSION);
+    header << CMessageHeader(GetParams().MessageStart(), NetMsgType::BLOCK, nMessageSize);
+    bool complete = false;
+    BOOST_REQUIRE(node.ReceiveMsgBytes(header.data(), static_cast<unsigned int>(header.size()), complete));
+    BOOST_CHECK(!complete);
+}
+
+static bool ReceivePayload(CNode& node, size_t nBytes, size_t nChunkSize, bool& complete)
+{
+    std::vector<char> chunk(nChunkSize, 0);
+    complete = false;
+    while (nBytes != 0) {
+        const size_t nNow = std::min(nBytes, chunk.size());
+        if (!node.ReceiveMsgBytes(chunk.data(), static_cast<unsigned int>(nNow), complete)) {
+            return false;
+        }
+        nBytes -= nNow;
+    }
+    return true;
+}
+
 class CAddrManSerializationMock : public CAddrMan
 {
 public:
@@ -188,14 +220,89 @@ BOOST_FIXTURE_TEST_SUITE(net_tests, BasicTestingSetup)
         bool fInboundIn = false;
 
         // Test that fFeeler is false by default.
-        std::unique_ptr<CNode> pnode1(new CNode(id++, NODE_NETWORK, height, hSocket, addr, 0, 0, CAddress(), pszDest, fInboundIn));
+        CNetMessageBuffer recvBuffer(MAX_PROTOCOL_MESSAGE_LENGTH);
+        std::unique_ptr<CNode> pnode1(new CNode(id++, NODE_NETWORK, height, hSocket, addr, 0, 0, CAddress(), recvBuffer, pszDest, fInboundIn));
         BOOST_CHECK(pnode1->fInbound == false);
         BOOST_CHECK(pnode1->fFeeler == false);
 
         fInboundIn = true;
-        std::unique_ptr<CNode> pnode2(new CNode(id++, NODE_NETWORK, height, hSocket, addr, 1, 1, CAddress(), pszDest, fInboundIn));
+        std::unique_ptr<CNode> pnode2(new CNode(id++, NODE_NETWORK, height, hSocket, addr, 1, 1, CAddress(), recvBuffer, pszDest, fInboundIn));
         BOOST_CHECK(pnode2->fInbound == true);
         BOOST_CHECK(pnode2->fFeeler == false);
+    }
+
+    BOOST_AUTO_TEST_CASE(incomplete_message_buffer_concurrent_global_limit)
+    {
+        static const size_t NODE_COUNT = 4;
+        static const size_t CHUNK_SIZE = 64 * 1024;
+        static const size_t FIRST_ALLOCATION = CHUNK_SIZE + 256 * 1024;
+        static const size_t BUFFER_LIMIT = 2 * FIRST_ALLOCATION;
+        CNetMessageBuffer recvBuffer(BUFFER_LIMIT);
+        std::vector<std::unique_ptr<CNode>> nodes;
+        for (size_t i = 0; i < NODE_COUNT; ++i) {
+            nodes.push_back(MakeTestNode(i, recvBuffer));
+            ReceiveHeader(*nodes.back(), MAX_PROTOCOL_MESSAGE_LENGTH);
+        }
+
+        std::atomic<size_t> ready(0);
+        std::atomic<bool> start(false);
+        std::vector<int> results(NODE_COUNT, 0);
+        std::vector<std::thread> threads;
+        for (size_t i = 0; i < NODE_COUNT; ++i) {
+            threads.emplace_back([&, i]() {
+                ready.fetch_add(1, std::memory_order_release);
+                while (!start.load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+                bool complete = false;
+                results[i] = ReceivePayload(*nodes[i], CHUNK_SIZE, CHUNK_SIZE, complete) ? 1 : 0;
+            });
+        }
+        while (ready.load(std::memory_order_acquire) != NODE_COUNT) {
+            std::this_thread::yield();
+        }
+        start.store(true, std::memory_order_release);
+        for (auto& thread : threads) {
+            thread.join();
+        }
+
+        BOOST_CHECK_EQUAL(std::count(results.begin(), results.end(), 1), 2);
+        BOOST_CHECK_EQUAL(recvBuffer.Size(), BUFFER_LIMIT);
+        nodes.clear();
+        BOOST_CHECK_EQUAL(recvBuffer.Size(), 0);
+    }
+
+    BOOST_AUTO_TEST_CASE(incomplete_message_buffer_releases_reservations)
+    {
+        static const size_t MESSAGE_SIZE = 300 * 1024;
+        CNetMessageBuffer recvBuffer(MESSAGE_SIZE);
+        bool complete = false;
+
+        auto completed = MakeTestNode(0, recvBuffer);
+        ReceiveHeader(*completed, MESSAGE_SIZE);
+        BOOST_REQUIRE(ReceivePayload(*completed, MESSAGE_SIZE, 64 * 1024, complete));
+        BOOST_CHECK(complete);
+        BOOST_CHECK_EQUAL(recvBuffer.Size(), 0);
+
+        auto incomplete = MakeTestNode(1, recvBuffer);
+        ReceiveHeader(*incomplete, MESSAGE_SIZE);
+        BOOST_REQUIRE(ReceivePayload(*incomplete, 1, 1, complete));
+        BOOST_CHECK(!complete);
+        BOOST_CHECK_GT(recvBuffer.Size(), 0);
+        incomplete.reset();
+        BOOST_CHECK_EQUAL(recvBuffer.Size(), 0);
+    }
+
+    BOOST_AUTO_TEST_CASE(maximum_message_completes_with_global_buffer_limit)
+    {
+        CNetMessageBuffer recvBuffer(MAX_PROTOCOL_MESSAGE_LENGTH);
+        auto node = MakeTestNode(0, recvBuffer);
+        ReceiveHeader(*node, MAX_PROTOCOL_MESSAGE_LENGTH);
+
+        bool complete = false;
+        BOOST_REQUIRE(ReceivePayload(*node, MAX_PROTOCOL_MESSAGE_LENGTH, 64 * 1024, complete));
+        BOOST_CHECK(complete);
+        BOOST_CHECK_EQUAL(recvBuffer.Size(), 0);
     }
 
 BOOST_AUTO_TEST_SUITE_END()

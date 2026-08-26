@@ -94,6 +94,29 @@ std::string strSubVersion;
 
 limitedmap<uint256, int64_t> mapAlreadyAskedFor(MAX_INV_SZ);
 
+bool CNetMessageBuffer::TryReserve(size_t nBytes)
+{
+    LOCK(cs_size);
+    if (nBytes > nMaxSize - nSize) {
+        return false;
+    }
+    nSize += nBytes;
+    return true;
+}
+
+void CNetMessageBuffer::Release(size_t nBytes)
+{
+    LOCK(cs_size);
+    assert(nBytes <= nSize);
+    nSize -= nBytes;
+}
+
+size_t CNetMessageBuffer::Size() const
+{
+    LOCK(cs_size);
+    return nSize;
+}
+
 void CConnman::AddOneShot(const std::string& strDest)
 {
     LOCK(cs_vOneShots);
@@ -449,7 +472,7 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
         NodeId id = GetNewNodeId();
         uint64_t nonce = GetDeterministicRandomizer(RANDOMIZER_ID_LOCALHOSTNONCE).Write(id).Finalize();
         CAddress addr_bind = GetBindAddress(hSocket);
-        CNode* pnode = new CNode(id, nLocalServices, GetBestHeight(), hSocket, addrConnect, CalculateKeyedNetGroup(addrConnect), nonce, addr_bind, pszDest ? pszDest : "", false);
+        CNode* pnode = new CNode(id, nLocalServices, GetBestHeight(), hSocket, addrConnect, CalculateKeyedNetGroup(addrConnect), nonce, addr_bind, recvBuffer, pszDest ? pszDest : "", false);
         pnode->AddRef();
 
         return pnode;
@@ -746,8 +769,46 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes, bool& complete
         int handled;
         if (!msg.in_data)
             handled = msg.readHeader(pch, nBytes);
-        else
-            handled = msg.readData(pch, nBytes);
+        else {
+            const size_t nOldCapacity = msg.vRecv.capacity();
+            const size_t nTargetSize = msg.GetDataBufferSize(nBytes);
+            const size_t nReservedGrowth = nTargetSize > nOldCapacity ? nTargetSize - nOldCapacity : 0;
+            if (nReservedGrowth != 0 && !recvBuffer.TryReserve(nReservedGrowth)) {
+                LogPrint(BCLog::NET, "Incomplete message buffer limit exceeded by peer=%i, disconnecting\n", GetId());
+                return false;
+            }
+            nRecvBufferSize += nReservedGrowth;
+            try {
+                handled = msg.readData(pch, nBytes);
+            } catch (...) {
+                // Drop all incomplete payload storage before releasing this
+                // node's reservations. This also makes allocation failures
+                // exception-safe for the global accounting invariant.
+                msg.vRecv.clear_and_free();
+                recvBuffer.Release(nRecvBufferSize);
+                nRecvBufferSize = 0;
+                LogPrint(BCLog::NET, "Failed to allocate incomplete message buffer for peer=%i, disconnecting\n", GetId());
+                return false;
+            }
+
+            const size_t nActualGrowth = msg.vRecv.capacity() - nOldCapacity;
+            if (nActualGrowth > nReservedGrowth && !recvBuffer.TryReserve(nActualGrowth - nReservedGrowth)) {
+                // reserve() is exact on supported standard libraries. Fail closed
+                // if an implementation over-allocates beyond the reservation.
+                msg.vRecv.clear_and_free();
+                recvBuffer.Release(nRecvBufferSize);
+                nRecvBufferSize = 0;
+                LogPrint(BCLog::NET, "Unaccounted message buffer allocation by peer=%i, disconnecting\n", GetId());
+                return false;
+            }
+            if (nActualGrowth > nReservedGrowth) {
+                nRecvBufferSize += nActualGrowth - nReservedGrowth;
+            }
+            if (nReservedGrowth > nActualGrowth) {
+                recvBuffer.Release(nReservedGrowth - nActualGrowth);
+                nRecvBufferSize -= nReservedGrowth - nActualGrowth;
+            }
+        }
 
         if (handled < 0)
             return false;
@@ -761,6 +822,12 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes, bool& complete
         nBytes -= handled;
 
         if (msg.complete()) {
+
+            // The socket handler immediately moves this message to the
+            // separately-accounted processing queue.
+            assert(msg.vRecv.capacity() <= nRecvBufferSize);
+            recvBuffer.Release(msg.vRecv.capacity());
+            nRecvBufferSize -= msg.vRecv.capacity();
 
             //store received bytes per message command
             //to prevent a memory DOS, only allow valid commands
@@ -841,9 +908,12 @@ int CNetMessage::readData(const char *pch, unsigned int nBytes)
     unsigned int nRemaining = hdr.nMessageSize - nDataPos;
     unsigned int nCopy = std::min(nRemaining, nBytes);
 
-    if (vRecv.size() < nDataPos + nCopy) {
-        // Allocate up to 256 KiB ahead, but never more than the total message size.
-        vRecv.resize(std::min(hdr.nMessageSize, nDataPos + nCopy + 256 * 1024));
+    const size_t nTargetSize = GetDataBufferSize(nBytes);
+    if (vRecv.size() < nTargetSize) {
+        // Explicit reserve makes capacity growth match the bytes reserved by
+        // the connection-manager-wide accounting in ReceiveMsgBytes().
+        vRecv.reserve(nTargetSize);
+        vRecv.resize(nTargetSize);
     }
 
     hasher.Write((const unsigned char*)pch, nCopy);
@@ -851,6 +921,14 @@ int CNetMessage::readData(const char *pch, unsigned int nBytes)
     nDataPos += nCopy;
 
     return nCopy;
+}
+
+size_t CNetMessage::GetDataBufferSize(unsigned int nBytes) const
+{
+    const unsigned int nRemaining = hdr.nMessageSize - nDataPos;
+    const unsigned int nCopy = std::min(nRemaining, nBytes);
+    // Allocate up to 256 KiB ahead, but never more than the total message size.
+    return std::min<size_t>(hdr.nMessageSize, static_cast<size_t>(nDataPos) + nCopy + 256 * 1024);
 }
 
 const uint256& CNetMessage::GetMessageHash() const
@@ -1136,7 +1214,7 @@ void CConnman::AcceptConnection(const ListenSocket& hListenSocket) {
     uint64_t nonce = GetDeterministicRandomizer(RANDOMIZER_ID_LOCALHOSTNONCE).Write(id).Finalize();
     CAddress addr_bind = GetBindAddress(hSocket);
 
-    CNode* pnode = new CNode(id, nLocalServices, GetBestHeight(), hSocket, addr, CalculateKeyedNetGroup(addr), nonce, addr_bind, "", true);
+    CNode* pnode = new CNode(id, nLocalServices, GetBestHeight(), hSocket, addr, CalculateKeyedNetGroup(addr), nonce, addr_bind, recvBuffer, "", true);
     pnode->AddRef();
     pnode->fWhitelisted = whitelisted;
     m_msgproc->InitializeNode(pnode);
@@ -1360,7 +1438,7 @@ void CConnman::ThreadSocketHandler()
                         for (; it != pnode->vRecvMsg.end(); ++it) {
                             if (!it->complete())
                                 break;
-                            nSizeAdded += it->vRecv.size() + CMessageHeader::HEADER_SIZE;
+                            nSizeAdded += it->vRecv.capacity() + CMessageHeader::HEADER_SIZE;
                         }
                         {
                             LOCK(pnode->cs_vProcessMsg);
@@ -2246,7 +2324,7 @@ void CConnman::SetNetworkActive(bool active)
     uiInterface.NotifyNetworkActiveChanged(fNetworkActive);
 }
 
-CConnman::CConnman(uint64_t nSeed0In, uint64_t nSeed1In) : nSeed0(nSeed0In), nSeed1(nSeed1In)
+CConnman::CConnman(uint64_t nSeed0In, uint64_t nSeed1In) : recvBuffer(MAX_PROTOCOL_MESSAGE_LENGTH), nSeed0(nSeed0In), nSeed1(nSeed1In)
 {
     fNetworkActive = true;
     setBannedIsDirty = false;
@@ -2752,7 +2830,7 @@ int CConnman::GetBestHeight() const
 
 unsigned int CConnman::GetReceiveFloodSize() const { return nReceiveFloodSize; }
 
-CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress& addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress &addrBindIn, const std::string& addrNameIn, bool fInboundIn) :
+CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress& addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress &addrBindIn, CNetMessageBuffer& recvBufferIn, const std::string& addrNameIn, bool fInboundIn) :
     nTimeConnected(GetSystemTimeInSeconds()),
     addr(addrIn),
     addrBind(addrBindIn),
@@ -2764,7 +2842,9 @@ CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn
     nLocalHostNonce(nLocalHostNonceIn),
     nLocalServices(nLocalServicesIn),
     nMyStartingHeight(nMyStartingHeightIn),
-    nSendVersion(0)
+    nSendVersion(0),
+    recvBuffer(recvBufferIn),
+    nRecvBufferSize(0)
 {
     nServices = NODE_NONE;
     hSocket = hSocketIn;
@@ -2830,6 +2910,8 @@ CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn
 CNode::~CNode()
 {
     CloseSocket(hSocket);
+
+    recvBuffer.Release(nRecvBufferSize);
 
     if (pfilter)
         delete pfilter;

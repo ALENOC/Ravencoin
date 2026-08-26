@@ -118,6 +118,22 @@ struct CSerializedNetMsg
     std::string command;
 };
 
+/** Bounds memory allocated for incomplete P2P message payloads across peers. */
+class CNetMessageBuffer
+{
+private:
+    mutable CCriticalSection cs_size;
+    const size_t nMaxSize;
+    size_t nSize GUARDED_BY(cs_size);
+
+public:
+    explicit CNetMessageBuffer(size_t nMaxSizeIn) : nMaxSize(nMaxSizeIn), nSize(0) {}
+
+    bool TryReserve(size_t nBytes);
+    void Release(size_t nBytes);
+    size_t Size() const;
+};
+
 class NetEventsInterface;
 class CConnman
 {
@@ -390,6 +406,7 @@ private:
 
     unsigned int nSendBufferMaxSize;
     unsigned int nReceiveFloodSize;
+    CNetMessageBuffer recvBuffer;
 
     std::vector<ListenSocket> vhListenSocket;
     std::atomic<bool> fNetworkActive;
@@ -604,6 +621,7 @@ public:
     }
 
     int readHeader(const char *pch, unsigned int nBytes);
+    size_t GetDataBufferSize(unsigned int nBytes) const;
     int readData(const char *pch, unsigned int nBytes);
 };
 
@@ -735,7 +753,7 @@ public:
     CAmount lastSentFeeFilter;
     int64_t nextSendTimeFeeFilter;
 
-    CNode(NodeId id, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress &addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress &addrBindIn, const std::string &addrNameIn = "", bool fInboundIn = false);
+    CNode(NodeId id, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress &addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress &addrBindIn, CNetMessageBuffer& recvBufferIn, const std::string &addrNameIn = "", bool fInboundIn = false);
     ~CNode();
     CNode(const CNode&) = delete;
     CNode& operator=(const CNode&) = delete;
@@ -747,6 +765,8 @@ private:
     const ServiceFlags nLocalServices;
     const int nMyStartingHeight;
     int nSendVersion;
+    CNetMessageBuffer& recvBuffer;
+    size_t nRecvBufferSize;
     std::list<CNetMessage> vRecvMsg;  // Used only by SocketHandler thread
 
     mutable CCriticalSection cs_addrName;

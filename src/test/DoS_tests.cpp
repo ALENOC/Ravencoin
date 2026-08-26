@@ -60,10 +60,11 @@ BOOST_FIXTURE_TEST_SUITE(DoS_tests, TestingSetup)
         BOOST_TEST_MESSAGE("Running Outbound Slow Chain Eviction Test");
 
         std::atomic<bool> interruptDummy(false);
+        CNetMessageBuffer recvBuffer(MAX_PROTOCOL_MESSAGE_LENGTH);
 
         // Mock an outbound peer
         CAddress addr1(ip(0xa0b0c001), NODE_NONE);
-        CNode dummyNode1(id++, ServiceFlags(NODE_NETWORK | NODE_WITNESS), 0, INVALID_SOCKET, addr1, 0, 0, CAddress(), "", /*fInboundIn=*/ false);
+        CNode dummyNode1(id++, ServiceFlags(NODE_NETWORK | NODE_WITNESS), 0, INVALID_SOCKET, addr1, 0, 0, CAddress(), recvBuffer, "", /*fInboundIn=*/ false);
         dummyNode1.SetSendVersion(PROTOCOL_VERSION);
 
         peerLogic->InitializeNode(&dummyNode1);
@@ -99,10 +100,11 @@ BOOST_FIXTURE_TEST_SUITE(DoS_tests, TestingSetup)
         BOOST_TEST_MESSAGE("Running DoS Banning Test");
 
         std::atomic<bool> interruptDummy(false);
+        CNetMessageBuffer recvBuffer(MAX_PROTOCOL_MESSAGE_LENGTH);
 
         connman->ClearBanned();
         CAddress addr1(ip(0xa0b0c001), NODE_NONE);
-        CNode dummyNode1(id++, NODE_NETWORK, 0, INVALID_SOCKET, addr1, 0, 0, CAddress(), "", true);
+        CNode dummyNode1(id++, NODE_NETWORK, 0, INVALID_SOCKET, addr1, 0, 0, CAddress(), recvBuffer, "", true);
         dummyNode1.SetSendVersion(PROTOCOL_VERSION);
         peerLogic->InitializeNode(&dummyNode1);
         dummyNode1.nVersion = 1;
@@ -113,7 +115,7 @@ BOOST_FIXTURE_TEST_SUITE(DoS_tests, TestingSetup)
         BOOST_CHECK(!connman->IsBanned(ip(0xa0b0c001 | 0x0000ff00))); // Different IP, not banned
 
         CAddress addr2(ip(0xa0b0c002), NODE_NONE);
-        CNode dummyNode2(id++, NODE_NETWORK, 0, INVALID_SOCKET, addr2, 1, 1, CAddress(), "", true);
+        CNode dummyNode2(id++, NODE_NETWORK, 0, INVALID_SOCKET, addr2, 1, 1, CAddress(), recvBuffer, "", true);
         dummyNode2.SetSendVersion(PROTOCOL_VERSION);
         peerLogic->InitializeNode(&dummyNode2);
         dummyNode2.nVersion = 1;
@@ -136,11 +138,12 @@ BOOST_FIXTURE_TEST_SUITE(DoS_tests, TestingSetup)
         BOOST_TEST_MESSAGE("Running DoS Banscore Test Test");
 
         std::atomic<bool> interruptDummy(false);
+        CNetMessageBuffer recvBuffer(MAX_PROTOCOL_MESSAGE_LENGTH);
 
         connman->ClearBanned();
         gArgs.ForceSetArg("-banscore", "111"); // because 11 is my favorite number
         CAddress addr1(ip(0xa0b0c001), NODE_NONE);
-        CNode dummyNode1(id++, NODE_NETWORK, 0, INVALID_SOCKET, addr1, 3, 1, CAddress(), "", true);
+        CNode dummyNode1(id++, NODE_NETWORK, 0, INVALID_SOCKET, addr1, 3, 1, CAddress(), recvBuffer, "", true);
         dummyNode1.SetSendVersion(PROTOCOL_VERSION);
         peerLogic->InitializeNode(&dummyNode1);
         dummyNode1.nVersion = 1;
@@ -165,13 +168,14 @@ BOOST_FIXTURE_TEST_SUITE(DoS_tests, TestingSetup)
         BOOST_TEST_MESSAGE("Running DoS Bantime Test");
 
         std::atomic<bool> interruptDummy(false);
+        CNetMessageBuffer recvBuffer(MAX_PROTOCOL_MESSAGE_LENGTH);
 
         connman->ClearBanned();
         int64_t nStartTime = GetTime();
         SetMockTime(nStartTime); // Overrides future calls to GetTime()
 
         CAddress addr(ip(0xa0b0c001), NODE_NONE);
-        CNode dummyNode(id++, NODE_NETWORK, 0, INVALID_SOCKET, addr, 4, 4, CAddress(), "", true);
+        CNode dummyNode(id++, NODE_NETWORK, 0, INVALID_SOCKET, addr, 4, 4, CAddress(), recvBuffer, "", true);
         dummyNode.SetSendVersion(PROTOCOL_VERSION);
         peerLogic->InitializeNode(&dummyNode);
         dummyNode.nVersion = 1;
