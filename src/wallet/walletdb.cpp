@@ -102,11 +102,53 @@ bool CWalletDB::WritePQKey(const uint256& witnessProgram, const CPQPubKey& pqPub
 
 bool CWalletDB::WriteCryptedPQKey(const uint256& witnessProgram, const CPQPubKey& pqPubKey, const std::vector<unsigned char>& vchCryptedSecret)
 {
-    if (!WriteIC(std::make_pair(std::string("cpqkey"), witnessProgram), std::make_pair(pqPubKey, vchCryptedSecret), false)) {
+    const auto cryptedKey = std::make_pair(std::string("cpqkey"), witnessProgram);
+    if (!WriteIC(cryptedKey, std::make_pair(pqPubKey, vchCryptedSecret), false)) {
         return false;
     }
-    EraseIC(std::make_pair(std::string("pqkey"), witnessProgram));
+    if (!EraseIC(std::make_pair(std::string("pqkey"), witnessProgram))) {
+        // The wallet-encryption path wraps this operation in a transaction and
+        // will abort it. For standalone encrypted-key additions, make a
+        // best-effort rollback so a failed erase does not deliberately leave a
+        // new mixed plaintext/ciphertext record pair behind.
+        EraseIC(cryptedKey);
+        return false;
+    }
     return true;
+}
+
+bool CWalletDB::HasPlaintextPQKeys(bool& hasPlaintext)
+{
+    hasPlaintext = false;
+    Dbc* pcursor = batch.GetCursor();
+    if (!pcursor)
+        return false;
+
+    while (true) {
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+        const int ret = batch.ReadAtCursor(pcursor, ssKey, ssValue);
+        if (ret == DB_NOTFOUND)
+            break;
+        if (ret != 0) {
+            pcursor->close();
+            return false;
+        }
+
+        try {
+            std::string strType;
+            ssKey >> strType;
+            if (strType == "pqkey") {
+                hasPlaintext = true;
+                break;
+            }
+        } catch (...) {
+            pcursor->close();
+            return false;
+        }
+    }
+
+    return pcursor->close() == 0;
 }
 
 bool CWalletDB::WriteMasterKey(unsigned int nID, const CMasterKey& kMasterKey)
@@ -250,6 +292,8 @@ public:
     unsigned int nWatchKeys;
     unsigned int nKeyMeta;
     bool fIsEncrypted;
+    bool fHasPlaintextPQKeys;
+    bool fHasCryptedPQKeys;
     bool fAnyUnordered;
     int nFileVersion;
     std::vector<uint256> vWalletUpgrade;
@@ -257,6 +301,8 @@ public:
     CWalletScanState() {
         nKeys = nCKeys = nWatchKeys = nKeyMeta = 0;
         fIsEncrypted = false;
+        fHasPlaintextPQKeys = false;
+        fHasCryptedPQKeys = false;
         fAnyUnordered = false;
         nFileVersion = 0;
     }
@@ -453,6 +499,7 @@ bool ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
         }
         else if (strType == "pqkey")
         {
+            wss.fHasPlaintextPQKeys = true;
             uint256 witnessProgram;
             ssKey >> witnessProgram;
 
@@ -495,6 +542,7 @@ bool ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
         }
         else if (strType == "cpqkey")
         {
+            wss.fHasCryptedPQKeys = true;
             uint256 witnessProgram;
             ssKey >> witnessProgram;
 
@@ -748,6 +796,12 @@ DBErrors CWalletDB::LoadWallet(CWallet* pwallet)
         throw;
     }
     catch (...) {
+        result = DB_CORRUPT;
+    }
+
+    if (wss.fHasPlaintextPQKeys &&
+        (wss.fHasCryptedPQKeys || wss.fIsEncrypted || !pwallet->mapMasterKeys.empty())) {
+        LogPrintf("Error reading wallet database: encrypted wallet contains plaintext PQ keys\n");
         result = DB_CORRUPT;
     }
 
