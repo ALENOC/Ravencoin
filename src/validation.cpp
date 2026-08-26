@@ -474,8 +474,11 @@ void UpdateMempoolForReorg(DisconnectedBlockTransactions &disconnectpool, bool f
     // the disconnectpool that were added back and cleans up the mempool state.
     mempool.UpdateTransactionsFromBlock(vHashUpdate);
 
-    // We also need to remove any now-immature transactions
-    mempool.removeForReorg(pcoinsTip, chainActive.Tip()->nHeight + 1, STANDARD_LOCKTIME_VERIFY_FLAGS);
+    // Remove transactions invalidated by the new tip's maturity, lock-time,
+    // or contextual pre-activation RIP-25 policy.
+    const bool pqEnabled = IsPQHybridActiveLocked(chainActive.Tip(), GetParams().GetConsensus());
+    mempool.removeForReorg(pcoinsTip, chainActive.Tip()->nHeight + 1,
+                           STANDARD_LOCKTIME_VERIFY_FLAGS, pqEnabled);
     // Re-limit mempool size, in case we added any transactions
     LimitMempoolSize(mempool, gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000, gArgs.GetArg("-mempoolexpiry", DEFAULT_MEMPOOL_EXPIRY) * 60 * 60);
 }
@@ -549,16 +552,8 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
     // RIP-25: before BIP9 activation witness-v2 is deliberately an unknown
     // witness program to legacy consensus. Upgraded policy must not relay or
     // mine newly-created v2 outputs until ML-DSA enforcement is ACTIVE.
-    if (!pqEnabled) {
-        for (const CTxOut& txout : tx.vout) {
-            int witnessVersion = -1;
-            std::vector<unsigned char> witnessProgram;
-            if (txout.scriptPubKey.IsWitnessProgram(witnessVersion, witnessProgram) &&
-                witnessVersion == 2 && witnessProgram.size() == 32) {
-                return state.DoS(0, false, REJECT_NONSTANDARD, "premature-pq-witness", true);
-            }
-        }
-    }
+    if (!pqEnabled && HasPQWitnessV2Output(tx))
+        return state.DoS(0, false, REJECT_NONSTANDARD, "premature-pq-witness", true);
 
     // Rather not work on nonstandard transactions (unless -testnet/-regtest)
     std::string reason;

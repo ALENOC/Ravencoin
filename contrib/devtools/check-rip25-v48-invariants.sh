@@ -104,6 +104,16 @@ require_text "$orphan_function" 'MAX_STANDARD_TX_WEIGHT / WITNESS_SCALE_FACTOR' 
 if grep -Fq 'GetTransactionWeight(*tx)' <<<"$orphan_function"; then
   fail 'orphan admission grants an attacker-controlled structural PQ discount'
 fi
+reorg_function="$(sed -n '/^void CTxMemPool::removeForReorg(/,/^}/p' src/txmempool.cpp)"
+require_text "$reorg_function" '!fPQHybridActive' 'mempool reorg cleanup is not gated by contextual PQ activation'
+require_text "$reorg_function" 'HasPQWitnessV2Output(tx)' 'pre-activation reorg cleanup retains witness-v2 creators'
+require_text "$reorg_function" 'SpendsPQWitnessV2Program(txin, prevScriptPubKey)' 'pre-activation reorg cleanup retains native or P2SH witness-v2 spends'
+require_fixed 'IsPQHybridActiveLocked(chainActive.Tip(), GetParams().GetConsensus())' src/validation.cpp 'reorg cleanup does not derive PQ policy from the new active tip'
+pq_spend_function="$(sed -n '/^bool SpendsPQWitnessV2Program(/,/^}/p' src/policy/policy.cpp)"
+require_text "$pq_spend_function" 'txin.scriptSig != CScript() << redeemBytes' 'P2SH witness-v2 detection does not require the canonical single-push scriptSig'
+if grep -Fq 'EvalScript' <<<"$pq_spend_function"; then
+  fail 'mempool reorg cleanup executes attacker-controlled scriptSig while scanning'
+fi
 
 # Encrypted PQ wallet persistence: ciphertext path must return before plaintext.
 wallet_pq_function="$(sed -n '/^bool CWallet::AddPQKeyPubKey(/,/^}/p' src/wallet/wallet.cpp)"
@@ -247,6 +257,7 @@ behavioral_tests=(
   net_tests/maximum_message_completes_with_global_buffer_limit
   DoS_tests/orphan_pq_shape_uses_raw_size_limit
   rpc_tests/rip25_gbt_reports_contextual_resource_limits
+  mempool_tests/rip25_reorg_purges_preactivation_policy_transactions
   pqkey_hardening_tests
   kawpow_v48_hardening_tests
   pq_wallet_tests

@@ -579,7 +579,13 @@ public:
     bool removeSpentIndex(const uint256 txhash);
 
     void removeRecursive(const CTransaction &tx, MemPoolRemovalReason reason = MemPoolRemovalReason::UNKNOWN);
-    void removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMemPoolHeight, int flags);
+    /**
+     * Revalidate the pool against a new chain tip. When RIP-25 is not ACTIVE,
+     * remove witness-v2 creators/spends and their descendants so a rollback
+     * cannot retain transactions that current admission policy would reject.
+     */
+    void removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMemPoolHeight,
+                        int flags, bool fPQHybridActive);
     void removeConflicts(const CTransaction &tx);
     void removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight, ConnectedBlockAssetData& connectedBlockData, bool fTransferOverflowActive);
     void removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight);

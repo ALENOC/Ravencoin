@@ -787,7 +787,8 @@ void CTxMemPool::removeRecursive(const CTransaction &origTx, MemPoolRemovalReaso
     }
 }
 
-void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMemPoolHeight, int flags)
+void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMemPoolHeight,
+                                int flags, bool fPQHybridActive)
 {
     // Remove transactions spending a coinbase which are now immature and no-longer-final transactions
     LOCK(cs);
@@ -812,6 +813,30 @@ void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMem
                     break;
                 }
             }
+        }
+        if (!fPQHybridActive && !txToRemove.count(it)) {
+            bool removeForPQRollback = HasPQWitnessV2Output(tx);
+            for (const CTxIn& txin : tx.vin) {
+                if (removeForPQRollback)
+                    break;
+
+                CScript prevScriptPubKey;
+                const indexed_transaction_set::const_iterator parent = mapTx.find(txin.prevout.hash);
+                if (parent != mapTx.end()) {
+                    if (txin.prevout.n >= parent->GetTx().vout.size())
+                        continue;
+                    prevScriptPubKey = parent->GetTx().vout[txin.prevout.n].scriptPubKey;
+                } else {
+                    const Coin& coin = pcoins->AccessCoin(txin.prevout);
+                    if (coin.IsSpent())
+                        continue;
+                    prevScriptPubKey = coin.out.scriptPubKey;
+                }
+
+                removeForPQRollback = SpendsPQWitnessV2Program(txin, prevScriptPubKey);
+            }
+            if (removeForPQRollback)
+                txToRemove.insert(it);
         }
         if (!validLP) {
             mapTx.modify(it, update_lock_points(lp));

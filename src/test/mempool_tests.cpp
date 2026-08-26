@@ -4,8 +4,11 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "policy/policy.h"
+#include "crypto/mldsa.h"
+#include "script/standard.h"
 #include "txmempool.h"
 #include "util.h"
+#include "validation.h"
 
 #include "test/test_raven.h"
 
@@ -595,6 +598,120 @@ BOOST_FIXTURE_TEST_SUITE(mempool_tests, TestingSetup)
         // ... unless it has gone all the way to 0 (after getting past 1000/2)
 
         SetMockTime(0);
+    }
+
+    BOOST_AUTO_TEST_CASE(rip25_reorg_purges_preactivation_policy_transactions)
+    {
+        LOCK(cs_main);
+        mempool.clear();
+
+        const std::vector<unsigned char> program(32, 0x42);
+        const CScript pqScript = CScript() << OP_2 << program;
+        const CScript p2shPQScript = GetScriptForDestination(CScriptID(pqScript));
+        const CScript ordinaryScript = CScript() << OP_TRUE;
+
+        CTxIn helperInput;
+        helperInput.scriptSig << std::vector<unsigned char>(pqScript.begin(), pqScript.end());
+        BOOST_CHECK(SpendsPQWitnessV2Program(helperInput, pqScript));
+        BOOST_CHECK(SpendsPQWitnessV2Program(helperInput, p2shPQScript));
+        BOOST_CHECK(!SpendsPQWitnessV2Program(helperInput, ordinaryScript));
+
+        CTxIn multiplePushInput;
+        multiplePushInput.scriptSig << std::vector<unsigned char>(1, 0x01)
+                                    << std::vector<unsigned char>(pqScript.begin(), pqScript.end());
+        BOOST_CHECK(!SpendsPQWitnessV2Program(multiplePushInput, p2shPQScript));
+
+        CTxIn malformedPushInput;
+        malformedPushInput.scriptSig << OP_PUSHDATA1;
+        BOOST_CHECK(!SpendsPQWitnessV2Program(malformedPushInput, p2shPQScript));
+
+        const CScript wrongP2SH = GetScriptForDestination(CScriptID(ordinaryScript));
+        BOOST_CHECK(!SpendsPQWitnessV2Program(helperInput, wrongP2SH));
+
+        auto addFundingCoin = [&](const CScript& script) {
+            const COutPoint outpoint(InsecureRand256(), 0);
+            pcoinsTip->AddCoin(outpoint,
+                               Coin(CTxOut(10 * COIN, script), chainActive.Height(), false),
+                               false);
+            return outpoint;
+        };
+
+        CMutableTransaction pqCreation;
+        pqCreation.vin.resize(1);
+        pqCreation.vin[0].prevout = addFundingCoin(ordinaryScript);
+        pqCreation.vout.resize(1);
+        pqCreation.vout[0] = CTxOut(9 * COIN, pqScript);
+
+        CMutableTransaction descendant;
+        descendant.vin.resize(1);
+        descendant.vin[0].prevout = COutPoint(pqCreation.GetHash(), 0);
+        descendant.vout.resize(1);
+        descendant.vout[0] = CTxOut(8 * COIN, ordinaryScript);
+
+        CMutableTransaction nativeSpend;
+        nativeSpend.vin.resize(1);
+        nativeSpend.vin[0].prevout = addFundingCoin(pqScript);
+        nativeSpend.vin[0].scriptWitness.stack.emplace_back(mldsa::SIGNATURE_BYTES, 0x11);
+        nativeSpend.vin[0].scriptWitness.stack.emplace_back(mldsa::PUBLICKEY_BYTES, 0x22);
+        nativeSpend.vout.resize(1);
+        nativeSpend.vout[0] = CTxOut(9 * COIN, ordinaryScript);
+
+        CMutableTransaction wrappedSpend;
+        wrappedSpend.vin.resize(1);
+        wrappedSpend.vin[0].prevout = addFundingCoin(p2shPQScript);
+        wrappedSpend.vin[0].scriptSig << std::vector<unsigned char>(pqScript.begin(), pqScript.end());
+        wrappedSpend.vin[0].scriptWitness.stack.emplace_back(mldsa::SIGNATURE_BYTES, 0x33);
+        wrappedSpend.vin[0].scriptWitness.stack.emplace_back(mldsa::PUBLICKEY_BYTES, 0x44);
+        wrappedSpend.vout.resize(1);
+        wrappedSpend.vout[0] = CTxOut(9 * COIN, ordinaryScript);
+
+        CMutableTransaction wrappedParent;
+        wrappedParent.vin.resize(1);
+        wrappedParent.vin[0].prevout = addFundingCoin(ordinaryScript);
+        wrappedParent.vout.resize(1);
+        wrappedParent.vout[0] = CTxOut(9 * COIN, p2shPQScript);
+
+        CMutableTransaction wrappedChild;
+        wrappedChild.vin.resize(1);
+        wrappedChild.vin[0].prevout = COutPoint(wrappedParent.GetHash(), 0);
+        wrappedChild.vin[0].scriptSig << std::vector<unsigned char>(pqScript.begin(), pqScript.end());
+        wrappedChild.vin[0].scriptWitness.stack.emplace_back(mldsa::SIGNATURE_BYTES, 0x55);
+        wrappedChild.vin[0].scriptWitness.stack.emplace_back(mldsa::PUBLICKEY_BYTES, 0x66);
+        wrappedChild.vout.resize(1);
+        wrappedChild.vout[0] = CTxOut(8 * COIN, ordinaryScript);
+
+        CMutableTransaction unrelated;
+        unrelated.vin.resize(1);
+        unrelated.vin[0].prevout = addFundingCoin(ordinaryScript);
+        unrelated.vout.resize(1);
+        unrelated.vout[0] = CTxOut(9 * COIN, ordinaryScript);
+
+        TestMemPoolEntryHelper entry;
+        mempool.addUnchecked(pqCreation.GetHash(), entry.FromTx(pqCreation));
+        mempool.addUnchecked(descendant.GetHash(), entry.FromTx(descendant));
+        mempool.addUnchecked(nativeSpend.GetHash(), entry.FromTx(nativeSpend));
+        mempool.addUnchecked(wrappedSpend.GetHash(), entry.FromTx(wrappedSpend));
+        mempool.addUnchecked(wrappedParent.GetHash(), entry.FromTx(wrappedParent));
+        mempool.addUnchecked(wrappedChild.GetHash(), entry.FromTx(wrappedChild));
+        mempool.addUnchecked(unrelated.GetHash(), entry.FromTx(unrelated));
+        BOOST_REQUIRE_EQUAL(mempool.size(), 7U);
+
+        mempool.removeForReorg(pcoinsTip, chainActive.Height() + 1,
+                               STANDARD_LOCKTIME_VERIFY_FLAGS, true);
+        BOOST_REQUIRE_EQUAL(mempool.size(), 7U);
+
+        mempool.removeForReorg(pcoinsTip, chainActive.Height() + 1,
+                               STANDARD_LOCKTIME_VERIFY_FLAGS, false);
+
+        BOOST_CHECK(!mempool.exists(pqCreation.GetHash()));
+        BOOST_CHECK(!mempool.exists(descendant.GetHash()));
+        BOOST_CHECK(!mempool.exists(nativeSpend.GetHash()));
+        BOOST_CHECK(!mempool.exists(wrappedSpend.GetHash()));
+        BOOST_CHECK(mempool.exists(wrappedParent.GetHash()));
+        BOOST_CHECK(!mempool.exists(wrappedChild.GetHash()));
+        BOOST_CHECK(mempool.exists(unrelated.GetHash()));
+
+        mempool.clear();
     }
 
 BOOST_AUTO_TEST_SUITE_END()
