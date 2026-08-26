@@ -63,6 +63,7 @@ BOOST_AUTO_TEST_CASE(rip25_block_weight_phase_boundaries)
 
     // Mainnet is not force-enabled: with no active chain state the RIP-2 ceiling remains 8 MWU.
     BOOST_CHECK_EQUAL(GetMaxBlockWeightForPrev(nullptr, mainParams->GetConsensus()), MAX_BLOCK_WEIGHT_RIP2);
+    BOOST_CHECK_EQUAL(GetMaxBlockSerializedSizeForPrev(nullptr, mainParams->GetConsensus()), MAX_BLOCK_SERIALIZED_SIZE_RIP2);
 
     const Consensus::Params& regtest = regtestParams->GetConsensus();
     BOOST_REQUIRE(regtest.nPQHybridEnabled);
@@ -74,14 +75,17 @@ BOOST_AUTO_TEST_CASE(rip25_block_weight_phase_boundaries)
     CBlockIndex prev;
     prev.nHeight = 0;
     BOOST_CHECK_EQUAL(GetMaxBlockWeightForPrev(&prev, regtest), MAX_BLOCK_WEIGHT_RIP25_PHASE1);
+    BOOST_CHECK_EQUAL(GetMaxBlockSerializedSizeForPrev(&prev, regtest), MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE1);
 
     // Candidate height activation + blocksPerYear - 1 is still Phase 1.
     prev.nHeight = static_cast<int>(blocksPerYear - 2);
     BOOST_CHECK_EQUAL(GetMaxBlockWeightForPrev(&prev, regtest), MAX_BLOCK_WEIGHT_RIP25_PHASE1);
+    BOOST_CHECK_EQUAL(GetMaxBlockSerializedSizeForPrev(&prev, regtest), MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE1);
 
     // Candidate height activation + blocksPerYear is the first Phase-2 block.
     prev.nHeight = static_cast<int>(blocksPerYear - 1);
     BOOST_CHECK_EQUAL(GetMaxBlockWeightForPrev(&prev, regtest), MAX_BLOCK_WEIGHT_RIP25_PHASE2);
+    BOOST_CHECK_EQUAL(GetMaxBlockSerializedSizeForPrev(&prev, regtest), MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE2);
 }
 
 BOOST_AUTO_TEST_CASE(rip25_approved_pq_witness_discount_accounting)

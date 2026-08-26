@@ -81,6 +81,13 @@ require_fixed 'std::min<size_t>(nBlockMaxWeight, activeMaxWeight - 4000)' src/mi
 require_fixed 'GetMaxBlockSerializedSizeForPrev(pindexPrev, chainparams.GetConsensus())' src/miner.cpp 'miner does not query the contextual serialized-size limit'
 require_fixed 'GetContextualTransactionWeight(tx, view, fApplyPQDiscount)' src/miner.cpp 'miner weight is not bound to the UTXO context'
 require_fixed 'nBlockSerializedSize + resources.serializedSize' src/miner.cpp 'miner does not enforce serialized bytes while selecting packages'
+gbt_function="$(sed -n '/^UniValue getblocktemplate(/,/^class submitblock_StateCatcher/p' src/rpc/mining.cpp)"
+require_text "$gbt_function" 'GetMaxBlockSerializedSizeForPrev(pindexPrev, consensusParams)' 'GBT size limit is not derived from the template parent'
+require_text "$gbt_function" 'GetMaxBlockWeightForPrev(pindexPrev, consensusParams)' 'GBT weight limit is not derived from the template parent'
+if grep -Fq 'nSizeLimit = GetMaxBlockSerializedSize()' <<<"$gbt_function" ||
+   grep -Fq '"weightlimit", (int64_t)GetMaxBlockWeight()' <<<"$gbt_function"; then
+  fail 'GBT advertises structural ceilings instead of contextual next-block limits'
+fi
 
 # Remediated high-risk resource paths. These checks are structural lint; the
 # executable tests below are the security evidence.
@@ -239,6 +246,7 @@ behavioral_tests=(
   net_tests/incomplete_message_buffer_releases_reservations
   net_tests/maximum_message_completes_with_global_buffer_limit
   DoS_tests/orphan_pq_shape_uses_raw_size_limit
+  rpc_tests/rip25_gbt_reports_contextual_resource_limits
   pqkey_hardening_tests
   kawpow_v48_hardening_tests
   pq_wallet_tests

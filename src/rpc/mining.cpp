@@ -694,7 +694,8 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
     result.push_back(Pair("mutable", aMutable));
     result.push_back(Pair("noncerange", "00000000ffffffff"));
     int64_t nSigOpLimit = MAX_BLOCK_SIGOPS_COST;
-    int64_t nSizeLimit = GetMaxBlockSerializedSize();
+    int64_t nSizeLimit = GetMaxBlockSerializedSizeForPrev(pindexPrev, consensusParams);
+    const int64_t nWeightLimit = GetMaxBlockWeightForPrev(pindexPrev, consensusParams);
     if (fPreSegWit) {
         assert(nSigOpLimit % WITNESS_SCALE_FACTOR == 0);
         nSigOpLimit /= WITNESS_SCALE_FACTOR;
@@ -704,7 +705,7 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
     result.push_back(Pair("sigoplimit", nSigOpLimit));
     result.push_back(Pair("sizelimit", nSizeLimit));
     if (!fPreSegWit) {
-        result.push_back(Pair("weightlimit", (int64_t)GetMaxBlockWeight()));
+        result.push_back(Pair("weightlimit", nWeightLimit));
     }
     result.push_back(Pair("curtime", pblock->GetBlockTime()));
     result.push_back(Pair("bits", strprintf("%08x", pblock->nBits)));

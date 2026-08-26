@@ -44,6 +44,36 @@ UniValue CallRPC(std::string args)
 
 BOOST_FIXTURE_TEST_SUITE(rpc_tests, TestingSetup)
 
+    BOOST_AUTO_TEST_CASE(rip25_gbt_reports_contextual_resource_limits)
+    {
+        BOOST_REQUIRE(chainActive.Tip() != nullptr);
+        const Consensus::Params& consensus = GetParams().GetConsensus();
+        const int64_t expectedSize = GetMaxBlockSerializedSizeForPrev(chainActive.Tip(), consensus);
+        const int64_t expectedWeight = GetMaxBlockWeightForPrev(chainActive.Tip(), consensus);
+
+        // The default fixture is mainnet before RIP-25 activation, so its next
+        // block is independently known to retain the RIP-2 limits rather than
+        // the binary's phase-2 structural ceiling.
+        BOOST_REQUIRE_EQUAL(expectedSize, MAX_BLOCK_SERIALIZED_SIZE_RIP2);
+        BOOST_REQUIRE_EQUAL(expectedWeight, MAX_BLOCK_WEIGHT_RIP2);
+
+        const bool oldBypassDownload = gArgs.GetBoolArg("-bypassdownload", false);
+        gArgs.ForceSetArg("-bypassdownload", "1");
+        UniValue result;
+        try {
+            result = CallRPC("getblocktemplate");
+        } catch (...) {
+            gArgs.ForceSetArg("-bypassdownload", oldBypassDownload ? "1" : "0");
+            throw;
+        }
+        gArgs.ForceSetArg("-bypassdownload", oldBypassDownload ? "1" : "0");
+
+        BOOST_CHECK_EQUAL(find_value(result.get_obj(), "previousblockhash").get_str(),
+                          chainActive.Tip()->GetBlockHash().GetHex());
+        BOOST_CHECK_EQUAL(find_value(result.get_obj(), "sizelimit").get_int64(), expectedSize);
+        BOOST_CHECK_EQUAL(find_value(result.get_obj(), "weightlimit").get_int64(), expectedWeight);
+    }
+
     BOOST_AUTO_TEST_CASE(rpc_rawparams_test)
     {
         BOOST_TEST_MESSAGE("Running RPC RawParams Test");
