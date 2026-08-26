@@ -2358,6 +2358,13 @@ static int64_t GetContextualPQWitnessDiscount(const CTransaction& tx, const CCoi
     return discount;
 }
 
+int64_t GetContextualTransactionWeight(const CTransaction& tx, const CCoinsViewCache& view, bool pqWitnessDiscountActive)
+{
+    const int64_t standardWeight = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1)
+                                 + ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+    return standardWeight - (pqWitnessDiscountActive ? GetContextualPQWitnessDiscount(tx, view) : 0);
+}
+
 static int GetPQHybridActivationHeightLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params)
 {
     AssertLockHeld(cs_main);
@@ -2383,10 +2390,27 @@ static unsigned int GetMaxBlockWeightForPrevLocked(const CBlockIndex* pindexPrev
     return MAX_BLOCK_WEIGHT_RIP25_PHASE1;
 }
 
+static unsigned int GetMaxBlockSerializedSizeForPrevLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    AssertLockHeld(cs_main);
+    const unsigned int activeWeightLimit = GetMaxBlockWeightForPrevLocked(pindexPrev, params);
+    if (activeWeightLimit == MAX_BLOCK_WEIGHT_RIP25_PHASE2)
+        return MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE2;
+    if (activeWeightLimit == MAX_BLOCK_WEIGHT_RIP25_PHASE1)
+        return MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE1;
+    return MAX_BLOCK_SERIALIZED_SIZE_RIP2;
+}
+
 unsigned int GetMaxBlockWeightForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params)
 {
     LOCK(cs_main);
     return GetMaxBlockWeightForPrevLocked(pindexPrev, params);
+}
+
+unsigned int GetMaxBlockSerializedSizeForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    LOCK(cs_main);
+    return GetMaxBlockSerializedSizeForPrevLocked(pindexPrev, params);
 }
 
 int32_t ComputeBlockVersion(const CBlockIndex* pindexPrev, const Consensus::Params& params)
@@ -4328,9 +4352,7 @@ static bool ContextualCheckBlock(const CBlock& block, CValidationState& state, c
     // discount; after one nominal year of blocks use 16 MWU.
     const bool pqActive = IsPQWitnessDiscountActive(pindexPrev, consensusParams);
     const unsigned int activeWeightLimit = GetMaxBlockWeightForPrevLocked(pindexPrev, consensusParams);
-    const unsigned int activeSerializedLimit = activeWeightLimit == MAX_BLOCK_WEIGHT_RIP25_PHASE2 ? MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE2 :
-                                               activeWeightLimit == MAX_BLOCK_WEIGHT_RIP25_PHASE1 ? MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE1 :
-                                               MAX_BLOCK_SERIALIZED_SIZE_RIP2;
+    const unsigned int activeSerializedLimit = GetMaxBlockSerializedSizeForPrevLocked(pindexPrev, consensusParams);
     // After activation this is an optimistic lower bound: stack shape can be
     // checked here, but the discounted input must also spend a real witness-v2
     // prevout. ConnectBlock performs that UTXO-bound check before acceptance.

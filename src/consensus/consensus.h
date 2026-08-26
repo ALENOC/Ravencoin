@@ -60,6 +60,7 @@ unsigned int GetMaxBlockSerializedSize();
 /** RIP-25 activation/resource state for the block after pindexPrev. */
 bool IsPQWitnessDiscountActive(const CBlockIndex* pindexPrev, const Consensus::Params& params);
 unsigned int GetMaxBlockWeightForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params);
+unsigned int GetMaxBlockSerializedSizeForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params);
 
 /** Flags for nSequence and nLockTime locks */
 enum {

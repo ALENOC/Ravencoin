@@ -9,10 +9,13 @@
 #include "consensus/merkle.h"
 #include "consensus/tx_verify.h"
 #include "consensus/validation.h"
+#include "keystore.h"
 #include "validation.h"
 #include "miner.h"
 #include "policy/policy.h"
+#include "pqkey.h"
 #include "pubkey.h"
+#include "script/sign.h"
 #include "script/standard.h"
 #include "txmempool.h"
 #include "uint256.h"
@@ -22,6 +25,7 @@
 #include "test/test_raven.h"
 
 #include <memory>
+#include <stdexcept>
 
 #include <boost/test/unit_test.hpp>
 
@@ -656,5 +660,114 @@ BOOST_FIXTURE_TEST_SUITE(miner_tests, TestingSetup)
 
         fCheckpointsEnabled = true;
     }
+
+BOOST_AUTO_TEST_SUITE_END()
+
+namespace {
+
+struct RIP25MinerTestingSetup : public TestingSetup
+{
+    RIP25MinerTestingSetup() : TestingSetup(CBaseChainParams::REGTEST) {}
+};
+
+CTransactionRef AddPQSpendToMempool(bool p2shWrapped, size_t inputCount, uint32_t nonce, CAmount fee)
+{
+    CPQKey key;
+    key.MakeNewKey();
+    if (!key.IsValid())
+        throw std::runtime_error("failed to create PQ key");
+
+    const CPQPubKey pubkey = key.GetPubKey();
+    const CScript witnessV2 = GetScriptForWitnessV2PQ(pubkey.GetWitnessProgram());
+    const CScript fundingScript = p2shWrapped ? GetScriptForDestination(CScriptID(witnessV2)) : witnessV2;
+
+    CBasicKeyStore keystore;
+    if (!keystore.AddPQKeyPubKey(key, pubkey))
+        throw std::runtime_error("failed to add PQ key");
+    if (p2shWrapped && !keystore.AddCScript(witnessV2))
+        throw std::runtime_error("failed to add witness-v2 redeem script");
+
+    const CAmount inputAmount = 2 * COIN;
+    CMutableTransaction funding;
+    funding.nLockTime = nonce;
+    funding.vout.resize(inputCount, CTxOut(inputAmount, fundingScript));
+    const CTransaction fundingTx(funding);
+
+    CMutableTransaction spend;
+    spend.vin.reserve(inputCount);
+    for (size_t i = 0; i < inputCount; ++i) {
+        const COutPoint prevout(fundingTx.GetHash(), i);
+        pcoinsTip->AddCoin(prevout, Coin(fundingTx.vout[i], chainActive.Height(), false), false);
+        spend.vin.emplace_back(prevout);
+    }
+    spend.vout.emplace_back(inputAmount * inputCount - fee, CScript() << OP_TRUE);
+
+    for (size_t i = 0; i < inputCount; ++i) {
+        if (!SignSignature(keystore, fundingTx, spend, i, SIGHASH_ALL))
+            throw std::runtime_error("failed to sign PQ spend");
+    }
+
+    const CTransactionRef tx = MakeTransactionRef(std::move(spend));
+    TestMemPoolEntryHelper entry;
+    entry.Fee(fee).Time(GetTime()).Height(chainActive.Height()).SigOpsCost(inputCount);
+    if (!mempool.addUnchecked(tx->GetHash(), entry.FromTx(*tx)))
+        throw std::runtime_error("failed to add PQ spend to mempool");
+    return tx;
+}
+
+} // namespace
+
+BOOST_FIXTURE_TEST_SUITE(rip25_miner_tests, RIP25MinerTestingSetup)
+
+BOOST_AUTO_TEST_CASE(native_v2_raw_size_clamping_returns_valid_template)
+{
+    LOCK(cs_main);
+    const CAmount fee = 100000;
+    const CTransactionRef first = AddPQSpendToMempool(false, 8, 1, fee);
+    const CTransactionRef second = AddPQSpendToMempool(false, 8, 2, fee);
+    const uint64_t txSize = ::GetSerializeSize(*first, SER_NETWORK, PROTOCOL_VERSION);
+    BOOST_REQUIRE_EQUAL(txSize, ::GetSerializeSize(*second, SER_NETWORK, PROTOCOL_VERSION));
+
+    BlockAssembler::Options options;
+    options.blockMinFeeRate = CFeeRate(0);
+    options.nBlockMaxWeight = GetMaxBlockWeight();
+    options.nBlockMaxSerializedSize = 1000 + txSize + 1;
+
+    std::unique_ptr<CBlockTemplate> blockTemplate;
+    BOOST_REQUIRE_NO_THROW(blockTemplate = BlockAssembler(GetParams(), options).CreateNewBlock(CScript() << OP_TRUE));
+    BOOST_REQUIRE(blockTemplate);
+    BOOST_REQUIRE_EQUAL(blockTemplate->block.vtx.size(), 2U);
+
+    const uint256 selected = blockTemplate->block.vtx[1]->GetHash();
+    BOOST_CHECK(selected == first->GetHash() || selected == second->GetHash());
+    BOOST_CHECK(::GetSerializeSize(blockTemplate->block, SER_NETWORK, PROTOCOL_VERSION) < options.nBlockMaxSerializedSize);
+    BOOST_CHECK(::GetSerializeSize(blockTemplate->block, SER_NETWORK, PROTOCOL_VERSION) <=
+                GetMaxBlockSerializedSizeForPrev(chainActive.Tip(), GetParams().GetConsensus()));
+}
+
+BOOST_AUTO_TEST_CASE(p2sh_wrapped_v2_uses_undiscounted_weight)
+{
+    LOCK(cs_main);
+    const CTransactionRef wrapped = AddPQSpendToMempool(true, 1, 3, 100000);
+
+    CCoinsViewMemPool viewMemPool(pcoinsTip, mempool);
+    CCoinsViewCache view(&viewMemPool);
+    const uint64_t contextualWeight = GetContextualTransactionWeight(*wrapped, view, true);
+    const uint64_t standardWeight = ::GetSerializeSize(*wrapped, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1)
+                                  + ::GetSerializeSize(*wrapped, SER_NETWORK, PROTOCOL_VERSION);
+    const uint64_t shapeDiscountedWeight = GetTransactionWeight(*wrapped);
+    BOOST_REQUIRE_EQUAL(contextualWeight, standardWeight);
+    BOOST_REQUIRE_LT(shapeDiscountedWeight, contextualWeight);
+
+    BlockAssembler::Options options;
+    options.blockMinFeeRate = CFeeRate(0);
+    options.nBlockMaxWeight = 4000 + shapeDiscountedWeight + 1;
+    options.nBlockMaxSerializedSize = GetMaxBlockSerializedSize();
+
+    std::unique_ptr<CBlockTemplate> blockTemplate;
+    BOOST_REQUIRE_NO_THROW(blockTemplate = BlockAssembler(GetParams(), options).CreateNewBlock(CScript() << OP_TRUE));
+    BOOST_REQUIRE(blockTemplate);
+    BOOST_CHECK_EQUAL(blockTemplate->block.vtx.size(), 1U);
+}
 
 BOOST_AUTO_TEST_SUITE_END()
