@@ -6,9 +6,12 @@
 // Unit tests for denial-of-service detection/prevention code
 
 #include "chainparams.h"
+#include "consensus/validation.h"
+#include "crypto/mldsa.h"
 #include "keystore.h"
 #include "net.h"
 #include "net_processing.h"
+#include "policy/policy.h"
 #include "pow.h"
 #include "script/sign.h"
 #include "serialize.h"
@@ -282,6 +285,75 @@ BOOST_FIXTURE_TEST_SUITE(DoS_tests, TestingSetup)
         BOOST_CHECK(mapOrphanTransactions.size() <= 40);
         LimitOrphanTxSize(10);
         BOOST_CHECK(mapOrphanTransactions.size() <= 10);
+        LimitOrphanTxSize(0);
+        BOOST_CHECK(mapOrphanTransactions.empty());
+    }
+
+    BOOST_AUTO_TEST_CASE(orphan_pq_shape_uses_raw_size_limit)
+    {
+        LimitOrphanTxSize(0);
+        BOOST_REQUIRE(mapOrphanTransactions.empty());
+
+        // Keep a full default-sized pool of ordinary small orphans. This
+        // independently checks the documented aggregate payload bound.
+        for (unsigned int i = 0; i < 100; ++i)
+        {
+            CMutableTransaction small;
+            small.vin.resize(1);
+            small.vin[0].prevout = COutPoint(InsecureRand256(), i);
+            small.vin[0].scriptSig << OP_1;
+            small.vout.resize(1);
+            small.vout[0].nValue = CENT;
+            small.vout[0].scriptPubKey << OP_TRUE;
+            BOOST_REQUIRE(AddOrphanTx(MakeTransactionRef(small), i));
+        }
+
+        size_t retainedRawBytes = 0;
+        size_t retainedPrevoutReferences = 0;
+        for (const auto& orphan : mapOrphanTransactions)
+        {
+            retainedRawBytes += ::GetSerializeSize(*orphan.second.tx, SER_NETWORK, PROTOCOL_VERSION);
+            retainedPrevoutReferences += orphan.second.tx->vin.size();
+        }
+        BOOST_CHECK_EQUAL(mapOrphanTransactions.size(), 100U);
+        BOOST_CHECK_LT(retainedRawBytes,
+                       100U * (MAX_STANDARD_TX_WEIGHT / WITNESS_SCALE_FACTOR));
+        BOOST_CHECK_EQUAL(retainedPrevoutReferences, 100U);
+
+        // Every witness has the ML-DSA-44 shape, but none of the inputs has a
+        // known witness-v2 prevout. The structural RIP-25 weight discount
+        // makes this ~741-kB transaction appear smaller than 400 kWU.
+        CMutableTransaction shaped;
+        shaped.vin.resize(196);
+        shaped.vout.resize(1);
+        shaped.vout[0].nValue = CENT;
+        shaped.vout[0].scriptPubKey << OP_TRUE;
+        for (unsigned int i = 0; i < shaped.vin.size(); ++i)
+        {
+            shaped.vin[i].prevout = COutPoint(InsecureRand256(), i);
+            shaped.vin[i].scriptWitness.stack.emplace_back(mldsa::SIGNATURE_BYTES, 0x11);
+            shaped.vin[i].scriptWitness.stack.emplace_back(mldsa::PUBLICKEY_BYTES, 0x22);
+        }
+
+        const CTransactionRef attack = MakeTransactionRef(shaped);
+        const size_t attackRawBytes = ::GetSerializeSize(*attack, SER_NETWORK, PROTOCOL_VERSION);
+        BOOST_REQUIRE_LT(GetTransactionWeight(*attack), MAX_STANDARD_TX_WEIGHT);
+        BOOST_REQUIRE_GE(attackRawBytes,
+                         MAX_STANDARD_TX_WEIGHT / WITNESS_SCALE_FACTOR);
+
+        BOOST_CHECK(!AddOrphanTx(attack, 101));
+        BOOST_CHECK_EQUAL(mapOrphanTransactions.size(), 100U);
+
+        size_t finalRawBytes = 0;
+        size_t finalPrevoutReferences = 0;
+        for (const auto& orphan : mapOrphanTransactions)
+        {
+            finalRawBytes += ::GetSerializeSize(*orphan.second.tx, SER_NETWORK, PROTOCOL_VERSION);
+            finalPrevoutReferences += orphan.second.tx->vin.size();
+        }
+        BOOST_CHECK_EQUAL(finalRawBytes, retainedRawBytes);
+        BOOST_CHECK_EQUAL(finalPrevoutReferences, retainedPrevoutReferences);
+
         LimitOrphanTxSize(0);
         BOOST_CHECK(mapOrphanTransactions.empty());
     }

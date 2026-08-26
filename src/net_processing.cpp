@@ -628,8 +628,12 @@ bool AddOrphanTx(const CTransactionRef& tx, NodeId peer) EXCLUSIVE_LOCKS_REQUIRE
     // have been mined or received.
     // 100 orphans, each of which is at most 99,999 bytes big is
     // at most 10 megabytes of orphans and somewhat more byprev index (in the worst case):
-    unsigned int sz = GetTransactionWeight(*tx);
-    if (sz >= MAX_STANDARD_TX_WEIGHT)
+    // An orphan has no available prevout, so an attacker-controlled witness
+    // shape must not receive the RIP-25 PQ discount. Bound the bytes retained
+    // in memory directly; the 100-orphan default therefore remains below the
+    // 10-MB payload target stated above.
+    const unsigned int sz = ::GetSerializeSize(*tx, SER_NETWORK, PROTOCOL_VERSION);
+    if (sz >= MAX_STANDARD_TX_WEIGHT / WITNESS_SCALE_FACTOR)
     {
         LogPrint(BCLog::MEMPOOL, "ignoring large orphan tx (size: %u, hash: %s)\n", sz, hash.ToString());
         return false;

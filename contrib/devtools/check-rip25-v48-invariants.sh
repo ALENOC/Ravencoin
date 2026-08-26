@@ -91,6 +91,12 @@ require_fixed 'IsTransferOverflowCheckActiveLocked(pindex->pprev' src/validation
 require_fixed 'class CNetMessageBuffer' src/net.h 'incomplete P2P payloads lack connection-wide accounting'
 require_fixed 'recvBuffer.TryReserve' src/net.cpp 'P2P receive path allocates without reserving incomplete payload memory'
 require_fixed 'recvBuffer.Release(msg.vRecv.capacity())' src/net.cpp 'P2P completion does not release incomplete payload memory'
+orphan_function="$(sed -n '/^bool AddOrphanTx(/,/^}/p' src/net_processing.cpp)"
+require_text "$orphan_function" 'GetSerializeSize(*tx, SER_NETWORK, PROTOCOL_VERSION)' 'orphan admission is not bounded by retained raw bytes'
+require_text "$orphan_function" 'MAX_STANDARD_TX_WEIGHT / WITNESS_SCALE_FACTOR' 'orphan raw-byte limit is not the documented 100-kB bound'
+if grep -Fq 'GetTransactionWeight(*tx)' <<<"$orphan_function"; then
+  fail 'orphan admission grants an attacker-controlled structural PQ discount'
+fi
 
 # Encrypted PQ wallet persistence: ciphertext path must return before plaintext.
 wallet_pq_function="$(sed -n '/^bool CWallet::AddPQKeyPubKey(/,/^}/p' src/wallet/wallet.cpp)"
@@ -232,6 +238,7 @@ behavioral_tests=(
   net_tests/incomplete_message_buffer_concurrent_global_limit
   net_tests/incomplete_message_buffer_releases_reservations
   net_tests/maximum_message_completes_with_global_buffer_limit
+  DoS_tests/orphan_pq_shape_uses_raw_size_limit
   pqkey_hardening_tests
   kawpow_v48_hardening_tests
   pq_wallet_tests
