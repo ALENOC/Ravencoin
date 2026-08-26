@@ -597,6 +597,52 @@ BOOST_FIXTURE_TEST_SUITE(coins_tests, BasicTestingSetup)
         }
     }
 
+    BOOST_AUTO_TEST_CASE(txundo_large_roundtrip_test)
+    {
+        static const size_t UNDO_RECORDS = 50000;
+        const bool old_assets_active = fAssetsIsActive;
+
+        CTxUndo original;
+        original.vprevout.assign(UNDO_RECORDS, Coin(CTxOut(1, CScript()), 1, false));
+
+        CDataStream serialized(SER_DISK, CLIENT_VERSION);
+        serialized << original;
+
+        for (bool assets_active : {false, true}) {
+            fAssetsIsActive = assets_active;
+            CDataStream stream(serialized.begin(), serialized.end(), SER_DISK, CLIENT_VERSION);
+            CTxUndo decoded;
+            BOOST_CHECK_NO_THROW(stream >> decoded);
+            BOOST_CHECK_EQUAL(decoded.vprevout.size(), UNDO_RECORDS);
+            bool records_match = decoded.vprevout.size() == original.vprevout.size();
+            for (size_t i = 0; records_match && i < decoded.vprevout.size(); ++i) {
+                records_match = decoded.vprevout[i].out == original.vprevout[i].out &&
+                                decoded.vprevout[i].nHeight == original.vprevout[i].nHeight &&
+                                decoded.vprevout[i].fCoinBase == original.vprevout[i].fCoinBase;
+            }
+            BOOST_CHECK(records_match);
+            BOOST_CHECK(stream.empty());
+        }
+
+        fAssetsIsActive = old_assets_active;
+    }
+
+    BOOST_AUTO_TEST_CASE(txundo_deserialization_limit_test)
+    {
+        const uint64_t max_undo_records = MAX_BLOCK_WEIGHT_RIP25_PHASE2 / MIN_TRANSACTION_INPUT_WEIGHT;
+        const bool old_assets_active = fAssetsIsActive;
+
+        for (bool assets_active : {false, true}) {
+            fAssetsIsActive = assets_active;
+            CDataStream stream(SER_DISK, CLIENT_VERSION);
+            WriteCompactSize(stream, max_undo_records + 1);
+            CTxUndo decoded;
+            BOOST_CHECK_THROW(stream >> decoded, std::ios_base::failure);
+        }
+
+        fAssetsIsActive = old_assets_active;
+    }
+
     const static COutPoint OUTPOINT;
     const static CAmount PRUNED = -1;
     const static CAmount ABSENT = -2;
