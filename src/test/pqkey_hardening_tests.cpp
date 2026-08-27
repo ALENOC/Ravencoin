@@ -9,6 +9,7 @@
 #include "consensus/consensus.h"
 #include "consensus/validation.h"
 #include "crypto/mldsa.h"
+#include "hash.h"
 #include "keystore.h"
 #include "policy/policy.h"
 #include "pqkey.h"
@@ -16,15 +17,41 @@
 #include "script/interpreter.h"
 #include "script/sign.h"
 #include "script/standard.h"
+#include "streams.h"
 #include "test/test_raven.h"
 
 #include <boost/test/unit_test.hpp>
 
 #include <cstring>
 #include <memory>
+#include <type_traits>
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(pqkey_hardening_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(pq_secret_material_uses_secure_allocator_and_legacy_encoding)
+{
+    static_assert(std::is_same<CPQKey::KeyData::allocator_type,
+                               secure_allocator<unsigned char>>::value,
+                  "PQ secret keys require secure_allocator");
+
+    const CPQKey::KeyData secureSecret(mldsa::SECRETKEY_BYTES, 0x5a);
+    const std::vector<unsigned char> legacySecret(secureSecret.begin(), secureSecret.end());
+
+    CDataStream secureEncoding(SER_DISK, 0);
+    CDataStream legacyEncoding(SER_DISK, 0);
+    secureEncoding << secureSecret;
+    legacyEncoding << legacySecret;
+    BOOST_CHECK_EQUAL_COLLECTIONS(secureEncoding.begin(), secureEncoding.end(),
+                                  legacyEncoding.begin(), legacyEncoding.end());
+
+    const std::vector<unsigned char> pubkeyBytes(mldsa::PUBLICKEY_BYTES, 0x33);
+    const CPQPubKey pubkey(pubkeyBytes);
+    std::vector<unsigned char> legacyHashInput(pubkey.begin(), pubkey.end());
+    legacyHashInput.insert(legacyHashInput.end(), legacySecret.begin(), legacySecret.end());
+    BOOST_CHECK(Hash(legacyHashInput.begin(), legacyHashInput.end()) ==
+                Hash(pubkey.begin(), pubkey.end(), secureSecret.begin(), secureSecret.end()));
+}
 
 BOOST_AUTO_TEST_CASE(rip25_v48_consensus_constants_and_deployment_bits)
 {
@@ -189,7 +216,7 @@ BOOST_AUTO_TEST_CASE(import_matching_secret_public_key_pair)
 
     const CPQPubKey expectedPub = source.GetPubKey();
     const auto& secret = source.GetKeyData();
-    std::vector<unsigned char> raw(secret.begin(), secret.end());
+    CPQKey::KeyData raw(secret.begin(), secret.end());
 
     CPQKey imported;
     BOOST_REQUIRE(imported.SetKeyData(raw, expectedPub));
@@ -208,7 +235,7 @@ BOOST_AUTO_TEST_CASE(import_rejects_mismatched_public_key_and_invalidates_key)
     BOOST_REQUIRE(other.IsValid());
 
     const auto& secret = source.GetKeyData();
-    std::vector<unsigned char> raw(secret.begin(), secret.end());
+    CPQKey::KeyData raw(secret.begin(), secret.end());
     const CPQPubKey wrongPub = other.GetPubKey();
 
     CPQKey imported;
@@ -229,8 +256,8 @@ BOOST_AUTO_TEST_CASE(import_rejects_wrong_secret_size)
     pubSource.MakeNewKey();
     BOOST_REQUIRE(pubSource.IsValid());
 
-    std::vector<unsigned char> tooShort(mldsa::SECRETKEY_BYTES - 1, 0);
-    std::vector<unsigned char> tooLong(mldsa::SECRETKEY_BYTES + 1, 0);
+    CPQKey::KeyData tooShort(mldsa::SECRETKEY_BYTES - 1, 0);
+    CPQKey::KeyData tooLong(mldsa::SECRETKEY_BYTES + 1, 0);
 
     BOOST_CHECK(!key.SetKeyData(tooShort, pubSource.GetPubKey()));
     BOOST_CHECK(!key.IsValid());

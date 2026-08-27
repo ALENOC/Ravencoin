@@ -136,6 +136,22 @@ require_fixed 'HasPlaintextPQKeys' src/wallet/wallet.cpp 'encrypted backup does 
 require_fixed 'if (!dbw->Rewrite())' src/wallet/wallet.cpp 'wallet encryption/backup does not propagate rewrite failure'
 require_fixed '!mapKeys.empty() || !mapPQKeys.empty()' src/wallet/crypter.cpp 'crypted mode permits resident plaintext PQ keys'
 
+# PQ secret material must never cross a production API backed by the ordinary
+# allocator. The behavioral test also proves byte-for-byte wallet compatibility.
+require_fixed 'using KeyData = SecureVector' src/pqkey.h 'CPQKey secret storage lacks a secure-allocator type barrier'
+reject_fixed 'SetKeyData(const std::vector<unsigned char>' src/pqkey.h 'CPQKey exposes an ordinary-heap secret import API'
+reject_fixed 'SetKeyData(const std::vector<unsigned char>' src/pqkey.cpp 'CPQKey implements an ordinary-heap secret import API'
+reject_fixed 'std::vector<unsigned char> keyData(key.GetKeyData()' src/keystore.h 'keystore copies a PQ secret into ordinary heap memory'
+reject_fixed 'std::vector<unsigned char> keyData(vchSecret' src/wallet/crypter.cpp 'wallet decryption copies a PQ secret into ordinary heap memory'
+reject_fixed 'std::vector<unsigned char> keyData(key.GetKeyData()' src/wallet/wallet.cpp 'wallet persistence copies a PQ secret into ordinary heap memory'
+require_fixed 'CPQKey::KeyData pqKeyData' src/wallet/walletdb.cpp 'wallet loader deserializes PQ secrets into ordinary heap memory'
+require_fixed 'const uint64_t pqKeySize = ReadCompactSize(ssValue)' src/wallet/walletdb.cpp 'wallet loader allocates a secure PQ buffer before validating its encoded size'
+require_fixed 'pqKeySize != mldsa::SECRETKEY_BYTES' src/wallet/walletdb.cpp 'wallet loader does not enforce the fixed ML-DSA-44 secret-key size before allocation'
+require_min_count 'Hash(pqPubKey.begin(), pqPubKey.end(),' src/wallet/walletdb.cpp 2 'wallet PQ hash compatibility is not computed without a concatenated secret buffer'
+reject_fixed 'std::vector<unsigned char> pqKeyData' src/wallet/walletdb.cpp 'wallet DB uses ordinary heap memory for PQ secrets'
+require_fixed 'pq_secret_material_uses_secure_allocator_and_legacy_encoding' src/test/pqkey_hardening_tests.cpp 'PQ secure-allocator/legacy-format regression is missing'
+require_fixed 'oversized_plaintext_pq_record_is_rejected_before_secure_allocation' src/wallet/test/pq_wallet_tests.cpp 'oversized PQ wallet secret regression is missing'
+
 # liboqs is consensus-critical and must be version-proven.
 require_fixed 'liboqs' depends/packages/packages.mk 'liboqs missing from depends package graph'
 require_fixed '$(package)_version=0.12.0' depends/packages/liboqs.mk 'pinned liboqs version must remain 0.12.0'

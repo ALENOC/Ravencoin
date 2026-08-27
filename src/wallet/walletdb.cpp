@@ -88,16 +88,14 @@ bool CWalletDB::WriteCryptedKey(const CPubKey& vchPubKey,
     return true;
 }
 
-bool CWalletDB::WritePQKey(const uint256& witnessProgram, const CPQPubKey& pqPubKey, const std::vector<unsigned char>& pqKeyData)
+bool CWalletDB::WritePQKey(const uint256& witnessProgram, const CPQPubKey& pqPubKey, const CPQKey::KeyData& pqKeyData)
 {
     // hash pubkey/keydata to accelerate wallet load
-    std::vector<unsigned char> vchKey;
-    vchKey.reserve(pqPubKey.size() + pqKeyData.size());
-    vchKey.insert(vchKey.end(), pqPubKey.begin(), pqPubKey.end());
-    vchKey.insert(vchKey.end(), pqKeyData.begin(), pqKeyData.end());
+    const uint256 hash = Hash(pqPubKey.begin(), pqPubKey.end(),
+                              pqKeyData.begin(), pqKeyData.end());
 
     return WriteIC(std::make_pair(std::string("pqkey"), witnessProgram),
-                   std::make_pair(std::make_pair(pqPubKey, pqKeyData), Hash(vchKey.begin(), vchKey.end())), false);
+                   std::make_pair(std::make_pair(pqPubKey, pqKeyData), hash), false);
 }
 
 bool CWalletDB::WriteCryptedPQKey(const uint256& witnessProgram, const CPQPubKey& pqPubKey, const std::vector<unsigned char>& vchCryptedSecret)
@@ -504,10 +502,20 @@ bool ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
             ssKey >> witnessProgram;
 
             CPQPubKey pqPubKey;
-            std::vector<unsigned char> pqKeyData;
             uint256 hash;
             ssValue >> pqPubKey;
-            ssValue >> pqKeyData;
+
+            // The generic vector deserializer resizes before callers can
+            // validate the length. Check the fixed ML-DSA-44 secret-key size
+            // before allocating from the bounded locked-memory pool.
+            const uint64_t pqKeySize = ReadCompactSize(ssValue);
+            if (pqKeySize != mldsa::SECRETKEY_BYTES)
+            {
+                strErr = "Error reading wallet database: CPQKey size corrupt";
+                return false;
+            }
+            CPQKey::KeyData pqKeyData(pqKeySize);
+            ssValue.read(reinterpret_cast<char*>(pqKeyData.data()), pqKeyData.size());
             ssValue >> hash;
 
             if (!pqPubKey.IsValid())
@@ -517,11 +525,8 @@ bool ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
             }
 
             // verify hash
-            std::vector<unsigned char> vchKey;
-            vchKey.reserve(pqPubKey.size() + pqKeyData.size());
-            vchKey.insert(vchKey.end(), pqPubKey.begin(), pqPubKey.end());
-            vchKey.insert(vchKey.end(), pqKeyData.begin(), pqKeyData.end());
-            if (Hash(vchKey.begin(), vchKey.end()) != hash)
+            if (Hash(pqPubKey.begin(), pqPubKey.end(),
+                     pqKeyData.begin(), pqKeyData.end()) != hash)
             {
                 strErr = "Error reading wallet database: CPQPubKey/CPQKey corrupt";
                 return false;

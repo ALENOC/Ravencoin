@@ -210,9 +210,8 @@ bool CCryptoKeyStore::Unlock(const CKeyingMaterial& vMasterKeyIn)
                     keyFail = true;
                     break;
                 }
-                std::vector<unsigned char> keyData(vchSecret.begin(), vchSecret.end());
                 CPQKey pqKey;
-                if (!pqKey.SetKeyData(keyData, pqPubKey))
+                if (!pqKey.SetKeyData(vchSecret, pqPubKey))
                 {
                     keyFail = true;
                     break;
@@ -328,8 +327,7 @@ bool CCryptoKeyStore::GetPQKey(const uint256 &witnessProgram, CPQKey &keyOut) co
             CKeyingMaterial vchSecret;
             if (!DecryptSecret(vMasterKey, vchCryptedSecret, pqPubKey.GetWitnessProgram(), vchSecret))
                 return false;
-            std::vector<unsigned char> keyData(vchSecret.begin(), vchSecret.end());
-            return keyOut.SetKeyData(keyData, pqPubKey);
+            return keyOut.SetKeyData(vchSecret, pqPubKey);
         }
     }
     return false;

@@ -221,6 +221,7 @@ BOOST_AUTO_TEST_CASE(unencrypted_pq_key_persists_and_reloads)
         BOOST_REQUIRE(rawDb.Read(std::make_pair(std::string("pqkey"), witnessProgram), plainRecord));
         BOOST_CHECK(plainRecord.first.first == pubkey);
         BOOST_CHECK(plainRecord.first.second == secret);
+        BOOST_CHECK(plainRecord == PlainPQRecord(pubkey, secret));
         BOOST_CHECK(!rawDb.Exists(std::make_pair(std::string("cpqkey"), witnessProgram)));
     }
 
@@ -233,6 +234,40 @@ BOOST_AUTO_TEST_CASE(unencrypted_pq_key_persists_and_reloads)
         BOOST_CHECK(loaded.MatchesPubKey(pubkey));
         BOOST_CHECK(RawSecret(loaded) == secret);
     }
+}
+
+BOOST_AUTO_TEST_CASE(oversized_plaintext_pq_record_is_rejected_before_secure_allocation)
+{
+    const std::string filename = "pq-oversized-secret-wallet.dat";
+
+    CPQKey key;
+    key.MakeNewKey();
+    BOOST_REQUIRE(key.IsValid());
+    const CPQPubKey pubkey = key.GetPubKey();
+    const uint256 witnessProgram = pubkey.GetWitnessProgram();
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+    }
+    bitdb.Flush(false);
+
+    // LockedPool rejects a single allocation above its 256-KiB arena. A
+    // corrupt record must therefore be rejected from its encoded length,
+    // before the secure vector is constructed.
+    const std::vector<unsigned char> oversizedSecret(300000, 0x7b);
+    {
+        CWalletDBWrapper rawDbw(&bitdb, filename);
+        CDB rawDb(rawDbw, "r+");
+        BOOST_REQUIRE(rawDb.Write(
+            std::make_pair(std::string("pqkey"), witnessProgram),
+            PlainPQRecord(pubkey, oversizedSecret)));
+    }
+    bitdb.Flush(false);
+
+    std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
+    std::unique_ptr<CWallet> wallet(new CWallet(std::move(dbw)));
+    bool firstRun = false;
+    BOOST_CHECK_EQUAL(wallet->LoadWallet(firstRun), DB_CORRUPT);
 }
 
 BOOST_AUTO_TEST_CASE(encrypted_pq_keys_are_ciphertext_only_after_reload_and_backup)

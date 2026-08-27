@@ -306,9 +306,8 @@ bool CWallet::AddPQKeyPubKey(const CPQKey &key, const CPQPubKey &pubkey)
     if (IsCrypted())
         return true;
 
-    uint256 witnessProgram = pubkey.GetWitnessProgram();
-    std::vector<unsigned char> keyData(key.GetKeyData().begin(), key.GetKeyData().end());
-    return CWalletDB(*dbw).WritePQKey(witnessProgram, pubkey, keyData);
+    return CWalletDB(*dbw).WritePQKey(
+        pubkey.GetWitnessProgram(), pubkey, key.GetKeyData());
 }
 
 bool CWallet::AddCryptedKey(const CPubKey &vchPubKey,

@@ -124,9 +124,8 @@ public:
         if (!key.IsValid() || !pubkey.IsValid())
             return false;
 
-        std::vector<unsigned char> keyData(key.GetKeyData().begin(), key.GetKeyData().end());
         CPQKey validatedKey;
-        if (!validatedKey.SetKeyData(keyData, pubkey))
+        if (!validatedKey.SetKeyData(key.GetKeyData(), pubkey))
             return false;
 
         uint256 wp = pubkey.GetWitnessProgram();

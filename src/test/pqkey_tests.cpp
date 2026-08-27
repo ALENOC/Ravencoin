@@ -309,7 +309,7 @@ BOOST_AUTO_TEST_CASE(pqkey_set_key_data)
 
     // Create new key from raw data
     CPQKey key2;
-    std::vector<unsigned char> data(keydata.begin(), keydata.end());
+    CPQKey::KeyData data(keydata.begin(), keydata.end());
     BOOST_CHECK(key2.SetKeyData(data));
     BOOST_CHECK(key2.IsValid());
 }
