@@ -223,7 +223,11 @@ if grep -ERn --include='*.yml' --include='*.yaml' 'uses:[[:space:]]+[^[:space:]#
   fail 'a workflow action still uses a mutable branch or version tag'
 fi
 reject_fixed 'fkirc/skip-duplicate-actions' .github/workflows/build-raven.yml 'redundant third-party duplicate-skip action remains'
-require_fixed 'actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809' .github/workflows/build-raven.yml 'actions/cache pin changed'
+reject_fixed 'actions/cache@' .github/workflows/build-raven.yml 'release builds must not restore unauthenticated dependency caches'
+reject_fixed 'Cache Dependencies' .github/workflows/build-raven.yml 'release dependency cache step was reintroduced'
+reject_fixed 'depends/built' .github/workflows/build-raven.yml 'release workflow restores compiled depends artifacts'
+reject_fixed 'depends/work' .github/workflows/build-raven.yml 'release workflow restores unverified depends work state'
+reject_fixed 'restore-keys:' .github/workflows/build-raven.yml 'release workflow permits fallback to an unrelated cache key'
 require_fixed 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' .github/workflows/build-raven.yml 'actions/upload-artifact pin changed'
 require_fixed 'permissions:' .github/workflows/build-raven.yml 'build workflow lacks explicit permissions'
 require_fixed '  contents: read' .github/workflows/build-raven.yml 'build workflow permissions are not read-only'
