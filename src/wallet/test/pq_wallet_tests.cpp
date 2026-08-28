@@ -449,7 +449,8 @@ BOOST_AUTO_TEST_CASE(rewrite_discards_stale_regular_temporary_database)
         CDB staleDb(staleDbw, "cr+");
         BOOST_REQUIRE(staleDb.Write(std::string("stale-rewrite-record"), 1));
     }
-    bitdb.Flush(false);
+    // Leave the zero-refcount Berkeley DB handle cached. Rewrite must close it
+    // before transactionally removing the stale database on every platform.
     BOOST_REQUIRE(fs::is_regular_file(GetDataDir() / rewriteFilename));
 
     {
@@ -465,6 +466,43 @@ BOOST_AUTO_TEST_CASE(rewrite_discards_stale_regular_temporary_database)
         BOOST_REQUIRE(rawDb.Read(
             std::make_pair(std::string("pqkey"), witnessProgram), plainRecord));
         BOOST_CHECK(!rawDb.Exists(std::string("stale-rewrite-record")));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(rewrite_namespace_transaction_abort_preserves_source)
+{
+    const std::string filename = "pq-rewrite-abort-wallet.dat";
+    const std::string replacementFilename = filename + ".replacement";
+    const std::string missingFilename = filename + ".missing";
+
+    {
+        CWalletDBWrapper sourceDbw(&bitdb, filename);
+        CDB sourceDb(sourceDbw, "cr+");
+        BOOST_REQUIRE(sourceDb.Write(std::string("old-source-record"), 1));
+
+        CWalletDBWrapper replacementDbw(&bitdb, replacementFilename);
+        CDB replacementDb(replacementDbw, "cr+");
+        BOOST_REQUIRE(replacementDb.Write(std::string("new-replacement-record"), 2));
+    }
+    bitdb.Flush(false);
+
+    // Exercise the same Berkeley DB namespace primitive used by Rewrite. A
+    // failure after the transactional remove must restore the source name.
+    DbTxn* txn = bitdb.TxnBegin();
+    BOOST_REQUIRE(txn != nullptr);
+    BOOST_REQUIRE_EQUAL(bitdb.dbenv->dbremove(txn, filename.c_str(), nullptr, 0), 0);
+    BOOST_REQUIRE_NE(
+        bitdb.dbenv->dbrename(txn, missingFilename.c_str(), nullptr, filename.c_str(), 0),
+        0);
+    BOOST_REQUIRE_EQUAL(txn->abort(), 0);
+
+    {
+        CWalletDBWrapper sourceDbw(&bitdb, filename);
+        CDB sourceDb(sourceDbw, "r");
+        int value = 0;
+        BOOST_REQUIRE(sourceDb.Read(std::string("old-source-record"), value));
+        BOOST_CHECK_EQUAL(value, 1);
+        BOOST_CHECK(!sourceDb.Exists(std::string("new-replacement-record")));
     }
 }
 

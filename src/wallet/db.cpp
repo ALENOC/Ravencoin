@@ -632,7 +632,8 @@ bool CDB::Rewrite(CWalletDBWrapper& dbw, const char* pszSkip)
                     // Keep the namespace update inside one durable Berkeley
                     // DB transaction. A crash leaves either the complete
                     // source or the complete rewritten database at the
-                    // configured path; there is no remove/rename gap.
+                    // configured path after Berkeley DB recovery; there is no
+                    // non-transactional remove/rename gap.
                     DbTxn* ptxn = env->TxnBegin();
                     if (!ptxn) {
                         fSuccess = false;
