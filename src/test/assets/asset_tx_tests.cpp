@@ -442,10 +442,14 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         SelectParams(CBaseChainParams::MAIN);
         const std::string assetName = "OVERFLOW";
         std::vector<std::pair<std::string, uint256>> vReissueAssets;
+        constexpr uint64_t wrapPartA = 8173372036854775857ULL;
+        constexpr uint64_t wrapPartB = 2100000000000000002ULL;
+        static_assert(wrapPartA + wrapPartA + wrapPartB == 100ULL,
+                      "overflow vector must equal 100 modulo 2^64");
 
         // Preserve the historical preactivation behavior independently of the
-        // process's prior BIP9 state.  These outputs sum mathematically to
-        // 2^64 + 100 and wrap to the 100-unit input on supported legacy builds.
+        // process's prior BIP9 state. These outputs sum mathematically to
+        // 2^64 + 100; consensus explicitly evaluates the modulo result as 100.
         {
             CCoinsView base;
             CCoinsViewCache coins(&base);
@@ -454,14 +458,50 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
 
             CMutableTransaction mutableTx;
             mutableTx.vin.emplace_back(input);
-            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, 8173372036854775857LL));
-            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, 8173372036854775857LL));
-            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, 2100000000000000002LL));
+            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, static_cast<CAmount>(wrapPartA)));
+            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, static_cast<CAmount>(wrapPartA)));
+            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, static_cast<CAmount>(wrapPartB)));
+            const CTransaction tx(mutableTx);
 
-            CValidationState state;
-            BOOST_REQUIRE_MESSAGE(Consensus::CheckTxAssets(CTransaction(mutableTx), state, coins, nullptr, false,
+            CValidationState preactivationState;
+            BOOST_REQUIRE_MESSAGE(Consensus::CheckTxAssets(tx, preactivationState, coins, nullptr, false,
                                                            vReissueAssets, false, true),
-                                  state.GetRejectReason());
+                                  preactivationState.GetRejectReason());
+
+            CValidationState activeState;
+            BOOST_CHECK(!Consensus::CheckTxAssets(tx, activeState, coins, nullptr, false,
+                                                  vReissueAssets, true, true));
+            BOOST_CHECK_EQUAL(activeState.GetRejectReason(), "bad-txns-transfer-asset-amount-toolarge");
+        }
+
+        // Mirror the modulo vector through the input accumulator. This is a
+        // separate consensus path and must be defined under sanitizers too.
+        {
+            CCoinsView base;
+            CCoinsViewCache coins(&base);
+            const COutPoint first(uint256S("06"), 0);
+            const COutPoint second(uint256S("07"), 0);
+            const COutPoint third(uint256S("08"), 0);
+            AddAssetCoin(coins, first, assetName, static_cast<CAmount>(wrapPartA));
+            AddAssetCoin(coins, second, assetName, static_cast<CAmount>(wrapPartA));
+            AddAssetCoin(coins, third, assetName, static_cast<CAmount>(wrapPartB));
+
+            CMutableTransaction mutableTx;
+            mutableTx.vin.emplace_back(first);
+            mutableTx.vin.emplace_back(second);
+            mutableTx.vin.emplace_back(third);
+            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, 100));
+            const CTransaction tx(mutableTx);
+
+            CValidationState preactivationState;
+            BOOST_REQUIRE_MESSAGE(Consensus::CheckTxAssets(tx, preactivationState, coins, nullptr, false,
+                                                           vReissueAssets, false, true),
+                                  preactivationState.GetRejectReason());
+
+            CValidationState activeState;
+            BOOST_CHECK(!Consensus::CheckTxAssets(tx, activeState, coins, nullptr, false,
+                                                  vReissueAssets, true, true));
+            BOOST_CHECK_EQUAL(activeState.GetRejectReason(), "bad-txns-input-asset-amount-toolarge");
         }
 
         // An oversized historical UTXO is spendable under preactivation rules

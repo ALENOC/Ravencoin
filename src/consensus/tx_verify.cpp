@@ -612,8 +612,15 @@ bool Consensus::CheckTxAssets(const CTransaction& tx, CValidationState& state, c
                          strprintf("%s: inputs missing/spent", __func__), tx.GetHash());
     }
 
+    // Asset quantities historically used two's-complement modulo addition
+    // before DEPLOYMENT_TRANSFER_OVERFLOW became active. Express that legacy
+    // consensus behavior with unsigned arithmetic so replay is deterministic
+    // and does not invoke signed-overflow undefined behavior.
+    using AssetTotal = uint64_t;
+    const AssetTotal maxAssetMoney = static_cast<AssetTotal>(MAX_MONEY);
+
     // Create map that stores the amount of an asset transaction input. Used to verify no assets are burned
-    std::map<std::string, CAmount> totalInputs;
+    std::map<std::string, AssetTotal> totalInputs;
 
     std::map<std::string, std::string> mapAddresses;
 
@@ -641,15 +648,15 @@ bool Consensus::CheckTxAssets(const CTransaction& tx, CValidationState& state, c
 
             // Add to the total value of assets in the inputs
             if (totalInputs.count(data.assetName))
-                totalInputs.at(data.assetName) += data.nAmount;
+                totalInputs.at(data.assetName) += static_cast<AssetTotal>(data.nAmount);
             else
-                totalInputs.insert(make_pair(data.assetName, data.nAmount));
+                totalInputs.insert(make_pair(data.assetName, static_cast<AssetTotal>(data.nAmount)));
 
             if (fTransferOverflowActive) {
-                if (!MoneyRange(totalInputs.at(data.assetName)))
+                if (totalInputs.at(data.assetName) > maxAssetMoney)
                     return state.DoS(100, false, REJECT_INVALID, "bad-txns-input-asset-totalInputs-toolarge", false, "", tx.GetHash());
             } else {
-                if (!MoneyRange(totalInputs.at(data.assetName)))
+                if (totalInputs.at(data.assetName) > maxAssetMoney)
                     LogPrintf("Input Overflow Check- input-asset-totalInputs-toolarge: %s\n", tx.GetHash().ToString());
             }
 
@@ -666,7 +673,7 @@ bool Consensus::CheckTxAssets(const CTransaction& tx, CValidationState& state, c
     }
 
     // Create map that stores the amount of an asset transaction output. Used to verify no assets are burned
-    std::map<std::string, CAmount> totalOutputs;
+    std::map<std::string, AssetTotal> totalOutputs;
     int index = 0;
     int64_t currentTime = GetTime();
     std::string strError = "";
@@ -726,15 +733,15 @@ bool Consensus::CheckTxAssets(const CTransaction& tx, CValidationState& state, c
 
             // Add to the total value of assets in the outputs
             if (totalOutputs.count(transfer.strName))
-                totalOutputs.at(transfer.strName) += transfer.nAmount;
+                totalOutputs.at(transfer.strName) += static_cast<AssetTotal>(transfer.nAmount);
             else
-                totalOutputs.insert(make_pair(transfer.strName, transfer.nAmount));
+                totalOutputs.insert(make_pair(transfer.strName, static_cast<AssetTotal>(transfer.nAmount)));
 
             if (fTransferOverflowActive) {
-                if (!MoneyRange(totalOutputs.at(transfer.strName)))
+                if (totalOutputs.at(transfer.strName) > maxAssetMoney)
                     return state.DoS(100, false, REJECT_INVALID, "bad-txns-transfer-asset-totalOutputs-toolarge", false, "", tx.GetHash());
             } else {
-                if (!MoneyRange(totalOutputs.at(transfer.strName)))
+                if (totalOutputs.at(transfer.strName) > maxAssetMoney)
                     LogPrintf("Transfer Overflow Check- transfer-asset-totalOutputs-toolarge: %s\n", tx.GetHash().ToString());
             }
 
