@@ -424,6 +424,50 @@ BOOST_AUTO_TEST_CASE(plaintext_pq_record_with_master_key_fails_load)
     BOOST_CHECK_EQUAL(wallet->LoadWallet(firstRun), DB_CORRUPT);
 }
 
+BOOST_AUTO_TEST_CASE(rewrite_discards_stale_regular_temporary_database)
+{
+    const std::string filename = "pq-rewrite-stale-wallet.dat";
+    const std::string rewriteFilename = filename + ".rewrite";
+
+    CPQKey key;
+    key.MakeNewKey();
+    BOOST_REQUIRE(key.IsValid());
+    const CPQPubKey pubkey = key.GetPubKey();
+    const uint256 witnessProgram = pubkey.GetWitnessProgram();
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        LOCK(wallet->cs_wallet);
+        BOOST_REQUIRE(wallet->AddPQKeyPubKey(key, pubkey));
+    }
+
+    // Model a complete but stale artifact from an earlier failed rewrite.
+    // Its automatically-created version key collides with the source copy and
+    // made the old DB_NOOVERWRITE loop fail on every retry.
+    {
+        CWalletDBWrapper staleDbw(&bitdb, rewriteFilename);
+        CDB staleDb(staleDbw, "cr+");
+        BOOST_REQUIRE(staleDb.Write(std::string("stale-rewrite-record"), 1));
+    }
+    bitdb.Flush(false);
+    BOOST_REQUIRE(fs::is_regular_file(GetDataDir() / rewriteFilename));
+
+    {
+        CWalletDBWrapper sourceDbw(&bitdb, filename);
+        BOOST_REQUIRE(sourceDbw.Rewrite());
+    }
+    BOOST_CHECK(!fs::exists(GetDataDir() / rewriteFilename));
+
+    {
+        CWalletDBWrapper rawDbw(&bitdb, filename);
+        CDB rawDb(rawDbw, "r");
+        PlainPQValue plainRecord;
+        BOOST_REQUIRE(rawDb.Read(
+            std::make_pair(std::string("pqkey"), witnessProgram), plainRecord));
+        BOOST_CHECK(!rawDb.Exists(std::string("stale-rewrite-record")));
+    }
+}
+
 BOOST_AUTO_TEST_CASE(rewrite_failure_prevents_encryption_success_and_backup)
 {
     const std::string filename = "pq-rewrite-failure-wallet.dat";
