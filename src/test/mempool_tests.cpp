@@ -719,6 +719,80 @@ BOOST_FIXTURE_TEST_SUITE(mempool_tests, TestingSetup)
         mempool.clear();
     }
 
+    BOOST_AUTO_TEST_CASE(rip25_preactivation_policy_rejects_future_witness_spends)
+    {
+        LOCK(cs_main);
+        mempool.clear();
+
+        const Consensus::Params& consensus = GetParams().GetConsensus();
+        BOOST_REQUIRE(GetParams().RequireStandard());
+        BOOST_REQUIRE(!consensus.nPQHybridEnabled);
+        BOOST_REQUIRE(!IsPQWitnessDiscountActive(chainActive.Tip(), consensus));
+
+        const std::vector<unsigned char> program(32, 0x42);
+        const CScript pqScript = CScript() << OP_2 << program;
+        const CScript p2shPQScript = GetScriptForDestination(CScriptID(pqScript));
+        const CScript ordinaryScript =
+            GetScriptForDestination(CScriptID(CScript() << OP_TRUE));
+
+        auto addFundingCoin = [&](const CScript& script) {
+            const COutPoint outpoint(InsecureRand256(), 0);
+            pcoinsTip->AddCoin(outpoint,
+                               Coin(CTxOut(10 * COIN, script), chainActive.Height(), false),
+                               false);
+            return outpoint;
+        };
+
+        auto makeInvalidPQSpend = [&](const CScript& fundingScript, bool p2shWrapped) {
+            CMutableTransaction spend;
+            spend.vin.emplace_back(addFundingCoin(fundingScript));
+            if (p2shWrapped) {
+                spend.vin[0].scriptSig <<
+                    std::vector<unsigned char>(pqScript.begin(), pqScript.end());
+            }
+            // The stack satisfies preactivation shape policy but is not bound
+            // to the program and does not contain a valid ML-DSA signature.
+            spend.vin[0].scriptWitness.stack.emplace_back(mldsa::SIGNATURE_BYTES, 0x11);
+            spend.vin[0].scriptWitness.stack.emplace_back(mldsa::PUBLICKEY_BYTES, 0x22);
+            spend.vout.emplace_back(9 * COIN, ordinaryScript);
+            return MakeTransactionRef(std::move(spend));
+        };
+
+        const std::vector<CTransactionRef> candidates{
+            makeInvalidPQSpend(pqScript, false),
+            makeInvalidPQSpend(p2shPQScript, true),
+        };
+
+        for (const CTransactionRef& tx : candidates) {
+            BOOST_REQUIRE(IsWitnessStandard(*tx, *pcoinsTip));
+
+            // Legacy consensus deliberately treats witness-v2 as a future
+            // witness program before activation.
+            ScriptError error = SCRIPT_ERR_UNKNOWN_ERROR;
+            BOOST_REQUIRE(VerifyScript(
+                tx->vin[0].scriptSig,
+                pcoinsTip->AccessCoin(tx->vin[0].prevout).out.scriptPubKey,
+                &tx->vin[0].scriptWitness,
+                SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS,
+                TransactionSignatureChecker(tx.get(), 0, 10 * COIN), &error));
+            BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
+
+            // Default node policy nevertheless rejects every unknown witness
+            // version. Therefore the invalid transaction cannot survive in
+            // the mempool until the forward PQ activation transition.
+            CValidationState state;
+            BOOST_CHECK(!AcceptToMemoryPool(mempool, state, tx, nullptr, nullptr,
+                                            false, 0));
+            BOOST_CHECK_EQUAL(state.GetRejectCode(), REJECT_NONSTANDARD);
+            BOOST_CHECK_EQUAL(
+                state.GetRejectReason(),
+                "non-mandatory-script-verify-flag (Witness version reserved for soft-fork upgrades)");
+            BOOST_CHECK(!mempool.exists(tx->GetHash()));
+        }
+
+        BOOST_CHECK_EQUAL(mempool.size(), 0U);
+    }
+
     BOOST_AUTO_TEST_CASE(transfer_overflow_activation_purges_invalid_graph)
     {
         LOCK(cs_main);
