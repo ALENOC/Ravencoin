@@ -258,13 +258,13 @@ void BlockAssembler::onlyUnconfirmed(CTxMemPool::setEntries& testSet)
     }
 }
 
-bool BlockAssembler::TestPackage(const ResourceUsage& resources, int64_t packageSigOpsCost) const
+bool BlockAssembler::TestPackage(const ResourceUsage& resources) const
 {
     if (nBlockWeight + resources.weight >= nBlockMaxWeight)
         return false;
     if (nBlockSerializedSize + resources.serializedSize >= nBlockMaxSerializedSize)
         return false;
-    if (nBlockSigOpsCost + packageSigOpsCost >= MAX_BLOCK_SIGOPS_COST)
+    if (nBlockSigOpsCost + resources.sigOpsCost >= MAX_BLOCK_SIGOPS_COST)
         return false;
     return true;
 }
@@ -289,6 +289,9 @@ BlockAssembler::ResourceUsage BlockAssembler::GetTransactionResources(const CTra
     ResourceUsage resources;
     resources.weight = GetContextualTransactionWeight(tx, view, fApplyPQDiscount);
     resources.serializedSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+    const unsigned int sigOpFlags = STANDARD_SCRIPT_VERIFY_FLAGS |
+        (fApplyPQDiscount ? SCRIPT_VERIFY_PQ_HYBRID : SCRIPT_VERIFY_NONE);
+    resources.sigOpsCost = GetTransactionSigOpCost(tx, view, sigOpFlags);
     return resources;
 }
 
@@ -299,6 +302,7 @@ BlockAssembler::ResourceUsage BlockAssembler::GetPackageResources(const CTxMemPo
         const ResourceUsage txResources = GetTransactionResources(it->GetTx(), view);
         resources.weight += txResources.weight;
         resources.serializedSize += txResources.serializedSize;
+        resources.sigOpsCost += txResources.sigOpsCost;
     }
     return resources;
 }
@@ -307,11 +311,11 @@ void BlockAssembler::AddToBlock(CTxMemPool::txiter iter, const ResourceUsage& re
 {
     pblock->vtx.emplace_back(iter->GetSharedTx());
     pblocktemplate->vTxFees.push_back(iter->GetFee());
-    pblocktemplate->vTxSigOpsCost.push_back(iter->GetSigOpCost());
+    pblocktemplate->vTxSigOpsCost.push_back(resources.sigOpsCost);
     nBlockWeight += resources.weight;
     nBlockSerializedSize += resources.serializedSize;
     ++nBlockTx;
-    nBlockSigOpsCost += iter->GetSigOpCost();
+    nBlockSigOpsCost += resources.sigOpsCost;
     nFees += iter->GetFee();
     inBlock.insert(iter);
 
@@ -448,11 +452,9 @@ void BlockAssembler::addPackageTxs(int &nPackagesSelected, int &nDescendantsUpda
 
         uint64_t packageSize = iter->GetSizeWithAncestors();
         CAmount packageFees = iter->GetModFeesWithAncestors();
-        int64_t packageSigOpsCost = iter->GetSigOpCostWithAncestors();
         if (fUsingModified) {
             packageSize = modit->nSizeWithAncestors;
             packageFees = modit->nModFeesWithAncestors;
-            packageSigOpsCost = modit->nSigOpCostWithAncestors;
         }
 
         if (packageFees < blockMinFeeRate.GetFee(packageSize)) {
@@ -478,7 +480,7 @@ void BlockAssembler::addPackageTxs(int &nPackagesSelected, int &nDescendantsUpda
         }
 
         const ResourceUsage packageResources = GetPackageResources(ancestors, view);
-        if (!TestPackage(packageResources, packageSigOpsCost)) {
+        if (!TestPackage(packageResources)) {
             if (fUsingModified) {
                 // Since we always look at the best entry in mapModifiedTx,
                 // we must erase failed entries so that we can consider the

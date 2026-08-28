@@ -177,6 +177,7 @@ private:
     struct ResourceUsage {
         uint64_t weight{0};
         uint64_t serializedSize{0};
+        int64_t sigOpsCost{0};
     };
 
     // utility functions
@@ -198,7 +199,7 @@ private:
     /** Remove confirmed (inBlock) entries from given set */
     void onlyUnconfirmed(CTxMemPool::setEntries& testSet);
     /** Test if a new package would "fit" in the block */
-    bool TestPackage(const ResourceUsage& resources, int64_t packageSigOpsCost) const;
+    bool TestPackage(const ResourceUsage& resources) const;
     /** Perform checks on each transaction in a package:
       * locktime, premature-witness, serialized size (if necessary)
       * These checks should always succeed, and they're here

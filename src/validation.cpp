@@ -692,7 +692,9 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
         if (tx.HasWitness() && fRequireStandard && !IsWitnessStandard(tx, view))
             return state.DoS(0, false, REJECT_NONSTANDARD, "bad-witness-nonstandard", true);
 
-        int64_t nSigOpsCost = GetTransactionSigOpCost(tx, view, STANDARD_SCRIPT_VERIFY_FLAGS);
+        const unsigned int sigOpFlags = STANDARD_SCRIPT_VERIFY_FLAGS |
+            (pqEnabled ? SCRIPT_VERIFY_PQ_HYBRID : SCRIPT_VERIFY_NONE);
+        int64_t nSigOpsCost = GetTransactionSigOpCost(tx, view, sigOpFlags);
 
         // nModifiedFees includes any fee deltas from PrioritiseTransaction
         CAmount nModifiedFees = nFees;
