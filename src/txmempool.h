@@ -587,7 +587,10 @@ public:
     void removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMemPoolHeight,
                         int flags, bool fPQHybridActive);
     void removeConflicts(const CTransaction &tx);
-    void removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight, ConnectedBlockAssetData& connectedBlockData, bool fTransferOverflowActive);
+    void removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight,
+                        ConnectedBlockAssetData& connectedBlockData,
+                        bool fTransferOverflowActive,
+                        bool fTransferOverflowJustActivated = false);
     void removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight);
 
     void clear();

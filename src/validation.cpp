@@ -3490,8 +3490,13 @@ bool static ConnectTip(CValidationState& state, const CChainParams& chainparams,
     // The mempool is revalidated for the block *after* pindexNew.  Resolve the
     // deployment against pindexNew itself even though chainActive is updated
     // a few lines below.
-    const bool transferOverflowActive = IsTransferOverflowCheckActiveLocked(pindexNew, chainparams.GetConsensus());
-    mempool.removeForBlock(blockConnecting.vtx, pindexNew->nHeight, assetDataFromBlock, transferOverflowActive);
+    const bool transferOverflowWasActive =
+        IsTransferOverflowCheckActiveLocked(pindexNew->pprev, chainparams.GetConsensus());
+    const bool transferOverflowActive =
+        IsTransferOverflowCheckActiveLocked(pindexNew, chainparams.GetConsensus());
+    mempool.removeForBlock(blockConnecting.vtx, pindexNew->nHeight, assetDataFromBlock,
+                           transferOverflowActive,
+                           transferOverflowActive && !transferOverflowWasActive);
     disconnectpool.removeForBlock(blockConnecting.vtx);
     // Update chainActive & related variables.
     UpdateTip(pindexNew, chainparams);
@@ -5998,6 +6003,12 @@ bool AreAssetsDeployed()
         fAssetsIsActive = true;
 
     return fAssetsIsActive;
+}
+
+// Only used by test framework
+void SetAssetsDeployed(bool value)
+{
+    fAssetsIsActive = value;
 }
 
 bool IsRip5Active()

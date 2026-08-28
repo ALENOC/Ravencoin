@@ -594,6 +594,9 @@ bool LoadMempool();
 /** RVN START */
 bool AreAssetsDeployed();
 
+// Only used by test framework; callers must restore the prior value.
+void SetAssetsDeployed(bool value);
+
 bool AreMessagesDeployed();
 
 bool AreRestrictedAssetsDeployed();

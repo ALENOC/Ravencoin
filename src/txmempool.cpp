@@ -873,13 +873,18 @@ void CTxMemPool::removeConflicts(const CTransaction &tx)
 void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight)
 {
     ConnectedBlockAssetData connectedBlockAssetData;
-    removeForBlock(vtx, nBlockHeight, connectedBlockAssetData, IsTransferOverflowCheckDeployed());
+    removeForBlock(vtx, nBlockHeight, connectedBlockAssetData,
+                   IsTransferOverflowCheckDeployed(), false);
 }
 
 /**
  * Called when a block is connected. Removes from mempool and updates the miner fee estimator.
  */
-void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight, ConnectedBlockAssetData& connectedBlockData, bool fTransferOverflowActive)
+void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx,
+                                unsigned int nBlockHeight,
+                                ConnectedBlockAssetData& connectedBlockData,
+                                bool fTransferOverflowActive,
+                                bool fTransferOverflowJustActivated)
 {
     LOCK(cs);
     std::set<uint256> setAlreadyRemoving;
@@ -1033,6 +1038,36 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigne
         }
         removeConflicts(tx);
         ClearPrioritisation(tx.GetHash());
+    }
+
+    // DEPLOYMENT_TRANSFER_OVERFLOW tightens validity for transactions that
+    // were admissible in LOCKED_IN. Revalidate the remaining pool exactly on
+    // the false-to-true transition, after connected/conflicting transactions
+    // have been removed and the new UTXO/asset state has been flushed. The
+    // mempool-backed view preserves parent outputs while invalid roots and all
+    // of their descendants are collected before mutation.
+    if (fTransferOverflowJustActivated) {
+        AssertLockHeld(cs_main);
+        assert(fTransferOverflowActive);
+        CCoinsViewMemPool viewMemPool(pcoinsTip, *this);
+        CCoinsViewCache view(&viewMemPool);
+        setEntries invalidRoots;
+        for (txiter it = mapTx.begin(); it != mapTx.end(); ++it) {
+            CValidationState state;
+            std::vector<std::pair<std::string, uint256>> vReissueAssets;
+            if (!Consensus::CheckTxAssets(it->GetTx(), state, view, passets,
+                                          false, vReissueAssets, true)) {
+                invalidRoots.insert(it);
+                LogPrint(BCLog::MEMPOOL,
+                         "Removing tx %s at transfer-overflow activation: %s\n",
+                         it->GetTx().GetHash().ToString(), state.GetRejectReason());
+            }
+        }
+
+        setEntries invalidWithDescendants;
+        for (txiter it : invalidRoots)
+            CalculateDescendants(it, invalidWithDescendants);
+        RemoveStaged(invalidWithDescendants, false, MemPoolRemovalReason::REORG);
     }
     /** RVN END */
 
