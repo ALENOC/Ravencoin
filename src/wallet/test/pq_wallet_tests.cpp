@@ -14,11 +14,14 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <fstream>
 #include <iterator>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -90,6 +93,54 @@ public:
             return false;
         cryptedSecret = it->second.second;
         return true;
+    }
+};
+
+class ScopedDBLockTimeout
+{
+private:
+    DbEnv* env;
+    db_timeout_t previousLockTimeout;
+    db_timeout_t previousTxnTimeout;
+    u_int32_t previousDeadlockPolicy;
+
+public:
+    explicit ScopedDBLockTimeout(DbEnv* envIn, db_timeout_t timeout)
+        : env(envIn), previousLockTimeout(0), previousTxnTimeout(0), previousDeadlockPolicy(0)
+    {
+        if (!env ||
+            env->get_timeout(&previousLockTimeout, DB_SET_LOCK_TIMEOUT) != 0 ||
+            env->get_timeout(&previousTxnTimeout, DB_SET_TXN_TIMEOUT) != 0 ||
+            env->get_lk_detect(&previousDeadlockPolicy) != 0) {
+            throw std::runtime_error("failed to set Berkeley DB lock timeout");
+        }
+
+        bool lockTimeoutChanged = false;
+        bool txnTimeoutChanged = false;
+        if (env->set_timeout(timeout, DB_SET_LOCK_TIMEOUT) == 0) {
+            lockTimeoutChanged = true;
+            if (env->set_timeout(timeout, DB_SET_TXN_TIMEOUT) == 0) {
+                txnTimeoutChanged = true;
+                if (env->set_lk_detect(DB_LOCK_YOUNGEST) == 0)
+                    return;
+            }
+        }
+
+        if (txnTimeoutChanged)
+            env->set_timeout(previousTxnTimeout, DB_SET_TXN_TIMEOUT);
+        if (lockTimeoutChanged)
+            env->set_timeout(previousLockTimeout, DB_SET_LOCK_TIMEOUT);
+        env->set_lk_detect(previousDeadlockPolicy);
+        throw std::runtime_error("failed to set Berkeley DB lock timeout");
+    }
+
+    ~ScopedDBLockTimeout()
+    {
+        if (env) {
+            env->set_timeout(previousLockTimeout, DB_SET_LOCK_TIMEOUT);
+            env->set_timeout(previousTxnTimeout, DB_SET_TXN_TIMEOUT);
+            env->set_lk_detect(previousDeadlockPolicy);
+        }
     }
 };
 
@@ -557,6 +608,122 @@ BOOST_AUTO_TEST_CASE(plaintext_ecdsa_record_with_master_key_fails_load_and_backu
         BOOST_CHECK(!wallet.BackupWallet((GetDataDir() / backupFilename).string()));
         BOOST_CHECK(!fs::exists(GetDataDir() / backupFilename));
     }
+}
+
+BOOST_AUTO_TEST_CASE(bip44_encryption_write_failure_returns_and_aborts)
+{
+    const std::string filename = "bip44-write-failure-wallet.dat";
+    const SecureString passphrase("bip44-write-failure-passphrase");
+    const std::vector<unsigned char> words{
+        'a', 'b', 'a', 'n', 'd', 'o', 'n', ' ', 'a', 'b', 'i', 'l', 'i', 't', 'y'};
+    const std::vector<unsigned char> mnemonicPassphrase{'s', 'a', 'l', 't'};
+    const std::vector<unsigned char> seed(64, 0x5a);
+    const uint256 wordHash = Hash(words.begin(), words.end());
+
+    CKey key;
+    key.MakeNewKey(true);
+    const CPubKey pubkey = key.GetPubKey();
+    BOOST_REQUIRE(pubkey.IsValid());
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        wallet->UseBip44(true);
+        BOOST_REQUIRE(wallet->LoadWords(wordHash, words));
+        BOOST_REQUIRE(wallet->LoadPassphrase(mnemonicPassphrase));
+        BOOST_REQUIRE(wallet->LoadVchSeed(seed));
+        {
+            LOCK(wallet->cs_wallet);
+            BOOST_REQUIRE(wallet->AddKeyPubKey(key, pubkey));
+        }
+        {
+            CWalletDB walletdb(wallet->GetDBHandle());
+            BOOST_REQUIRE(walletdb.WriteBip39Words(wordHash, words, false));
+            BOOST_REQUIRE(walletdb.WriteBip39Passphrase(mnemonicPassphrase, false));
+            BOOST_REQUIRE(walletdb.WriteBip39VchSeed(seed, false));
+        }
+        {
+            // Berkeley DB locks B-tree pages, not just logical records. Place
+            // the encrypted BIP39 key on leaves well separated from the
+            // short mkey/ckey keys so the blocker cannot stop encryption
+            // before the live keystore has mutated.
+            CDB filler(wallet->GetDBHandle(), "r+");
+            BOOST_REQUIRE(filler.TxnBegin());
+            const std::vector<unsigned char> padding(256, 0x31);
+            for (int i = 0; i < 512; ++i) {
+                BOOST_REQUIRE(filler.Write(strprintf("cbip39v%04d", i), padding));
+                BOOST_REQUIRE(filler.Write(strprintf("cbip39x%04d", i), padding));
+            }
+            BOOST_REQUIRE(filler.TxnCommit());
+        }
+
+        // Hold the encrypted-word key in a second transaction. EncryptWallet
+        // reaches this write only after EncryptKeys has replaced the live
+        // plaintext key map. The fixed path must return through one cleanup,
+        // not assert or continue through a freed CWalletDB pointer.
+        {
+            ScopedDBLockTimeout timeout(bitdb.dbenv, 5000000);
+            CWalletDB blocker(wallet->GetDBHandle());
+            BOOST_REQUIRE(blocker.TxnBegin());
+            BOOST_REQUIRE(blocker.WriteBip39Words(
+                wordHash, std::vector<unsigned char>(32, 0xa7), true));
+            std::atomic<bool> cycleAttempted{false};
+            std::atomic<bool> cycleResolved{false};
+            std::atomic<bool> blockerWriteSucceeded{false};
+            std::thread cycleThread([&blocker, &blockerWriteSucceeded, &cycleAttempted,
+                                     &cycleResolved, &wallet] {
+                // IsCrypted becomes true only after EncryptKeys has replaced
+                // the live maps and the younger transaction owns mkey/ckey.
+                for (int attempt = 0; attempt < 500; ++attempt) {
+                    if (wallet->IsCrypted()) {
+                        cycleAttempted = true;
+                        blockerWriteSucceeded = blocker.WriteMasterKey(1U, CMasterKey());
+                        cycleResolved = true;
+                        return;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+            });
+            std::thread detectorThread([&cycleAttempted, &cycleResolved] {
+                for (int attempt = 0; attempt < 500 && !cycleAttempted; ++attempt)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                for (int attempt = 0; attempt < 50 && !cycleResolved; ++attempt) {
+                    int aborted = 0;
+                    bitdb.dbenv->lock_detect(0, DB_LOCK_YOUNGEST, &aborted);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+            });
+            const bool encrypted = wallet->EncryptWallet(passphrase);
+            cycleThread.join();
+            detectorThread.join();
+            BOOST_CHECK(!encrypted);
+            BOOST_CHECK(cycleAttempted);
+            BOOST_CHECK(cycleResolved);
+            BOOST_CHECK(blockerWriteSucceeded);
+            BOOST_CHECK(wallet->IsCrypted());
+            BOOST_CHECK(wallet->IsLocked());
+            BOOST_REQUIRE(blocker.TxnAbort());
+        }
+    }
+
+    bitdb.Flush(false);
+
+    // The failed encryption transaction must leave the original on-disk
+    // wallet intact and plaintext; restart reconstructs its exact key and
+    // deterministic-seed inputs.
+    std::unique_ptr<CWallet> reloaded = LoadPQWallet(filename);
+    BOOST_CHECK(!reloaded->IsCrypted());
+    CKey loadedKey;
+    BOOST_REQUIRE(reloaded->GetKey(pubkey.GetID(), loadedKey));
+    BOOST_CHECK(loadedKey.VerifyPubKey(pubkey));
+    uint256 loadedHash;
+    std::vector<unsigned char> loadedWords;
+    std::vector<unsigned char> loadedPassphrase;
+    std::vector<unsigned char> loadedSeed;
+    reloaded->GetBip39Data(loadedHash, loadedWords, loadedPassphrase, loadedSeed);
+    BOOST_CHECK(loadedHash == wordHash);
+    BOOST_CHECK(loadedWords == words);
+    BOOST_CHECK(loadedPassphrase == mnemonicPassphrase);
+    BOOST_CHECK(loadedSeed == seed);
 }
 
 BOOST_AUTO_TEST_CASE(rewrite_discards_stale_regular_temporary_database)

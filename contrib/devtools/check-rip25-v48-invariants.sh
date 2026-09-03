@@ -136,6 +136,20 @@ require_fixed 'HasPlaintextPQKeys' src/wallet/wallet.cpp 'encrypted backup does 
 require_fixed 'if (!dbw->Rewrite())' src/wallet/wallet.cpp 'wallet encryption/backup does not propagate rewrite failure'
 require_fixed '!mapKeys.empty() || !mapPQKeys.empty()' src/wallet/crypter.cpp 'crypted mode permits resident plaintext PQ keys'
 
+# Wallet encryption must return immediately after any failure that follows
+# live-keystore mutation. Assertions are diagnostics, never control flow.
+encrypt_wallet_function="$(sed -n '/^bool CWallet::EncryptWallet(/,/^DBErrors CWallet::ReorderTransactions(/p' src/wallet/wallet.cpp)"
+if grep -Fq 'assert(false)' <<<"$encrypt_wallet_function"; then
+  fail 'EncryptWallet still relies on assert(false) after a recoverable failure'
+fi
+require_text "$encrypt_wallet_function" 'return failEncryptionAfterKeyMutation(true)' 'post-mutation wallet encryption failures do not return through centralized cleanup'
+require_text "$encrypt_wallet_function" 'return failEncryptionAfterKeyMutation(false)' 'wallet transaction commit failure can fall through cleanup'
+require_fixed 'pwalletdbEncryption = nullptr' src/wallet/wallet.cpp 'wallet encryption cleanup leaves a dangling database pointer'
+require_fixed 'const bool wasCrypted = pwallet->IsCrypted()' src/wallet/rpcwallet.cpp 'RPC encryption failure does not snapshot the pre-call encryption state'
+require_fixed '!wasCrypted && pwallet->IsCrypted()' src/wallet/rpcwallet.cpp 'RPC encryption failure can confuse an already encrypted wallet with newly mutated live state'
+require_fixed 'Wallet encryption failed after the live key state changed' src/wallet/rpcwallet.cpp 'RPC encryption failure does not distinguish mutated live state'
+require_fixed '!wasCrypted && !encryptedSuccessfully && wallet->IsCrypted()' src/qt/walletmodel.cpp 'Qt encryption failure does not distinguish a newly mutated live state'
+
 # PQ secret material must never cross a production API backed by the ordinary
 # allocator. The behavioral test also proves byte-for-byte wallet compatibility.
 require_fixed 'using KeyData = SecureVector' src/pqkey.h 'CPQKey secret storage lacks a secure-allocator type barrier'

@@ -2623,7 +2623,15 @@ UniValue encryptwallet(const JSONRPCRequest& request)
             "encryptwallet <passphrase>\n"
             "Encrypts the wallet with <passphrase>.");
 
+    const bool wasCrypted = pwallet->IsCrypted();
     if (!pwallet->EncryptWallet(strWalletPass)) {
+        if (!wasCrypted && pwallet->IsCrypted()) {
+            StartShutdown();
+            throw JSONRPCError(
+                RPC_WALLET_ENCRYPTION_FAILED,
+                "Error: Wallet encryption failed after the live key state changed. "
+                "The Raven server is stopping; restart before using the wallet.");
+        }
         throw JSONRPCError(RPC_WALLET_ENCRYPTION_FAILED, "Error: Failed to encrypt the wallet.");
     }
 
