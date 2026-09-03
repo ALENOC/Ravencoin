@@ -74,6 +74,25 @@ public:
     }
 };
 
+class InspectableCryptoKeyStore : public CCryptoKeyStore
+{
+public:
+    bool EncryptForTest(CKeyingMaterial& masterKey)
+    {
+        return EncryptKeys(masterKey);
+    }
+
+    bool GetCryptedKeyForTest(const CKeyID& keyID, std::vector<unsigned char>& cryptedSecret)
+    {
+        LOCK(cs_KeyStore);
+        const auto it = mapCryptedKeys.find(keyID);
+        if (it == mapCryptedKeys.end())
+            return false;
+        cryptedSecret = it->second.second;
+        return true;
+    }
+};
+
 std::unique_ptr<CWallet> LoadPQWallet(const std::string& filename)
 {
     std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
@@ -110,6 +129,59 @@ struct PQWalletDatabaseTestingSetup : public TestingSetup
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(pq_wallet_tests, PQWalletDatabaseTestingSetup)
+
+BOOST_AUTO_TEST_CASE(crypted_ecdsa_write_reports_plaintext_erase_failure)
+{
+    CKey key;
+    key.MakeNewKey(true);
+    const CPubKey pubkey = key.GetPubKey();
+    BOOST_REQUIRE(pubkey.IsValid());
+
+    // A dummy database accepts writes but cannot erase. The encrypted write
+    // must not report success when plaintext deletion fails.
+    CWalletDBWrapper dummyDbw;
+    CWalletDB dummyDb(dummyDbw);
+    BOOST_CHECK(!dummyDb.WriteCryptedKey(
+        pubkey, std::vector<unsigned char>(48, 0x4d), CKeyMetadata()));
+}
+
+BOOST_AUTO_TEST_CASE(crypted_ecdsa_write_failure_rolls_back_wallet_memory)
+{
+    CKey key;
+    key.MakeNewKey(true);
+    const CPubKey pubkey = key.GetPubKey();
+    const CKeyID keyID = pubkey.GetID();
+    CKeyingMaterial masterKey(WALLET_CRYPTO_KEY_SIZE, 0x3a);
+
+    InspectableCryptoKeyStore source;
+    BOOST_REQUIRE(source.AddKeyPubKey(key, pubkey));
+    BOOST_REQUIRE(source.EncryptForTest(masterKey));
+    std::vector<unsigned char> oldCiphertext;
+    BOOST_REQUIRE(source.GetCryptedKeyForTest(keyID, oldCiphertext));
+
+    const SecureString passphrase("ecdsa-rollback-passphrase");
+    CMasterKey encryptedMasterKey;
+    encryptedMasterKey.vchSalt.assign(WALLET_CRYPTO_SALT_SIZE, 0x7c);
+    encryptedMasterKey.nDeriveIterations = 25000;
+    CCrypter crypter;
+    BOOST_REQUIRE(crypter.SetKeyFromPassphrase(
+        passphrase, encryptedMasterKey.vchSalt, encryptedMasterKey.nDeriveIterations,
+        encryptedMasterKey.nDerivationMethod));
+    BOOST_REQUIRE(crypter.Encrypt(masterKey, encryptedMasterKey.vchCryptedKey));
+
+    CWallet wallet;
+    wallet.mapMasterKeys[1] = encryptedMasterKey;
+    BOOST_REQUIRE(wallet.LoadCryptedKey(pubkey, oldCiphertext));
+    BOOST_CHECK(!wallet.AddCryptedKey(pubkey, std::vector<unsigned char>(48, 0x22)));
+    BOOST_REQUIRE(wallet.Unlock(passphrase));
+    CKey restored;
+    BOOST_REQUIRE(wallet.GetKey(keyID, restored));
+    BOOST_CHECK(restored.VerifyPubKey(pubkey));
+
+    CWallet firstFailedAdd;
+    BOOST_CHECK(!firstFailedAdd.AddCryptedKey(pubkey, oldCiphertext));
+    BOOST_CHECK(!firstFailedAdd.IsCrypted());
+}
 
 BOOST_AUTO_TEST_CASE(crypted_pq_write_reports_plaintext_erase_failure)
 {
@@ -276,6 +348,11 @@ BOOST_AUTO_TEST_CASE(encrypted_pq_keys_are_ciphertext_only_after_reload_and_back
     const std::string backupFilename = "pq-encrypted-wallet-backup.dat";
     const SecureString passphrase("pq-wallet-regression-passphrase");
 
+    CKey migratedECDSAKey;
+    migratedECDSAKey.MakeNewKey(true);
+    const CPubKey migratedECDSAPubkey = migratedECDSAKey.GetPubKey();
+    BOOST_REQUIRE(migratedECDSAPubkey.IsValid());
+
     CPQKey migratedKey;
     migratedKey.MakeNewKey();
     BOOST_REQUIRE(migratedKey.IsValid());
@@ -294,6 +371,7 @@ BOOST_AUTO_TEST_CASE(encrypted_pq_keys_are_ciphertext_only_after_reload_and_back
         std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
         {
             LOCK(wallet->cs_wallet);
+            BOOST_REQUIRE(wallet->AddKeyPubKey(migratedECDSAKey, migratedECDSAPubkey));
             BOOST_REQUIRE(wallet->AddPQKeyPubKey(migratedKey, migratedPubkey));
         }
 
@@ -307,6 +385,15 @@ BOOST_AUTO_TEST_CASE(encrypted_pq_keys_are_ciphertext_only_after_reload_and_back
         {
             CWalletDBWrapper rawDbw(&bitdb, filename);
             CDB rawDb(rawDbw, "r");
+            std::vector<unsigned char> cryptedECDSASecret;
+            BOOST_REQUIRE(rawDb.Read(
+                std::make_pair(std::string("ckey"), migratedECDSAPubkey),
+                cryptedECDSASecret));
+            BOOST_CHECK(!rawDb.Exists(
+                std::make_pair(std::string("key"), migratedECDSAPubkey)));
+            BOOST_CHECK(!rawDb.Exists(
+                std::make_pair(std::string("wkey"), migratedECDSAPubkey)));
+
             for (const auto& expected : {
                     std::make_pair(migratedProgram, migratedSecret),
                     std::make_pair(addedProgram, addedSecret)}) {
@@ -339,8 +426,13 @@ BOOST_AUTO_TEST_CASE(encrypted_pq_keys_are_ciphertext_only_after_reload_and_back
             BOOST_CHECK(wallet->IsLocked());
 
             CPQKey loaded;
+            CKey loadedECDSA;
+            BOOST_CHECK(!wallet->GetKey(migratedECDSAPubkey.GetID(), loadedECDSA));
             BOOST_CHECK(!wallet->GetPQKey(migratedProgram, loaded));
             BOOST_REQUIRE(wallet->Unlock(passphrase));
+
+            BOOST_REQUIRE(wallet->GetKey(migratedECDSAPubkey.GetID(), loadedECDSA));
+            BOOST_CHECK(loadedECDSA.VerifyPubKey(migratedECDSAPubkey));
 
             BOOST_REQUIRE(wallet->GetPQKey(migratedProgram, loaded));
             BOOST_CHECK(loaded.MatchesPubKey(migratedPubkey));
@@ -422,6 +514,49 @@ BOOST_AUTO_TEST_CASE(plaintext_pq_record_with_master_key_fails_load)
     std::unique_ptr<CWallet> wallet(new CWallet(std::move(dbw)));
     bool firstRun = false;
     BOOST_CHECK_EQUAL(wallet->LoadWallet(firstRun), DB_CORRUPT);
+}
+
+BOOST_AUTO_TEST_CASE(plaintext_ecdsa_record_with_master_key_fails_load_and_backup)
+{
+    const std::string filename = "ecdsa-mixed-wallet.dat";
+    const std::string backupFilename = "ecdsa-mixed-wallet-backup.dat";
+    CKey key;
+    key.MakeNewKey(true);
+    const CPubKey pubkey = key.GetPubKey();
+    BOOST_REQUIRE(pubkey.IsValid());
+    const std::vector<unsigned char> cryptedSecret(48, 0x6c);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        LOCK(wallet->cs_wallet);
+        BOOST_REQUIRE(wallet->AddKeyPubKey(key, pubkey));
+    }
+
+    // Construct the failure state independently: encryption metadata exists
+    // beside the original plaintext private-key record. Core 4.8.0 accepted
+    // this combination because it checked mixed state only for PQ records.
+    {
+        CWalletDBWrapper rawDbw(&bitdb, filename);
+        CDB rawDb(rawDbw, "r+");
+        BOOST_REQUIRE(rawDb.Write(
+            std::make_pair(std::string("mkey"), 1U), CMasterKey(), false));
+        BOOST_CHECK(rawDb.Exists(std::make_pair(std::string("key"), pubkey)));
+    }
+
+    {
+        std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
+        std::unique_ptr<CWallet> wallet(new CWallet(std::move(dbw)));
+        bool firstRun = false;
+        BOOST_CHECK_EQUAL(wallet->LoadWallet(firstRun), DB_CORRUPT);
+    }
+
+    {
+        std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
+        CWallet wallet(std::move(dbw));
+        BOOST_REQUIRE(wallet.LoadCryptedKey(pubkey, cryptedSecret));
+        BOOST_CHECK(!wallet.BackupWallet((GetDataDir() / backupFilename).string()));
+        BOOST_CHECK(!fs::exists(GetDataDir() / backupFilename));
+    }
 }
 
 BOOST_AUTO_TEST_CASE(rewrite_discards_stale_regular_temporary_database)

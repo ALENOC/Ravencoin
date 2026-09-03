@@ -76,15 +76,22 @@ bool CWalletDB::WriteCryptedKey(const CPubKey& vchPubKey,
                                 const std::vector<unsigned char>& vchCryptedSecret,
                                 const CKeyMetadata &keyMeta)
 {
+    const auto cryptedKey = std::make_pair(std::string("ckey"), vchPubKey);
     if (!WriteIC(std::make_pair(std::string("keymeta"), vchPubKey), keyMeta)) {
         return false;
     }
 
-    if (!WriteIC(std::make_pair(std::string("ckey"), vchPubKey), vchCryptedSecret, false)) {
+    if (!WriteIC(cryptedKey, vchCryptedSecret, false)) {
         return false;
     }
-    EraseIC(std::make_pair(std::string("key"), vchPubKey));
-    EraseIC(std::make_pair(std::string("wkey"), vchPubKey));
+    if (!EraseIC(std::make_pair(std::string("key"), vchPubKey)) ||
+        !EraseIC(std::make_pair(std::string("wkey"), vchPubKey))) {
+        // EncryptWallet wraps conversion in a transaction and will abort it.
+        // For a standalone encrypted-key write, avoid deliberately retaining
+        // a new ciphertext record beside plaintext after an erase error.
+        EraseIC(cryptedKey);
+        return false;
+    }
     return true;
 }
 
@@ -113,6 +120,40 @@ bool CWalletDB::WriteCryptedPQKey(const uint256& witnessProgram, const CPQPubKey
         return false;
     }
     return true;
+}
+
+bool CWalletDB::HasPlaintextKeys(bool& hasPlaintext)
+{
+    hasPlaintext = false;
+    Dbc* pcursor = batch.GetCursor();
+    if (!pcursor)
+        return false;
+
+    while (true) {
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+        const int ret = batch.ReadAtCursor(pcursor, ssKey, ssValue);
+        if (ret == DB_NOTFOUND)
+            break;
+        if (ret != 0) {
+            pcursor->close();
+            return false;
+        }
+
+        try {
+            std::string strType;
+            ssKey >> strType;
+            if (strType == "key" || strType == "wkey") {
+                hasPlaintext = true;
+                break;
+            }
+        } catch (...) {
+            pcursor->close();
+            return false;
+        }
+    }
+
+    return pcursor->close() == 0;
 }
 
 bool CWalletDB::HasPlaintextPQKeys(bool& hasPlaintext)
@@ -290,6 +331,7 @@ public:
     unsigned int nWatchKeys;
     unsigned int nKeyMeta;
     bool fIsEncrypted;
+    bool fHasPlaintextKeys;
     bool fHasPlaintextPQKeys;
     bool fHasCryptedPQKeys;
     bool fAnyUnordered;
@@ -299,6 +341,7 @@ public:
     CWalletScanState() {
         nKeys = nCKeys = nWatchKeys = nKeyMeta = 0;
         fIsEncrypted = false;
+        fHasPlaintextKeys = false;
         fHasPlaintextPQKeys = false;
         fHasCryptedPQKeys = false;
         fAnyUnordered = false;
@@ -398,6 +441,7 @@ bool ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
         }
         else if (strType == "key" || strType == "wkey")
         {
+            wss.fHasPlaintextKeys = true;
             CPubKey vchPubKey;
             ssKey >> vchPubKey;
             if (!vchPubKey.IsValid())
@@ -804,9 +848,9 @@ DBErrors CWalletDB::LoadWallet(CWallet* pwallet)
         result = DB_CORRUPT;
     }
 
-    if (wss.fHasPlaintextPQKeys &&
+    if ((wss.fHasPlaintextKeys || wss.fHasPlaintextPQKeys) &&
         (wss.fHasCryptedPQKeys || wss.fIsEncrypted || !pwallet->mapMasterKeys.empty())) {
-        LogPrintf("Error reading wallet database: encrypted wallet contains plaintext PQ keys\n");
+        LogPrintf("Error reading wallet database: encrypted wallet contains plaintext private keys\n");
         result = DB_CORRUPT;
     }
 

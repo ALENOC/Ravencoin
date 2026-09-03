@@ -313,25 +313,54 @@ bool CWallet::AddPQKeyPubKey(const CPQKey &key, const CPQPubKey &pubkey)
 bool CWallet::AddCryptedKey(const CPubKey &vchPubKey,
                             const std::vector<unsigned char> &vchCryptedSecret)
 {
+    const CKeyID keyID = vchPubKey.GetID();
+    const bool wasCrypted = IsCrypted();
+    bool hadPrevious = false;
+    std::pair<CPubKey, std::vector<unsigned char>> previous;
+    {
+        LOCK(cs_KeyStore);
+        const auto it = mapCryptedKeys.find(keyID);
+        if (it != mapCryptedKeys.end()) {
+            hadPrevious = true;
+            previous = it->second;
+        }
+    }
+
     if (!CCryptoKeyStore::AddCryptedKey(vchPubKey, vchCryptedSecret))
         return false;
+
+    bool persisted = false;
     {
         LOCK(cs_wallet);
         if (pwalletdbEncryption)
-            return pwalletdbEncryption->WriteCryptedKey(vchPubKey,
-                                                        vchCryptedSecret,
-                                                        mapKeyMetadata[vchPubKey.GetID()]);
+            persisted = pwalletdbEncryption->WriteCryptedKey(vchPubKey,
+                                                              vchCryptedSecret,
+                                                              mapKeyMetadata[keyID]);
         else
-            return CWalletDB(*dbw).WriteCryptedKey(vchPubKey,
-                                                            vchCryptedSecret,
-                                                            mapKeyMetadata[vchPubKey.GetID()]);
+            persisted = CWalletDB(*dbw).WriteCryptedKey(vchPubKey,
+                                                        vchCryptedSecret,
+                                                        mapKeyMetadata[keyID]);
     }
+
+    if (!persisted) {
+        {
+            LOCK(cs_KeyStore);
+            if (hadPrevious)
+                mapCryptedKeys[keyID] = std::move(previous);
+            else
+                mapCryptedKeys.erase(keyID);
+        }
+        if (!wasCrypted)
+            ResetCryptedOnAddFailure();
+    }
+    return persisted;
 }
 
 bool CWallet::AddCryptedPQKey(const CPQPubKey &pqPubKey,
                               const std::vector<unsigned char> &vchCryptedSecret)
 {
     const uint256 witnessProgram = pqPubKey.GetWitnessProgram();
+    const bool wasCrypted = IsCrypted();
     bool hadPrevious = false;
     std::pair<CPQPubKey, std::vector<unsigned char>> previous;
     {
@@ -356,11 +385,15 @@ bool CWallet::AddCryptedPQKey(const CPQPubKey &pqPubKey,
     }
 
     if (!persisted) {
-        LOCK(cs_KeyStore);
-        if (hadPrevious)
-            mapCryptedPQKeys[witnessProgram] = std::move(previous);
-        else
-            mapCryptedPQKeys.erase(witnessProgram);
+        {
+            LOCK(cs_KeyStore);
+            if (hadPrevious)
+                mapCryptedPQKeys[witnessProgram] = std::move(previous);
+            else
+                mapCryptedPQKeys.erase(witnessProgram);
+        }
+        if (!wasCrypted)
+            ResetCryptedOnAddFailure();
     }
     return persisted;
 }
@@ -5017,9 +5050,11 @@ bool CWallet::BackupWallet(const std::string& strDest)
         }
 
         bool hasPlaintextPQKeys = false;
+        bool hasPlaintextKeys = false;
         {
             CWalletDB walletdb(*dbw, "r");
-            if (!walletdb.HasPlaintextPQKeys(hasPlaintextPQKeys) || hasPlaintextPQKeys)
+            if (!walletdb.HasPlaintextKeys(hasPlaintextKeys) || hasPlaintextKeys ||
+                !walletdb.HasPlaintextPQKeys(hasPlaintextPQKeys) || hasPlaintextPQKeys)
                 return false;
         }
 

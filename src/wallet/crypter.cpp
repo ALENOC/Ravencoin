@@ -154,6 +154,16 @@ bool CCryptoKeyStore::SetCrypted()
     return true;
 }
 
+void CCryptoKeyStore::ResetCryptedOnAddFailure()
+{
+    LOCK(cs_KeyStore);
+    if (mapCryptedKeys.empty() && mapCryptedPQKeys.empty()) {
+        vMasterKey.clear();
+        fUseCrypto = false;
+        fDecryptionThoroughlyChecked = false;
+    }
+}
+
 bool CCryptoKeyStore::Lock()
 {
     if (!SetCrypted())
