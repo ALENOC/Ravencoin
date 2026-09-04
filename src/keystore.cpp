@@ -9,6 +9,7 @@
 #include "key.h"
 #include "pubkey.h"
 #include "util.h"
+#include "wallet/bip39.h"
 
 bool CKeyStore::AddKey(const CKey &key) {
     return AddKeyPubKey(key, key.GetPubKey());
@@ -127,6 +128,12 @@ bool CBasicKeyStore::AddPassphrase(const std::vector<unsigned char>& p_vchPassph
     LOCK(cs_KeyStore);
     vchPassphrase = p_vchPassphrase;
     return true;
+}
+
+bool CBasicKeyStore::HasValidBip39Seed() const
+{
+    LOCK(cs_KeyStore);
+    return g_vchSeed.size() == BIP39_SEED_SIZE;
 }
 
 void CBasicKeyStore::GetBip39Data(uint256& p_hash, std::vector<unsigned char>& p_vchWords, std::vector<unsigned char>& p_vchPassphrase, std::vector<unsigned char>& p_vchSeed)

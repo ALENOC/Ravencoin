@@ -150,6 +150,22 @@ require_fixed '!wasCrypted && pwallet->IsCrypted()' src/wallet/rpcwallet.cpp 'RP
 require_fixed 'Wallet encryption failed after the live key state changed' src/wallet/rpcwallet.cpp 'RPC encryption failure does not distinguish mutated live state'
 require_fixed '!wasCrypted && !encryptedSuccessfully && wallet->IsCrypted()' src/qt/walletmodel.cpp 'Qt encryption failure does not distinguish a newly mutated live state'
 
+# BIP39 rows are private-key material. Salvage/load must preserve a complete
+# lineage, and key derivation must never substitute the deterministic empty seed.
+is_key_type_function="$(sed -n '/^bool CWalletDB::IsKeyType(/,/^}/p' src/wallet/walletdb.cpp)"
+for bip39_type in bip39words bip39passphrase bip39vchseed cbip39words cbip39passphrase cbip39vchseed; do
+  require_text "$is_key_type_function" "strType == \"$bip39_type\"" "BIP39 record type $bip39_type is not classified as key-critical"
+done
+require_text "$is_key_type_function" 'strType == "hdchain"' 'HD chain record is not classified as key-critical'
+load_wallet_function="$(sed -n '/^DBErrors CWalletDB::LoadWallet(/,/^DBErrors CWalletDB::FindWalletTx(/p' src/wallet/walletdb.cpp)"
+require_text "$load_wallet_function" 'incomplete or mixed BIP39 key material' 'BIP44 load lacks an end-of-scan completeness check'
+recovery_filter_function="$(sed -n '/^bool CWalletDB::RecoverKeysOnlyFilter(/,/^}/p' src/wallet/walletdb.cpp)"
+require_text "$recovery_filter_function" 'if (!IsKeyType(strType))' 'key-only recovery parses discarded records before classifying them'
+derive_child_function="$(sed -n '/^void CWallet::DeriveNewChildKey(/,/^}/p' src/wallet/wallet.cpp)"
+require_text "$derive_child_function" 'g_vchSeed.size() != BIP39_SEED_SIZE' 'BIP44 derivation accepts a missing or malformed seed'
+topup_keypool_function="$(sed -n '/^bool CWallet::TopUpKeyPool(/,/^}/p' src/wallet/wallet.cpp)"
+require_text "$topup_keypool_function" 'IsBip44Enabled() && !HasValidBip39Seed()' 'keypool state can mutate before BIP39 seed validation'
+
 # PQ secret material must never cross a production API backed by the ordinary
 # allocator. The behavioral test also proves byte-for-byte wallet compatibility.
 require_fixed 'using KeyData = SecureVector' src/pqkey.h 'CPQKey secret storage lacks a secure-allocator type barrier'

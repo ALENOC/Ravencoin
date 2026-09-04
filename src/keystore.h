@@ -13,7 +13,6 @@
 #include "script/script.h"
 #include "script/standard.h"
 #include "sync.h"
-
 #include <boost/signals2/signal.hpp>
 
 /** A virtual base class for key stores */
@@ -171,6 +170,7 @@ public:
     bool AddWords(const uint256& p_hash, const std::vector<unsigned char>& p_vchWords);
     bool AddPassphrase(const std::vector<unsigned char>& p_vchPassphrase);
     bool AddVchSeed(const std::vector<unsigned char>& p_vchSeed);
+    bool HasValidBip39Seed() const;
     void GetBip39Data(uint256& p_hash, std::vector<unsigned char>& p_vchWords, std::vector<unsigned char>& p_vchPassphrase, std::vector<unsigned char>& p_vchSeed);
 };
 

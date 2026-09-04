@@ -33,6 +33,11 @@ const int DEFAULT_LANG = 0;
 
 const int NOT_LANG_DEFINED = -1;
 
+// BIP39 always derives a 512-bit seed. Persisted encrypted seeds add one
+// PKCS#7 AES block to the 64-byte plaintext.
+const unsigned int BIP39_SEED_SIZE = 64;
+const unsigned int BIP39_CRYPTED_SEED_SIZE = 80;
+
 const char *const ENGLISH = "english";
 const char *const SPANISH = "spanish";
 const char *const FRENCH = "french";

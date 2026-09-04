@@ -8,6 +8,7 @@
 #include "pqkey.h"
 #include "test/test_raven.h"
 #include "util.h"
+#include "utilstrencodings.h"
 #include "wallet/db.h"
 #include "wallet/wallet.h"
 #include "wallet/walletdb.h"
@@ -29,6 +30,38 @@ namespace {
 
 using PlainPQValue = std::pair<std::pair<CPQPubKey, std::vector<unsigned char>>, uint256>;
 using CryptedPQValue = std::pair<CPQPubKey, std::vector<unsigned char>>;
+
+const std::string BIP39_TEST_MNEMONIC =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+const std::string BIP39_TEST_PASSPHRASE = "TREZOR";
+
+std::vector<unsigned char> Bip39TestWords()
+{
+    return std::vector<unsigned char>(BIP39_TEST_MNEMONIC.begin(), BIP39_TEST_MNEMONIC.end());
+}
+
+std::vector<unsigned char> Bip39TestPassphrase()
+{
+    return std::vector<unsigned char>(BIP39_TEST_PASSPHRASE.begin(), BIP39_TEST_PASSPHRASE.end());
+}
+
+std::vector<unsigned char> Bip39TestSeed()
+{
+    // Trezor's independent BIP39 vector for the mnemonic and passphrase above.
+    return ParseHex(
+        "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e5349553"
+        "1f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04");
+}
+
+CHDChain Bip44TestChain(CWallet* wallet)
+{
+    CKey marker;
+    marker.MakeNewKey(true);
+    CHDChain chain(wallet);
+    chain.UseBip44(true);
+    chain.seed_id = marker.GetPubKey().GetID();
+    return chain;
+}
 
 std::vector<unsigned char> RawSecret(const CPQKey& key)
 {
@@ -180,6 +213,210 @@ struct PQWalletDatabaseTestingSetup : public TestingSetup
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(pq_wallet_tests, PQWalletDatabaseTestingSetup)
+
+BOOST_AUTO_TEST_CASE(bip39_records_are_key_critical)
+{
+    for (const std::string& type : {
+             "hdchain",
+             "bip39words", "bip39passphrase", "bip39vchseed",
+             "cbip39words", "cbip39passphrase", "cbip39vchseed"}) {
+        BOOST_CHECK_MESSAGE(CWalletDB::IsKeyType(type), type);
+    }
+
+    const std::vector<unsigned char> words = Bip39TestWords();
+    const std::vector<unsigned char> passphrase = Bip39TestPassphrase();
+    const std::vector<unsigned char> seed = Bip39TestSeed();
+    const std::vector<unsigned char> cryptedSeed(BIP39_CRYPTED_SEED_SIZE, 0x5a);
+    const uint256 wordHash = Hash(words.begin(), words.end());
+    auto retainedByKeyOnlyRecovery = [](const std::string& type, const auto& value) {
+        CWallet dummyWallet;
+        CDataStream key(SER_DISK, CLIENT_VERSION);
+        CDataStream serializedValue(SER_DISK, CLIENT_VERSION);
+        key << type;
+        serializedValue << value;
+        return CWalletDB::RecoverKeysOnlyFilter(
+            &dummyWallet, std::move(key), std::move(serializedValue));
+    };
+    BOOST_CHECK(retainedByKeyOnlyRecovery(
+        "bip39words", std::make_pair(wordHash, words)));
+    BOOST_CHECK(retainedByKeyOnlyRecovery("bip39passphrase", passphrase));
+    BOOST_CHECK(retainedByKeyOnlyRecovery("bip39vchseed", seed));
+    BOOST_CHECK(retainedByKeyOnlyRecovery(
+        "cbip39words", std::make_pair(wordHash, std::vector<unsigned char>(96, 0x31))));
+    BOOST_CHECK(retainedByKeyOnlyRecovery(
+        "cbip39passphrase", std::vector<unsigned char>(32, 0x42)));
+    BOOST_CHECK(retainedByKeyOnlyRecovery("cbip39vchseed", cryptedSeed));
+}
+
+BOOST_AUTO_TEST_CASE(bip44_key_only_recovery_preserves_derivation_lineage)
+{
+    const std::string filename = "bip44-key-only-recovery-wallet.dat";
+    const std::vector<unsigned char> words = Bip39TestWords();
+    const std::vector<unsigned char> passphrase = Bip39TestPassphrase();
+    const std::vector<unsigned char> seed = Bip39TestSeed();
+    const uint256 wordHash = Hash(words.begin(), words.end());
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_REQUIRE(wallet->SetHDChain(Bip44TestChain(wallet.get()), false));
+        CWalletDB walletdb(wallet->GetDBHandle());
+        BOOST_REQUIRE(walletdb.WriteBip39Words(wordHash, words, false));
+        BOOST_REQUIRE(walletdb.WriteBip39Passphrase(passphrase, false));
+        BOOST_REQUIRE(walletdb.WriteBip39VchSeed(seed, false));
+    }
+    bitdb.Flush(false);
+
+    CWallet dummyWallet;
+    std::string backupFilename;
+    BOOST_REQUIRE(CWalletDB::Recover(
+        filename, &dummyWallet, CWalletDB::RecoverKeysOnlyFilter, backupFilename));
+    bitdb.Flush(false);
+
+    std::unique_ptr<CWallet> recovered = LoadPQWallet(filename);
+    uint256 recoveredHash;
+    std::vector<unsigned char> recoveredWords;
+    std::vector<unsigned char> recoveredPassphrase;
+    std::vector<unsigned char> recoveredSeed;
+    recovered->GetBip39Data(
+        recoveredHash, recoveredWords, recoveredPassphrase, recoveredSeed);
+    BOOST_CHECK(recoveredHash == wordHash);
+    BOOST_CHECK(recoveredWords == words);
+    BOOST_CHECK(recoveredPassphrase == passphrase);
+    BOOST_CHECK(recoveredSeed == seed);
+
+    // Independent expected value for regtest path m/44'/1'/0'/0/0.
+    const std::vector<unsigned char> expectedBytes = ParseHex(
+        "023765b56ecb006a47d775beee38c45a9fe5dbe11d100b2e2ea3c99196dc915a2d");
+    const CPubKey expectedFirstExternal(expectedBytes.begin(), expectedBytes.end());
+    BOOST_REQUIRE(expectedFirstExternal.IsValid());
+
+    BOOST_REQUIRE(recovered->TopUpKeyPool(1));
+    CPubKey recoveredFirstExternal;
+    BOOST_REQUIRE(recovered->GetKeyFromPool(recoveredFirstExternal, false));
+    BOOST_CHECK(recoveredFirstExternal == expectedFirstExternal);
+}
+
+BOOST_AUTO_TEST_CASE(encrypted_bip44_key_only_recovery_preserves_derivation_lineage)
+{
+    const std::string filename = "bip44-encrypted-key-only-recovery-wallet.dat";
+    const SecureString walletPassphrase("bip44-recovery-wallet-passphrase");
+    const std::vector<unsigned char> words = Bip39TestWords();
+    const std::vector<unsigned char> passphrase = Bip39TestPassphrase();
+    const std::vector<unsigned char> seed = Bip39TestSeed();
+    const uint256 wordHash = Hash(words.begin(), words.end());
+
+    CKey persistedKey;
+    persistedKey.MakeNewKey(true);
+    const CPubKey persistedPubKey = persistedKey.GetPubKey();
+    BOOST_REQUIRE(persistedPubKey.IsValid());
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_REQUIRE(wallet->SetHDChain(Bip44TestChain(wallet.get()), false));
+        BOOST_REQUIRE(wallet->LoadWords(wordHash, words));
+        BOOST_REQUIRE(wallet->LoadPassphrase(passphrase));
+        BOOST_REQUIRE(wallet->LoadVchSeed(seed));
+        {
+            LOCK(wallet->cs_wallet);
+            BOOST_REQUIRE(wallet->AddKeyPubKey(persistedKey, persistedPubKey));
+        }
+        {
+            CWalletDB walletdb(wallet->GetDBHandle());
+            BOOST_REQUIRE(walletdb.WriteBip39Words(wordHash, words, false));
+            BOOST_REQUIRE(walletdb.WriteBip39Passphrase(passphrase, false));
+            BOOST_REQUIRE(walletdb.WriteBip39VchSeed(seed, false));
+        }
+        BOOST_REQUIRE(wallet->EncryptWallet(walletPassphrase));
+    }
+    bitdb.Flush(false);
+
+    CWallet dummyWallet;
+    std::string backupFilename;
+    BOOST_REQUIRE(CWalletDB::Recover(
+        filename, &dummyWallet, CWalletDB::RecoverKeysOnlyFilter, backupFilename));
+    bitdb.Flush(false);
+
+    std::unique_ptr<CWallet> recovered = LoadPQWallet(filename);
+    BOOST_CHECK(recovered->IsCrypted());
+    BOOST_CHECK(recovered->IsLocked());
+    BOOST_REQUIRE(recovered->Unlock(walletPassphrase));
+
+    CKey loadedKey;
+    BOOST_REQUIRE(recovered->GetKey(persistedPubKey.GetID(), loadedKey));
+    BOOST_CHECK(loadedKey.VerifyPubKey(persistedPubKey));
+
+    const std::vector<unsigned char> expectedBytes = ParseHex(
+        "023765b56ecb006a47d775beee38c45a9fe5dbe11d100b2e2ea3c99196dc915a2d");
+    const CPubKey expectedFirstExternal(expectedBytes.begin(), expectedBytes.end());
+    BOOST_REQUIRE(expectedFirstExternal.IsValid());
+    BOOST_REQUIRE(recovered->TopUpKeyPool(1));
+    CPubKey recoveredFirstExternal;
+    BOOST_REQUIRE(recovered->GetKeyFromPool(recoveredFirstExternal, false));
+    BOOST_CHECK(recoveredFirstExternal == expectedFirstExternal);
+}
+
+BOOST_AUTO_TEST_CASE(bip44_incomplete_or_malformed_seed_fails_load)
+{
+    const std::vector<unsigned char> words = Bip39TestWords();
+    const uint256 wordHash = Hash(words.begin(), words.end());
+    const std::vector<unsigned char> validSeed = Bip39TestSeed();
+
+    auto expectCorrupt = [&](const std::string& suffix, bool writeWords,
+                             bool writeSeed, const std::vector<unsigned char>& seed) {
+        const std::string filename = "bip44-incomplete-" + suffix + ".dat";
+        {
+            std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+            BOOST_REQUIRE(wallet->SetHDChain(Bip44TestChain(wallet.get()), false));
+            CWalletDB walletdb(wallet->GetDBHandle());
+            if (writeWords)
+                BOOST_REQUIRE(walletdb.WriteBip39Words(wordHash, words, false));
+            if (writeSeed)
+                BOOST_REQUIRE(walletdb.WriteBip39VchSeed(seed, false));
+        }
+        bitdb.Flush(false);
+
+        std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
+        std::unique_ptr<CWallet> wallet(new CWallet(std::move(dbw)));
+        bool firstRun = false;
+        BOOST_CHECK_EQUAL(wallet->LoadWallet(firstRun), DB_CORRUPT);
+        wallet.reset();
+        bitdb.Flush(false);
+    };
+
+    expectCorrupt("no-bip39", false, false, {});
+    expectCorrupt("words-only", true, false, {});
+    expectCorrupt("seed-only", false, true, validSeed);
+    expectCorrupt("empty-seed", true, true, {});
+    expectCorrupt("short-seed", true, true, std::vector<unsigned char>(63, 0x11));
+    expectCorrupt("long-seed", true, true, std::vector<unsigned char>(65, 0x22));
+}
+
+BOOST_AUTO_TEST_CASE(bip44_derivation_refuses_missing_seed_without_advancing_counter)
+{
+    const std::string filename = "bip44-missing-seed-derivation-wallet.dat";
+    std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+    BOOST_REQUIRE(wallet->SetHDChain(Bip44TestChain(wallet.get()), false));
+    BOOST_CHECK_EQUAL(wallet->GetHDChain().nExternalChainCounter, 0U);
+    BOOST_CHECK_EQUAL(wallet->GetHDChain().nInternalChainCounter, 0U);
+
+    BOOST_CHECK_THROW(wallet->TopUpKeyPool(1), std::runtime_error);
+    BOOST_CHECK_EQUAL(wallet->GetHDChain().nExternalChainCounter, 0U);
+    BOOST_CHECK_EQUAL(wallet->GetHDChain().nInternalChainCounter, 0U);
+    BOOST_CHECK(wallet->GetKeys().empty());
+
+    const std::vector<unsigned char> words = Bip39TestWords();
+    const std::vector<unsigned char> seed = Bip39TestSeed();
+    BOOST_REQUIRE(wallet->LoadWords(Hash(words.begin(), words.end()), words));
+    BOOST_REQUIRE(wallet->LoadVchSeed(seed));
+    BOOST_REQUIRE(wallet->TopUpKeyPool(1));
+    CWalletDB walletdb(wallet->GetDBHandle());
+    CKeyPool firstPoolEntry;
+    CKeyPool internalPoolEntry;
+    CKeyPool skippedPoolEntry;
+    BOOST_CHECK(walletdb.ReadPool(1, firstPoolEntry));
+    BOOST_CHECK(walletdb.ReadPool(2, internalPoolEntry));
+    BOOST_CHECK(!walletdb.ReadPool(3, skippedPoolEntry));
+}
 
 BOOST_AUTO_TEST_CASE(crypted_ecdsa_write_reports_plaintext_erase_failure)
 {
@@ -614,10 +851,9 @@ BOOST_AUTO_TEST_CASE(bip44_encryption_write_failure_returns_and_aborts)
 {
     const std::string filename = "bip44-write-failure-wallet.dat";
     const SecureString passphrase("bip44-write-failure-passphrase");
-    const std::vector<unsigned char> words{
-        'a', 'b', 'a', 'n', 'd', 'o', 'n', ' ', 'a', 'b', 'i', 'l', 'i', 't', 'y'};
-    const std::vector<unsigned char> mnemonicPassphrase{'s', 'a', 'l', 't'};
-    const std::vector<unsigned char> seed(64, 0x5a);
+    const std::vector<unsigned char> words = Bip39TestWords();
+    const std::vector<unsigned char> mnemonicPassphrase = Bip39TestPassphrase();
+    const std::vector<unsigned char> seed = Bip39TestSeed();
     const uint256 wordHash = Hash(words.begin(), words.end());
 
     CKey key;
@@ -627,7 +863,7 @@ BOOST_AUTO_TEST_CASE(bip44_encryption_write_failure_returns_and_aborts)
 
     {
         std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
-        wallet->UseBip44(true);
+        BOOST_REQUIRE(wallet->SetHDChain(Bip44TestChain(wallet.get()), false));
         BOOST_REQUIRE(wallet->LoadWords(wordHash, words));
         BOOST_REQUIRE(wallet->LoadPassphrase(mnemonicPassphrase));
         BOOST_REQUIRE(wallet->LoadVchSeed(seed));

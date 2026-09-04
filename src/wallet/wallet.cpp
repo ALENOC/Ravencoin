@@ -199,6 +199,8 @@ void CWallet::DeriveNewChildKey(CWalletDB &walletdb, CKeyMetadata& metadata, CKe
             throw std::runtime_error(std::string(__func__) + ": seed not found");
         masterKey.SetSeed(seed.begin(), seed.size());
     } else {
+        if (g_vchSeed.size() != BIP39_SEED_SIZE)
+            throw std::runtime_error(std::string(__func__) + ": invalid BIP39 seed size");
         masterKey.SetSeed(g_vchSeed.data(), g_vchSeed.size());
     }
 
@@ -4227,6 +4229,11 @@ bool CWallet::TopUpKeyPool(unsigned int kpSize)
 
         if (IsLocked())
             return false;
+
+        // Refuse before touching the keypool index or HD counters. A recovered
+        // BIP44 chain without its seed must never fall back to empty-seed BIP32.
+        if (IsBip44Enabled() && !HasValidBip39Seed())
+            throw std::runtime_error(std::string(__func__) + ": invalid BIP39 seed");
 
         // Top up key pool
         unsigned int nTargetSize;
