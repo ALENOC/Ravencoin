@@ -165,6 +165,12 @@ derive_child_function="$(sed -n '/^void CWallet::DeriveNewChildKey(/,/^}/p' src/
 require_text "$derive_child_function" 'g_vchSeed.size() != BIP39_SEED_SIZE' 'BIP44 derivation accepts a missing or malformed seed'
 topup_keypool_function="$(sed -n '/^bool CWallet::TopUpKeyPool(/,/^}/p' src/wallet/wallet.cpp)"
 require_text "$topup_keypool_function" 'IsBip44Enabled() && !HasValidBip39Seed()' 'keypool state can mutate before BIP39 seed validation'
+first_run_function="$(sed -n '/^bool CWallet::IsFirstRun(/,/^}/p' src/wallet/wallet.cpp)"
+for first_run_state in mapPQKeys mapCryptedPQKeys mapMasterKeys IsCrypted IsHDEnabled g_vchSeed vchCryptedBip39VchSeed; do
+  require_text "$first_run_function" "$first_run_state" "first-run detection ignores existing $first_run_state wallet state"
+done
+wallet_load_function="$(sed -n '/^DBErrors CWallet::LoadWallet(/,/^}/p' src/wallet/wallet.cpp)"
+require_text "$wallet_load_function" 'fFirstRunRet = IsFirstRun()' 'wallet load duplicates an incomplete first-run predicate'
 
 # PQ secret material must never cross a production API backed by the ordinary
 # allocator. The behavioral test also proves byte-for-byte wallet compatibility.

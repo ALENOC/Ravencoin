@@ -4028,7 +4028,15 @@ bool CWallet::AddAccountingEntry(const CAccountingEntry& acentry, CWalletDB *pwa
 
 bool CWallet::IsFirstRun()
 {
-    return mapKeys.empty() && mapCryptedKeys.empty() && mapWatchKeys.empty() && setWatchOnly.empty() && mapScripts.empty();
+    LOCK(cs_wallet);
+    LOCK(cs_KeyStore);
+    return mapKeys.empty() && mapCryptedKeys.empty() &&
+           mapPQKeys.empty() && mapCryptedPQKeys.empty() && mapPQPubKeys.empty() &&
+           mapWatchKeys.empty() && setWatchOnly.empty() && mapScripts.empty() &&
+           mapMasterKeys.empty() && !IsCrypted() && !IsHDEnabled() && nWordHash.IsNull() &&
+           vchWords.empty() && vchPassphrase.empty() && g_vchSeed.empty() &&
+           vchCryptedBip39Words.empty() && vchCryptedBip39Passphrase.empty() &&
+           vchCryptedBip39VchSeed.empty();
 }
 
 DBErrors CWallet::LoadWallet(bool& fFirstRunRet)
@@ -4050,8 +4058,9 @@ DBErrors CWallet::LoadWallet(bool& fFirstRunRet)
         }
     }
 
-    // This wallet is in its first run if all of these are empty
-    fFirstRunRet = mapKeys.empty() && mapCryptedKeys.empty() && mapWatchKeys.empty() && setWatchOnly.empty() && mapScripts.empty();
+    // Use the single authoritative predicate so HD, BIP39, and PQ-only
+    // recovery state can never be mistaken for a newly created wallet.
+    fFirstRunRet = IsFirstRun();
 
     if (nLoadWalletRet != DB_LOAD_OK)
         return nLoadWalletRet;

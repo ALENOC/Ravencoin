@@ -272,7 +272,11 @@ BOOST_AUTO_TEST_CASE(bip44_key_only_recovery_preserves_derivation_lineage)
         filename, &dummyWallet, CWalletDB::RecoverKeysOnlyFilter, backupFilename));
     bitdb.Flush(false);
 
-    std::unique_ptr<CWallet> recovered = LoadPQWallet(filename);
+    std::unique_ptr<CWalletDBWrapper> recoveredDbw(new CWalletDBWrapper(&bitdb, filename));
+    std::unique_ptr<CWallet> recovered(new CWallet(std::move(recoveredDbw)));
+    bool firstRun = true;
+    BOOST_REQUIRE_EQUAL(recovered->LoadWallet(firstRun), DB_LOAD_OK);
+    BOOST_CHECK(!firstRun);
     uint256 recoveredHash;
     std::vector<unsigned char> recoveredWords;
     std::vector<unsigned char> recoveredPassphrase;
@@ -294,6 +298,83 @@ BOOST_AUTO_TEST_CASE(bip44_key_only_recovery_preserves_derivation_lineage)
     CPubKey recoveredFirstExternal;
     BOOST_REQUIRE(recovered->GetKeyFromPool(recoveredFirstExternal, false));
     BOOST_CHECK(recoveredFirstExternal == expectedFirstExternal);
+}
+
+BOOST_AUTO_TEST_CASE(first_run_detection_covers_hd_bip39_master_and_pq_state)
+{
+    {
+        CWallet wallet;
+        BOOST_CHECK(wallet.IsFirstRun());
+    }
+    {
+        CWallet wallet;
+        BOOST_REQUIRE(wallet.SetHDChain(Bip44TestChain(&wallet), true));
+        BOOST_CHECK(!wallet.IsFirstRun());
+    }
+    {
+        CWallet wallet;
+        BOOST_REQUIRE(wallet.LoadVchSeed(Bip39TestSeed()));
+        BOOST_CHECK(!wallet.IsFirstRun());
+    }
+    {
+        const std::string filename = "first-run-plaintext-pq-wallet.dat";
+        CPQKey key;
+        key.MakeNewKey();
+        BOOST_REQUIRE(key.IsValid());
+        {
+            std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+            LOCK(wallet->cs_wallet);
+            BOOST_REQUIRE(wallet->AddPQKeyPubKey(key, key.GetPubKey()));
+        }
+        bitdb.Flush(false);
+        std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
+        CWallet wallet(std::move(dbw));
+        bool firstRun = true;
+        BOOST_REQUIRE_EQUAL(wallet.LoadWallet(firstRun), DB_LOAD_OK);
+        BOOST_CHECK(!firstRun);
+    }
+    {
+        const std::string filename = "first-run-encrypted-pq-wallet.dat";
+        const SecureString passphrase("first-run-encrypted-pq-passphrase");
+        CPQKey key;
+        key.MakeNewKey();
+        BOOST_REQUIRE(key.IsValid());
+        {
+            std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+            {
+                LOCK(wallet->cs_wallet);
+                BOOST_REQUIRE(wallet->AddPQKeyPubKey(key, key.GetPubKey()));
+            }
+            BOOST_REQUIRE(wallet->EncryptWallet(passphrase));
+        }
+        bitdb.Flush(false);
+        std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
+        CWallet wallet(std::move(dbw));
+        bool firstRun = true;
+        BOOST_REQUIRE_EQUAL(wallet.LoadWallet(firstRun), DB_LOAD_OK);
+        BOOST_CHECK(wallet.IsCrypted());
+        BOOST_CHECK(!firstRun);
+    }
+    {
+        const std::string filename = "first-run-master-only-wallet.dat";
+        {
+            std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+            CWalletDB walletdb(wallet->GetDBHandle());
+            BOOST_REQUIRE(walletdb.WriteMasterKey(1U, CMasterKey()));
+        }
+        bitdb.Flush(false);
+        std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
+        CWallet wallet(std::move(dbw));
+        bool firstRun = true;
+        BOOST_REQUIRE_EQUAL(wallet.LoadWallet(firstRun), DB_LOAD_OK);
+        BOOST_CHECK(!firstRun);
+    }
+    {
+        CWallet wallet;
+        BOOST_REQUIRE(wallet.LoadCryptedVchSeed(
+            std::vector<unsigned char>(BIP39_CRYPTED_SEED_SIZE, 0x63)));
+        BOOST_CHECK(!wallet.IsFirstRun());
+    }
 }
 
 BOOST_AUTO_TEST_CASE(encrypted_bip44_key_only_recovery_preserves_derivation_lineage)
