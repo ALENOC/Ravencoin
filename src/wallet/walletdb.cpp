@@ -191,6 +191,41 @@ bool CWalletDB::HasPlaintextPQKeys(bool& hasPlaintext)
     return pcursor->close() == 0;
 }
 
+bool CWalletDB::HasPlaintextBip39(bool& hasPlaintext)
+{
+    hasPlaintext = false;
+    Dbc* pcursor = batch.GetCursor();
+    if (!pcursor)
+        return false;
+
+    while (true) {
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+        const int ret = batch.ReadAtCursor(pcursor, ssKey, ssValue);
+        if (ret == DB_NOTFOUND)
+            break;
+        if (ret != 0) {
+            pcursor->close();
+            return false;
+        }
+
+        try {
+            std::string strType;
+            ssKey >> strType;
+            if (strType == "bip39words" || strType == "bip39passphrase" ||
+                strType == "bip39vchseed") {
+                hasPlaintext = true;
+                break;
+            }
+        } catch (...) {
+            pcursor->close();
+            return false;
+        }
+    }
+
+    return pcursor->close() == 0;
+}
+
 bool CWalletDB::WriteMasterKey(unsigned int nID, const CMasterKey& kMasterKey)
 {
     return WriteIC(std::make_pair(std::string("mkey"), nID), kMasterKey, true);

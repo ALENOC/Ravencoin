@@ -215,6 +215,7 @@ public:
     bool WriteCryptedPQKey(const uint256& witnessProgram, const CPQPubKey& pqPubKey, const std::vector<unsigned char>& vchCryptedSecret);
     bool HasPlaintextKeys(bool& hasPlaintext);
     bool HasPlaintextPQKeys(bool& hasPlaintext);
+    bool HasPlaintextBip39(bool& hasPlaintext);
 
     bool WriteMasterKey(unsigned int nID, const CMasterKey& kMasterKey);
 

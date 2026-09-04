@@ -149,6 +149,10 @@ require_fixed 'const bool wasCrypted = pwallet->IsCrypted()' src/wallet/rpcwalle
 require_fixed '!wasCrypted && pwallet->IsCrypted()' src/wallet/rpcwallet.cpp 'RPC encryption failure can confuse an already encrypted wallet with newly mutated live state'
 require_fixed 'Wallet encryption failed after the live key state changed' src/wallet/rpcwallet.cpp 'RPC encryption failure does not distinguish mutated live state'
 require_fixed '!wasCrypted && !encryptedSuccessfully && wallet->IsCrypted()' src/qt/walletmodel.cpp 'Qt encryption failure does not distinguish a newly mutated live state'
+require_text "$encrypt_wallet_function" '!pwalletdbEncryption->EraseBip39Words(false)' 'BIP39 words erase failure is ignored during encryption'
+require_text "$encrypt_wallet_function" '!pwalletdbEncryption->EraseBip39Passphrase(false)' 'BIP39 passphrase erase failure is ignored during encryption'
+require_text "$encrypt_wallet_function" '!pwalletdbEncryption->EraseBip39VchSeed(false)' 'BIP39 seed erase failure is ignored during encryption'
+require_fixed 'HasPlaintextBip39(hasPlaintextBip39)' src/wallet/wallet.cpp 'encrypted backup does not scan for plaintext BIP39 records'
 
 # BIP39 rows are private-key material. Salvage/load must preserve a complete
 # lineage, and key derivation must never substitute the deterministic empty seed.

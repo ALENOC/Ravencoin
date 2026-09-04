@@ -856,9 +856,11 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
             keysMutated = true;
 
             if(hdChain.IsBip44()) {
-                pwalletdbEncryption->EraseBip39Words( false);
-                pwalletdbEncryption->EraseBip39Passphrase(false);
-                pwalletdbEncryption->EraseBip39VchSeed(false);
+                if (!pwalletdbEncryption->EraseBip39Words(false) ||
+                    !pwalletdbEncryption->EraseBip39Passphrase(false) ||
+                    !pwalletdbEncryption->EraseBip39VchSeed(false)) {
+                    return failEncryptionAfterKeyMutation(true);
+                }
 
                 if (!EncryptBip39(_vMasterKey))
                 {
@@ -5088,10 +5090,12 @@ bool CWallet::BackupWallet(const std::string& strDest)
 
         bool hasPlaintextPQKeys = false;
         bool hasPlaintextKeys = false;
+        bool hasPlaintextBip39 = false;
         {
             CWalletDB walletdb(*dbw, "r");
             if (!walletdb.HasPlaintextKeys(hasPlaintextKeys) || hasPlaintextKeys ||
-                !walletdb.HasPlaintextPQKeys(hasPlaintextPQKeys) || hasPlaintextPQKeys)
+                !walletdb.HasPlaintextPQKeys(hasPlaintextPQKeys) || hasPlaintextPQKeys ||
+                !walletdb.HasPlaintextBip39(hasPlaintextBip39) || hasPlaintextBip39)
                 return false;
         }
 
