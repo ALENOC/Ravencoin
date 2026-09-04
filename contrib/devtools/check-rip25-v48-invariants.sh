@@ -217,6 +217,8 @@ if ! grep -A8 'qt_raven_qt_LDADD' src/Makefile.qt.include | grep -Fq '$(LIBOQS_L
 fi
 
 # Security regression tests must compile and execute through make check.
+require_fixed 'test/bip39_tests.cpp' src/Makefile.test.include 'BIP39 vectors are not wired into make check'
+require_fixed 'test/data/bip39_vectors.json' src/Makefile.test.include 'BIP39 vector data is not generated for make check'
 require_fixed 'test/rip25_versionbits_tests.cpp' src/Makefile.test.include 'RIP-25 versionbits test is not wired into make check'
 require_fixed 'test/kawpow_v48_hardening_tests.cpp' src/Makefile.test.include 'KAWPOW v4.8 hardening test is not wired into make check'
 require_fixed 'witness_v2_active_rules_accept_valid_and_reject_invalid_mldsa' src/test/pqkey_hardening_tests.cpp 'active witness-v2 regression missing'
@@ -320,6 +322,7 @@ behavioral_tests=(
   mempool_tests/rip25_reorg_purges_preactivation_policy_transactions
   pqkey_hardening_tests
   kawpow_v48_hardening_tests
+  bip39_tests
   pq_wallet_tests
 )
 

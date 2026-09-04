@@ -11,6 +11,7 @@ TEST_SRCDIR = test
 TEST_BINARY=test/test_raven$(EXEEXT)
 
 JSON_TEST_FILES = \
+  test/data/bip39_vectors.json \
   test/data/script_tests.json \
   test/data/base58_keys_valid.json \
   test/data/base58_encode_decode.json \
@@ -107,6 +108,7 @@ RAVEN_TESTS =\
 
 if ENABLE_WALLET
 RAVEN_TESTS += \
+  test/bip39_tests.cpp \
   wallet/test/wallet_test_fixture.cpp \
   wallet/test/wallet_test_fixture.h \
   wallet/test/accounting_tests.cpp \
