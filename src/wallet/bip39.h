@@ -27,6 +27,8 @@
 
 #include "support/allocators/secure.h"
 
+#include <openssl/evp.h>
+
 const int NUM_LANGUAGES_BIP39_SUPPORTED = 8;
 
 const int DEFAULT_LANG = 0;
@@ -64,8 +66,16 @@ public:
     static int DetectLanguageSeed(SecureString mnemonic);
     static std::array<LanguageDetails, NUM_LANGUAGES_BIP39_SUPPORTED> GetLanguagesDetails();
     static const char * const* GetLanguageWords(int lang);
-    static void ToSeed(SecureString mnemonic, SecureString passphrase, SecureVector& seedRet);
+    static bool ToSeed(const SecureString& mnemonic, const SecureString& passphrase, SecureVector& seedRet);
 private:
+    using Pbkdf2Function = decltype(&PKCS5_PBKDF2_HMAC);
+
+    static bool ToSeedWithPbkdf2(const SecureString& mnemonic,
+                                 const SecureString& passphrase,
+                                 SecureVector& seedRet,
+                                 Pbkdf2Function pbkdf2);
+
+    friend class Bip39TestAccess;
     CMnemonic() {};
 };
 

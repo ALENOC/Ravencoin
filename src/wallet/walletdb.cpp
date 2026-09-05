@@ -1367,7 +1367,8 @@ bool CHDChain::SetMnemonic(const SecureString& ssMnemonic, const SecureString& s
         throw std::runtime_error(std::string(__func__) + ": invalid mnemonic: `" + std::string(ssMnemonicTmp.c_str()) + "`");
     }
 
-    CMnemonic::ToSeed(ssMnemonicTmp, ssMnemonicPassphrase, vchSeed);
+    if (!CMnemonic::ToSeed(ssMnemonicTmp, ssMnemonicPassphrase, vchSeed))
+        return false;
 
     vchMnemonic = SecureVector(ssMnemonicTmp.begin(), ssMnemonicTmp.end());
     vchMnemonicPassphrase = SecureVector(ssMnemonicPassphrase.begin(), ssMnemonicPassphrase.end());

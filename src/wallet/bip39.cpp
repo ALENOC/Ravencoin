@@ -23,6 +23,7 @@
  */
 
 #include <array>
+#include <limits>
 #include "wallet/bip39.h"
 #include "crypto/sha256.h"
 #include "random.h"
@@ -227,10 +228,33 @@ int CMnemonic::DetectLanguageSeed(SecureString mnemonic)
     return lang_detected;
 }
 
-void CMnemonic::ToSeed(SecureString mnemonic, SecureString passphrase, SecureVector& seedRet)
+bool CMnemonic::ToSeedWithPbkdf2(const SecureString& mnemonic,
+                                 const SecureString& passphrase,
+                                 SecureVector& seedRet,
+                                 Pbkdf2Function pbkdf2)
 {
     SecureString ssSalt = SecureString("mnemonic") + passphrase;
     SecureVector vchSalt(ssSalt.begin(), ssSalt.end());
-    seedRet.resize(64);
-    PKCS5_PBKDF2_HMAC(mnemonic.c_str(), mnemonic.size(), &vchSalt[0], vchSalt.size(), 2048, EVP_sha512(), 64, &seedRet[0]);
+    SecureVector derivedSeed(BIP39_SEED_SIZE);
+
+    const EVP_MD* digest = EVP_sha512();
+    if (pbkdf2 == nullptr || digest == nullptr ||
+        mnemonic.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+        vchSalt.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+        pbkdf2(mnemonic.c_str(), static_cast<int>(mnemonic.size()),
+               vchSalt.data(), static_cast<int>(vchSalt.size()), 2048,
+               digest, BIP39_SEED_SIZE, derivedSeed.data()) != 1) {
+        SecureVector().swap(seedRet);
+        return false;
+    }
+
+    seedRet.swap(derivedSeed);
+    return true;
+}
+
+bool CMnemonic::ToSeed(const SecureString& mnemonic,
+                       const SecureString& passphrase,
+                       SecureVector& seedRet)
+{
+    return ToSeedWithPbkdf2(mnemonic, passphrase, seedRet, PKCS5_PBKDF2_HMAC);
 }
