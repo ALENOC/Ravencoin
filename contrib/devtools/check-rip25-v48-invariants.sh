@@ -156,6 +156,14 @@ require_fixed 'HasPlaintextBip39(hasPlaintextBip39)' src/wallet/wallet.cpp 'encr
 
 # BIP39 rows are private-key material. Salvage/load must preserve a complete
 # lineage, and key derivation must never substitute the deterministic empty seed.
+to_seed_function="$(sed -n '/^bool CMnemonic::ToSeedWithPbkdf2(/,/^}/p' src/wallet/bip39.cpp)"
+require_text "$to_seed_function" 'SecureVector derivedSeed(BIP39_SEED_SIZE)' 'BIP39 PBKDF2 does not derive into a secure temporary'
+require_text "$to_seed_function" 'derivedSeed.data()) != 1' 'BIP39 PBKDF2 does not accept only the documented success return'
+require_text "$to_seed_function" 'SecureVector().swap(seedRet)' 'BIP39 PBKDF2 failure does not cleanse prior output'
+require_text "$to_seed_function" 'seedRet.swap(derivedSeed)' 'BIP39 PBKDF2 publishes output before full success'
+require_fixed 'return ToSeedWithPbkdf2(mnemonic, passphrase, seedRet, PKCS5_PBKDF2_HMAC)' src/wallet/bip39.cpp 'production BIP39 derivation bypasses the checked PBKDF2 adapter'
+set_mnemonic_function="$(sed -n '/^bool CHDChain::SetMnemonic(/,/^}/p' src/wallet/walletdb.cpp)"
+require_text "$set_mnemonic_function" 'if (!CMnemonic::ToSeed' 'HD chain ignores BIP39 derivation failure'
 is_key_type_function="$(sed -n '/^bool CWalletDB::IsKeyType(/,/^}/p' src/wallet/walletdb.cpp)"
 for bip39_type in bip39words bip39passphrase bip39vchseed cbip39words cbip39passphrase cbip39vchseed; do
   require_text "$is_key_type_function" "strType == \"$bip39_type\"" "BIP39 record type $bip39_type is not classified as key-critical"
