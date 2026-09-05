@@ -102,6 +102,7 @@ public:
 
     void SetNull()
     {
+        ClearSensitiveData();
         nVersion = CHDChain::CURRENT_VERSION;
         nExternalChainCounter = 0;
         nInternalChainCounter = 0;
@@ -114,6 +115,13 @@ public:
 
     void UseBip44( bool b = true)   { bUse_bip44 = b;}
     bool IsBip44() const            { return bUse_bip44 == true;}
+
+    void ClearSensitiveData()
+    {
+        SecureVector().swap(vchMnemonic);
+        SecureVector().swap(vchMnemonicPassphrase);
+        SecureVector().swap(vchSeed);
+    }
 
 
     bool SetMnemonic(const SecureString& ssMnemonic, const SecureString& ssMnemonicPassphrase, SecureVector& vchSeed);

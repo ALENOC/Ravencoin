@@ -4,7 +4,9 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "test/test_raven.h"
+#include "hash.h"
 #include "utilstrencodings.h"
+#include "wallet/bip39.h"
 #include "wallet/crypter.h"
 
 #include <vector>
@@ -12,6 +14,53 @@
 #include <boost/test/unit_test.hpp>
 
 BOOST_FIXTURE_TEST_SUITE(wallet_crypto, BasicTestingSetup)
+
+    class TestKeyStore : public CCryptoKeyStore
+    {
+    public:
+        bool PrepareUnlockedSecrets(CKeyingMaterial& masterKey)
+        {
+            CKey key;
+            key.MakeNewKey(true);
+            const std::string mnemonic =
+                "abandon abandon abandon abandon abandon abandon abandon "
+                "abandon abandon abandon abandon about";
+            const std::string password = "TREZOR";
+            const std::vector<unsigned char> words(mnemonic.begin(), mnemonic.end());
+            const std::vector<unsigned char> passphrase(password.begin(), password.end());
+            const std::vector<unsigned char> seed = ParseHex(
+                "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e5349553"
+                "1f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04");
+
+            if (!AddKeyPubKey(key, key.GetPubKey()) ||
+                !AddWords(Hash(words.begin(), words.end()), words) ||
+                !AddPassphrase(passphrase) || !AddVchSeed(seed) ||
+                !EncryptKeys(masterKey) || !EncryptBip39(masterKey) ||
+                !Lock() || !PlaintextSecretStorageReleased()) {
+                return false;
+            }
+
+            return Unlock(masterKey);
+        }
+
+        bool HasAllocatedPlaintextSecrets() const
+        {
+            LOCK(cs_KeyStore);
+            return !vMasterKey.empty() && vMasterKey.capacity() > 0 &&
+                   !vchWords.empty() && vchWords.capacity() > 0 &&
+                   !vchPassphrase.empty() && vchPassphrase.capacity() > 0 &&
+                   !g_vchSeed.empty() && g_vchSeed.capacity() > 0;
+        }
+
+        bool PlaintextSecretStorageReleased() const
+        {
+            LOCK(cs_KeyStore);
+            return vMasterKey.empty() && vMasterKey.capacity() == 0 &&
+                   vchWords.empty() && vchWords.capacity() == 0 &&
+                   vchPassphrase.empty() && vchPassphrase.capacity() == 0 &&
+                   g_vchSeed.empty() && g_vchSeed.capacity() == 0;
+        }
+    };
 
     class TestCrypter
     {
@@ -130,6 +179,18 @@ BOOST_FIXTURE_TEST_SUITE(wallet_crypto, BasicTestingSetup)
             uint256 hash(GetRandHash());
             TestCrypter::TestDecrypt(crypt, std::vector<unsigned char>(hash.begin(), hash.end()));
         }
+    }
+
+    BOOST_AUTO_TEST_CASE(lock_cleanses_and_releases_plaintext_secret_storage)
+    {
+        TestKeyStore keystore;
+        CKeyingMaterial masterKey(WALLET_CRYPTO_KEY_SIZE, 0x42);
+
+        BOOST_REQUIRE(keystore.PrepareUnlockedSecrets(masterKey));
+        BOOST_REQUIRE(keystore.HasAllocatedPlaintextSecrets());
+        BOOST_REQUIRE(keystore.Lock());
+        BOOST_CHECK(keystore.IsLocked());
+        BOOST_CHECK(keystore.PlaintextSecretStorageReleased());
     }
 
 BOOST_AUTO_TEST_SUITE_END()

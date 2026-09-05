@@ -158,24 +158,32 @@ void CCryptoKeyStore::ResetCryptedOnAddFailure()
 {
     LOCK(cs_KeyStore);
     if (mapCryptedKeys.empty() && mapCryptedPQKeys.empty()) {
-        vMasterKey.clear();
+        CKeyingMaterial().swap(vMasterKey);
         fUseCrypto = false;
         fDecryptionThoroughlyChecked = false;
     }
 }
 
-bool CCryptoKeyStore::Lock()
+bool CCryptoKeyStore::LockKeyStore()
 {
     if (!SetCrypted())
         return false;
 
     {
         LOCK(cs_KeyStore);
-        vMasterKey.clear();
+        CKeyingMaterial().swap(vMasterKey);
+        SecureVector().swap(vchWords);
+        SecureVector().swap(vchPassphrase);
+        SecureVector().swap(g_vchSeed);
     }
 
-    vchWords.clear();
-    vchPassphrase.clear();
+    return true;
+}
+
+bool CCryptoKeyStore::Lock()
+{
+    if (!LockKeyStore())
+        return false;
 
     NotifyStatusChanged(this);
     return true;
@@ -554,21 +562,24 @@ bool CCryptoKeyStore::DecryptBip39(const CKeyingMaterial& vMasterKeyIn)
             return false;
         }
 
-        vchWords = std::vector<unsigned char>(vchDecryptedWords.begin(), vchDecryptedWords.end());
+        SecureVector words(vchDecryptedWords.begin(), vchDecryptedWords.end());
+        vchWords.swap(words);
 
         CKeyingMaterial vchDecryptedVchSeed;
         if (!DecryptSecret(vMasterKeyIn, vchCryptedBip39VchSeed, nWordHash, vchDecryptedVchSeed)) {
             return false;
         }
 
-        g_vchSeed = std::vector<unsigned char>(vchDecryptedVchSeed.begin(), vchDecryptedVchSeed.end());
+        SecureVector seed(vchDecryptedVchSeed.begin(), vchDecryptedVchSeed.end());
+        g_vchSeed.swap(seed);
 
         if (!vchCryptedBip39Passphrase.empty()) {
             CKeyingMaterial vchDecryptedPassphrase;
             if (!DecryptSecret(vMasterKeyIn, vchCryptedBip39Passphrase, nWordHash, vchDecryptedPassphrase)) {
                 return false;
             }
-            vchPassphrase = std::vector<unsigned char>(vchDecryptedPassphrase.begin(), vchDecryptedPassphrase.end());
+            SecureVector passphrase(vchDecryptedPassphrase.begin(), vchDecryptedPassphrase.end());
+            vchPassphrase.swap(passphrase);
         }
     }
 

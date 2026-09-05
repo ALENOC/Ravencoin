@@ -179,6 +179,8 @@ CPubKey CWallet::GenerateNewKey(CWalletDB &walletdb, bool internal)
 
 void CWallet::DeriveNewChildKey(CWalletDB &walletdb, CKeyMetadata& metadata, CKey& secret, bool internal)
 {
+    AssertLockHeld(cs_wallet);
+
     // for now we use a fixed keypath scheme of m/0'/0'/k
     CExtKey masterKey;             //hd master key
 
@@ -199,9 +201,10 @@ void CWallet::DeriveNewChildKey(CWalletDB &walletdb, CKeyMetadata& metadata, CKe
             throw std::runtime_error(std::string(__func__) + ": seed not found");
         masterKey.SetSeed(seed.begin(), seed.size());
     } else {
-        if (g_vchSeed.size() != BIP39_SEED_SIZE)
+        SecureVector seed;
+        if (!GetBip39Seed(seed))
             throw std::runtime_error(std::string(__func__) + ": invalid BIP39 seed size");
-        masterKey.SetSeed(g_vchSeed.data(), g_vchSeed.size());
+        masterKey.SetSeed(seed.data(), seed.size());
     }
 
     // Select which chain we are using depending on if this is a change address or not
@@ -545,6 +548,22 @@ bool CWallet::Unlock(const SecureString& strWalletPassphrase)
         }
     }
     return false;
+}
+
+bool CWallet::Lock()
+{
+    {
+        LOCK(cs_wallet);
+        if (!LockKeyStore())
+            return false;
+
+        // Remove the redundant HD-chain copies before publishing the locked
+        // state. Derivation follows the same cs_wallet -> cs_KeyStore order.
+        hdChain.ClearSensitiveData();
+    }
+
+    NotifyStatusChanged(this);
+    return true;
 }
 
 bool CWallet::ChangeWalletPassphrase(const SecureString& strOldWalletPassphrase, const SecureString& strNewWalletPassphrase)
@@ -1663,6 +1682,8 @@ CAmount CWallet::GetChange(const CTransaction& tx) const
 
 CPubKey CWallet::GenerateNewSeed()
 {
+    LOCK(cs_wallet);
+
     // If bip44 is not set to true on wallet creation
     if (!hdChain.IsBip44()) {
         hdChain.nVersion = CHDChain::VERSION_HD_CHAIN_SPLIT;
@@ -1694,7 +1715,8 @@ CPubKey CWallet::GenerateNewSeed()
 	if (!newHdChain.SetMnemonic(vchMnemonic, vchMnemonicPassphrase, vchSeed))
 		throw std::runtime_error(std::string(__func__) + ": SetMnemonic failed");
 
-	g_vchSeed = std::vector<unsigned char>(vchSeed.begin(), vchSeed.end());
+	if (!AddVchSeed(vchSeed))
+		throw std::runtime_error(std::string(__func__) + ": storing BIP39 seed failed");
 
 	CPubKey seed(vchSeed.begin(), vchSeed.end());
 	newHdChain.seed_id = seed.GetID();
@@ -1755,7 +1777,10 @@ bool CWallet::SetHDChain(const CHDChain& chain, bool memonly)
     if (!memonly && !CWalletDB(*dbw).WriteHDChain(chain))
         throw std::runtime_error(std::string(__func__) + ": writing chain failed");
 
-    hdChain = chain;
+    if (&chain != &hdChain) {
+        hdChain.ClearSensitiveData();
+        hdChain = chain;
+    }
     return true;
 }
 
@@ -4966,7 +4991,10 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
             return nullptr;
         }
 
-        walletInstance->LoadWords(hash, vchWords);
+        if (!walletInstance->LoadWords(hash, vchWords)) {
+            InitError(_("Error loading bip 39 words into wallet"));
+            return nullptr;
+        }
 
         std::vector<unsigned char> vchSeed(walletInstance->hdChain.vchSeed.begin(), walletInstance->hdChain.vchSeed.end());
         if (!walletdb.WriteBip39VchSeed(vchSeed, false)) {
@@ -4974,7 +5002,10 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
             return nullptr;
         }
 
-        walletInstance->LoadVchSeed(vchSeed);
+        if (!walletInstance->LoadVchSeed(vchSeed)) {
+            InitError(_("Error loading bip 39 vchseed into wallet"));
+            return nullptr;
+        }
 
         if (!walletInstance->hdChain.vchMnemonicPassphrase.empty()) {
             std::vector<unsigned char> vchPassphrase(walletInstance->hdChain.vchMnemonicPassphrase.begin(), walletInstance->hdChain.vchMnemonicPassphrase.end());
@@ -4983,8 +5014,13 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
                 return nullptr;
             }
 
-            walletInstance->LoadPassphrase(vchPassphrase);
+            if (!walletInstance->LoadPassphrase(vchPassphrase)) {
+                InitError(_("Error loading bip 39 passphrase into wallet"));
+                return nullptr;
+            }
         }
+
+        walletInstance->hdChain.ClearSensitiveData();
     }
 
     CBlockIndex *pindexRescan = chainActive.Genesis();

@@ -167,7 +167,7 @@ require_text "$set_mnemonic_function" 'if (!CMnemonic::ToSeed' 'HD chain ignores
 generate_seed_function="$(sed -n '/^CPubKey CWallet::GenerateNewSeed(/,/^}/p' src/wallet/wallet.cpp)"
 require_text "$generate_seed_function" 'throw std::runtime_error(std::string(__func__) + ": SetMnemonic failed")' 'wallet creation does not abort after BIP39 derivation failure'
 kdf_failure_line="$(grep -nF 'if (!newHdChain.SetMnemonic' <<<"$generate_seed_function" | cut -d: -f1 || true)"
-seed_publish_line="$(grep -nF 'g_vchSeed =' <<<"$generate_seed_function" | cut -d: -f1 || true)"
+seed_publish_line="$(grep -nF 'if (!AddVchSeed(vchSeed))' <<<"$generate_seed_function" | cut -d: -f1 || true)"
 chain_persist_line="$(grep -nF 'SetHDChain(newHdChain' <<<"$generate_seed_function" | cut -d: -f1 || true)"
 [[ -n "$kdf_failure_line" && -n "$seed_publish_line" && -n "$chain_persist_line" ]] || fail 'cannot locate BIP39 wallet-creation failure boundary'
 (( kdf_failure_line < seed_publish_line && kdf_failure_line < chain_persist_line )) || fail 'BIP39 seed can be published or persisted before KDF failure is checked'
@@ -181,7 +181,11 @@ require_text "$load_wallet_function" 'incomplete or mixed BIP39 key material' 'B
 recovery_filter_function="$(sed -n '/^bool CWalletDB::RecoverKeysOnlyFilter(/,/^}/p' src/wallet/walletdb.cpp)"
 require_text "$recovery_filter_function" 'if (!IsKeyType(strType))' 'key-only recovery parses discarded records before classifying them'
 derive_child_function="$(sed -n '/^void CWallet::DeriveNewChildKey(/,/^}/p' src/wallet/wallet.cpp)"
-require_text "$derive_child_function" 'g_vchSeed.size() != BIP39_SEED_SIZE' 'BIP44 derivation accepts a missing or malformed seed'
+require_text "$derive_child_function" 'AssertLockHeld(cs_wallet)' 'BIP44 derivation does not serialize seed access with wallet locking'
+require_text "$derive_child_function" 'if (!GetBip39Seed(seed))' 'BIP44 derivation bypasses the locked, size-checked seed snapshot'
+if grep -Fq 'g_vchSeed' <<<"$derive_child_function"; then
+  fail 'BIP44 derivation reads mutable plaintext seed storage directly'
+fi
 topup_keypool_function="$(sed -n '/^bool CWallet::TopUpKeyPool(/,/^}/p' src/wallet/wallet.cpp)"
 require_text "$topup_keypool_function" 'IsBip44Enabled() && !HasValidBip39Seed()' 'keypool state can mutate before BIP39 seed validation'
 first_run_function="$(sed -n '/^bool CWallet::IsFirstRun(/,/^}/p' src/wallet/wallet.cpp)"
@@ -190,6 +194,29 @@ for first_run_state in mapPQKeys mapCryptedPQKeys mapMasterKeys IsCrypted IsHDEn
 done
 wallet_load_function="$(sed -n '/^DBErrors CWallet::LoadWallet(/,/^}/p' src/wallet/wallet.cpp)"
 require_text "$wallet_load_function" 'fFirstRunRet = IsFirstRun()' 'wallet load duplicates an incomplete first-run predicate'
+
+# Locked encrypted wallets must not retain allocated plaintext BIP39 buffers.
+for secure_field in vchWords vchPassphrase g_vchSeed; do
+  require_fixed "SecureVector $secure_field;" src/keystore.h "plaintext $secure_field storage does not use the secure allocator"
+done
+lock_keystore_function="$(sed -n '/^bool CCryptoKeyStore::LockKeyStore(/,/^}/p' src/wallet/crypter.cpp)"
+for released_field in vMasterKey vchWords vchPassphrase g_vchSeed; do
+  require_text "$lock_keystore_function" "swap($released_field)" "wallet lock does not release plaintext $released_field storage"
+done
+wallet_lock_function="$(sed -n '/^bool CWallet::Lock(/,/^}/p' src/wallet/wallet.cpp)"
+require_text "$wallet_lock_function" 'if (!LockKeyStore())' 'wallet lock bypasses centralized secret release'
+require_text "$wallet_lock_function" 'hdChain.ClearSensitiveData()' 'wallet lock retains transient HD-chain BIP39 copies'
+require_text "$wallet_lock_function" 'NotifyStatusChanged(this)' 'wallet lock does not publish the completed state transition'
+lock_release_line="$(grep -nF 'if (!LockKeyStore())' <<<"$wallet_lock_function" | cut -d: -f1 || true)"
+hd_release_line="$(grep -nF 'hdChain.ClearSensitiveData()' <<<"$wallet_lock_function" | cut -d: -f1 || true)"
+lock_notify_line="$(grep -nF 'NotifyStatusChanged(this)' <<<"$wallet_lock_function" | cut -d: -f1 || true)"
+[[ -n "$lock_release_line" && -n "$hd_release_line" && -n "$lock_notify_line" ]] || fail 'cannot locate wallet locked-state publication boundary'
+(( lock_release_line < hd_release_line && hd_release_line < lock_notify_line )) || fail 'wallet publishes locked state before all plaintext BIP39 copies are released'
+require_fixed 'SecureVector().swap(vchMnemonic)' src/wallet/walletdb.h 'HD-chain mnemonic storage is only resized, not released'
+require_fixed 'SecureVector().swap(vchMnemonicPassphrase)' src/wallet/walletdb.h 'HD-chain passphrase storage is only resized, not released'
+require_fixed 'SecureVector().swap(vchSeed)' src/wallet/walletdb.h 'HD-chain seed storage is only resized, not released'
+require_fixed 'lock_cleanses_and_releases_plaintext_secret_storage' src/wallet/test/crypto_tests.cpp 'encrypted-wallet secret-release regression is missing'
+require_fixed 'wallet_lock_releases_transient_hd_chain_secrets' src/wallet/test/pq_wallet_tests.cpp 'HD-chain secret-release regression is missing'
 
 # PQ secret material must never cross a production API backed by the ordinary
 # allocator. The behavioral test also proves byte-for-byte wallet compatibility.
@@ -338,6 +365,7 @@ behavioral_tests=(
   pqkey_hardening_tests
   kawpow_v48_hardening_tests
   bip39_tests
+  wallet_crypto/lock_cleanses_and_releases_plaintext_secret_storage
   pq_wallet_tests
 )
 

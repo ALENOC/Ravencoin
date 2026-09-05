@@ -925,6 +925,49 @@ BOOST_AUTO_TEST_CASE(resident_plaintext_pq_key_blocks_crypted_mode)
     BOOST_CHECK(keystore.HavePQKey(pubkey.GetWitnessProgram()));
 }
 
+BOOST_AUTO_TEST_CASE(wallet_lock_releases_transient_hd_chain_secrets)
+{
+    CWallet wallet;
+    CHDChain chain(&wallet);
+    CKey marker;
+    marker.MakeNewKey(true);
+    chain.UseBip44(true);
+    chain.seed_id = marker.GetPubKey().GetID();
+    chain.vchMnemonic.assign(96, 0x41);
+    chain.vchMnemonicPassphrase.assign(24, 0x42);
+    chain.vchSeed.assign(BIP39_SEED_SIZE, 0x43);
+    BOOST_REQUIRE(wallet.SetHDChain(chain, true));
+
+    CKey key;
+    key.MakeNewKey(true);
+    BOOST_REQUIRE(wallet.LoadCryptedKey(
+        key.GetPubKey(), std::vector<unsigned char>(48, 0x44)));
+
+    bool notifiedLockedState = false;
+    const auto statusConnection = wallet.NotifyStatusChanged.connect(
+        [&wallet, &notifiedLockedState](CCryptoKeyStore*) {
+            notifiedLockedState = true;
+            const CHDChain& observedChain = wallet.GetHDChain();
+            BOOST_CHECK(observedChain.vchMnemonic.empty());
+            BOOST_CHECK_EQUAL(observedChain.vchMnemonic.capacity(), 0U);
+            BOOST_CHECK(observedChain.vchMnemonicPassphrase.empty());
+            BOOST_CHECK_EQUAL(observedChain.vchMnemonicPassphrase.capacity(), 0U);
+            BOOST_CHECK(observedChain.vchSeed.empty());
+            BOOST_CHECK_EQUAL(observedChain.vchSeed.capacity(), 0U);
+        });
+    BOOST_REQUIRE(statusConnection.connected());
+    BOOST_REQUIRE(wallet.Lock());
+    BOOST_CHECK(notifiedLockedState);
+
+    const CHDChain& lockedChain = wallet.GetHDChain();
+    BOOST_CHECK(lockedChain.vchMnemonic.empty());
+    BOOST_CHECK_EQUAL(lockedChain.vchMnemonic.capacity(), 0U);
+    BOOST_CHECK(lockedChain.vchMnemonicPassphrase.empty());
+    BOOST_CHECK_EQUAL(lockedChain.vchMnemonicPassphrase.capacity(), 0U);
+    BOOST_CHECK(lockedChain.vchSeed.empty());
+    BOOST_CHECK_EQUAL(lockedChain.vchSeed.capacity(), 0U);
+}
+
 BOOST_AUTO_TEST_CASE(pq_persistence_failure_rolls_back_in_memory_encryption)
 {
     CPQKey key;
