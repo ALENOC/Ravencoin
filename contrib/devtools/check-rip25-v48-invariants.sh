@@ -164,6 +164,13 @@ require_text "$to_seed_function" 'seedRet.swap(derivedSeed)' 'BIP39 PBKDF2 publi
 require_fixed 'return ToSeedWithPbkdf2(mnemonic, passphrase, seedRet, PKCS5_PBKDF2_HMAC)' src/wallet/bip39.cpp 'production BIP39 derivation bypasses the checked PBKDF2 adapter'
 set_mnemonic_function="$(sed -n '/^bool CHDChain::SetMnemonic(/,/^}/p' src/wallet/walletdb.cpp)"
 require_text "$set_mnemonic_function" 'if (!CMnemonic::ToSeed' 'HD chain ignores BIP39 derivation failure'
+generate_seed_function="$(sed -n '/^CPubKey CWallet::GenerateNewSeed(/,/^}/p' src/wallet/wallet.cpp)"
+require_text "$generate_seed_function" 'throw std::runtime_error(std::string(__func__) + ": SetMnemonic failed")' 'wallet creation does not abort after BIP39 derivation failure'
+kdf_failure_line="$(grep -nF 'if (!newHdChain.SetMnemonic' <<<"$generate_seed_function" | cut -d: -f1 || true)"
+seed_publish_line="$(grep -nF 'g_vchSeed =' <<<"$generate_seed_function" | cut -d: -f1 || true)"
+chain_persist_line="$(grep -nF 'SetHDChain(newHdChain' <<<"$generate_seed_function" | cut -d: -f1 || true)"
+[[ -n "$kdf_failure_line" && -n "$seed_publish_line" && -n "$chain_persist_line" ]] || fail 'cannot locate BIP39 wallet-creation failure boundary'
+(( kdf_failure_line < seed_publish_line && kdf_failure_line < chain_persist_line )) || fail 'BIP39 seed can be published or persisted before KDF failure is checked'
 is_key_type_function="$(sed -n '/^bool CWalletDB::IsKeyType(/,/^}/p' src/wallet/walletdb.cpp)"
 for bip39_type in bip39words bip39passphrase bip39vchseed cbip39words cbip39passphrase cbip39vchseed; do
   require_text "$is_key_type_function" "strType == \"$bip39_type\"" "BIP39 record type $bip39_type is not classified as key-critical"
