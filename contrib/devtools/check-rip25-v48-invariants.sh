@@ -218,6 +218,32 @@ require_fixed 'SecureVector().swap(vchSeed)' src/wallet/walletdb.h 'HD-chain see
 require_fixed 'lock_cleanses_and_releases_plaintext_secret_storage' src/wallet/test/crypto_tests.cpp 'encrypted-wallet secret-release regression is missing'
 require_fixed 'wallet_lock_releases_transient_hd_chain_secrets' src/wallet/test/pq_wallet_tests.cpp 'HD-chain secret-release regression is missing'
 
+# Wallet salvage must build and durably close a replacement before atomically
+# renaming either database. A reported failure must not publish a backup name.
+recovery_function="$(sed -n '/^bool CDB::RecoverInternal(/,/^bool CDB::VerifyEnvironment(/p' src/wallet/db.cpp)"
+require_text "$recovery_function" 'if (!bitdb.CloseDb(filename))' 'wallet recovery ignores source database close failure'
+require_text "$recovery_function" 'bitdb.Salvage(filename, true, salvagedData)' 'wallet recovery renames the source before salvage'
+require_text "$recovery_function" 'DB_CREATE | DB_EXCL | DB_AUTO_COMMIT' 'wallet recovery temporary database is not created exclusively and transactionally'
+require_text "$recovery_function" 'putResult != 0' 'wallet recovery ignores a nonzero Berkeley DB row-write result'
+require_text "$recovery_function" 'if (!activeTxn)' 'wallet recovery dereferences a null Berkeley DB transaction'
+require_text "$recovery_function" 'activeTxn->commit(DB_TXN_SYNC)' 'wallet recovery does not request a synchronous durability boundary'
+require_text "$recovery_function" 'bitdb.dbenv->dbrename(' 'wallet recovery lacks the transactional namespace installation'
+require_text "$recovery_function" 'activeTxn, filename.c_str(), nullptr, backupFilename.c_str(), 0' 'wallet recovery source rename is not bound to the installation transaction'
+require_text "$recovery_function" 'newFilename = backupFilename' 'wallet recovery does not publish the retained original after success'
+reject_fixed 'dbrename(nullptr, filename.c_str()' src/wallet/db.cpp 'wallet recovery can still rename the source outside a transaction'
+write_commit_line="$(grep -nF 'writeCommitResult = activeTxn->commit(DB_TXN_SYNC)' <<<"$recovery_function" | cut -d: -f1 || true)"
+temp_close_line="$(grep -nF 'const int actualCloseResult = closeRecoveryDb()' <<<"$recovery_function" | cut -d: -f1 || true)"
+source_rename_line="$(grep -nF 'const int backupRenameResult = bitdb.dbenv->dbrename(' <<<"$recovery_function" | cut -d: -f1 || true)"
+install_commit_line="$(grep -nF 'installCommitResult = activeTxn->commit(DB_TXN_SYNC)' <<<"$recovery_function" | cut -d: -f1 || true)"
+publish_backup_line="$(grep -nF 'newFilename = backupFilename' <<<"$recovery_function" | cut -d: -f1 || true)"
+[[ -n "$write_commit_line" && -n "$temp_close_line" && -n "$source_rename_line" && -n "$install_commit_line" && -n "$publish_backup_line" ]] || fail 'cannot locate atomic wallet-recovery boundaries'
+(( write_commit_line < temp_close_line && temp_close_line < source_rename_line && source_rename_line < install_commit_line && install_commit_line < publish_backup_line )) || fail 'wallet recovery publishes or renames before its durability boundaries'
+require_fixed 'SalvageResult { FAILED, PARTIAL, COMPLETE }' src/wallet/db.h 'wallet recovery cannot distinguish partial salvage output'
+require_fixed 'recovery_faults_preserve_original_database' src/wallet/test/pq_wallet_tests.cpp 'atomic wallet-recovery fault regression is missing'
+require_fixed 'recovery_exclusive_temp_open_failure_preserves_source' src/wallet/test/pq_wallet_tests.cpp 'exclusive temporary-database regression is missing'
+require_fixed 'partial_recovery_installs_atomically_and_preserves_backup' src/wallet/test/pq_wallet_tests.cpp 'partial wallet-recovery regression is missing'
+require_fixed 'recovery_handles_zero_length_raw_rows' src/wallet/test/pq_wallet_tests.cpp 'zero-length Berkeley DB recovery regression is missing'
+
 # PQ secret material must never cross a production API backed by the ordinary
 # allocator. The behavioral test also proves byte-for-byte wallet compatibility.
 require_fixed 'using KeyData = SecureVector' src/pqkey.h 'CPQKey secret storage lacks a secure-allocator type barrier'

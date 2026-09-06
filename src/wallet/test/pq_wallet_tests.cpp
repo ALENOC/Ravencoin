@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -25,6 +26,99 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+namespace wallet_db {
+
+class RecoveryTestAccess
+{
+public:
+    enum class Fault {
+        NONE,
+        NULL_WRITE_TRANSACTION,
+        WRITE_COMMIT,
+        TEMP_CLOSE,
+        SECOND_RENAME,
+        INSTALL_COMMIT,
+    };
+
+    static bool Recover(const std::string& filename,
+                        std::string& backupFilename,
+                        Fault fault = Fault::NONE,
+                        bool duplicateFirstRow = false,
+                        bool forcePartialSalvage = false,
+                        const std::string& tempFilename = std::string(),
+                        const std::string& requestedBackupFilename = std::string(),
+                        void* callbackData = nullptr,
+                        bool (*callback)(void*, CDataStream, CDataStream) = nullptr)
+    {
+        CDB::RecoveryTestOptions options;
+        switch (fault) {
+        case Fault::NONE:
+            options.fault = CDB::RecoveryFault::NONE;
+            break;
+        case Fault::NULL_WRITE_TRANSACTION:
+            options.fault = CDB::RecoveryFault::NULL_WRITE_TRANSACTION;
+            break;
+        case Fault::WRITE_COMMIT:
+            options.fault = CDB::RecoveryFault::WRITE_COMMIT;
+            break;
+        case Fault::TEMP_CLOSE:
+            options.fault = CDB::RecoveryFault::TEMP_CLOSE;
+            break;
+        case Fault::SECOND_RENAME:
+            options.fault = CDB::RecoveryFault::SECOND_RENAME;
+            break;
+        case Fault::INSTALL_COMMIT:
+            options.fault = CDB::RecoveryFault::INSTALL_COMMIT;
+            break;
+        }
+        options.duplicate_first_row = duplicateFirstRow;
+        options.force_partial_salvage = forcePartialSalvage;
+        options.temp_filename = tempFilename;
+        options.backup_filename = requestedBackupFilename;
+        return CDB::RecoverInternal(filename, callbackData, callback,
+                                    backupFilename, &options);
+    }
+
+    static bool WriteRaw(const std::string& filename,
+                         const std::vector<unsigned char>& key,
+                         const std::vector<unsigned char>& value)
+    {
+        CWalletDBWrapper dbw(&bitdb, filename);
+        CDB db(dbw, "c+");
+        Dbt dbKey(key.empty() ? nullptr : const_cast<unsigned char*>(key.data()),
+                  static_cast<u_int32_t>(key.size()));
+        Dbt dbValue(value.empty() ? nullptr : const_cast<unsigned char*>(value.data()),
+                    static_cast<u_int32_t>(value.size()));
+        const int result = db.pdb->put(nullptr, &dbKey, &dbValue, 0);
+        db.Close();
+        bitdb.Flush(false);
+        return result == 0;
+    }
+
+    static bool HasRaw(const std::string& filename,
+                       const std::vector<unsigned char>& key,
+                       size_t expectedValueSize)
+    {
+        CWalletDBWrapper dbw(&bitdb, filename);
+        CDB db(dbw, "r");
+        Dbt dbKey(key.empty() ? nullptr : const_cast<unsigned char*>(key.data()),
+                  static_cast<u_int32_t>(key.size()));
+        Dbt dbValue;
+        dbValue.set_flags(DB_DBT_MALLOC);
+        const int result = db.pdb->get(nullptr, &dbKey, &dbValue, 0);
+        const bool matches = result == 0 && dbValue.get_size() == expectedValueSize;
+        if (dbValue.get_data()) {
+            memory_cleanse(dbValue.get_data(), dbValue.get_size());
+            free(dbValue.get_data());
+        }
+        db.Close();
+        bitdb.Flush(false);
+        return matches;
+    }
+};
+
+} // namespace wallet_db
 
 namespace {
 
@@ -85,6 +179,40 @@ bool FileContainsSecret(const fs::path& path, const std::vector<unsigned char>& 
     const std::string contents((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     const std::string needle(secret.begin(), secret.end());
     return contents.find(needle) != std::string::npos;
+}
+
+std::string ReadFileBytes(const fs::path& path)
+{
+    std::ifstream file(path.string(), std::ios::binary);
+    if (!file)
+        throw std::runtime_error("failed to read wallet recovery fixture");
+    return std::string((std::istreambuf_iterator<char>(file)),
+                       std::istreambuf_iterator<char>());
+}
+
+void WriteRecoveryFixture(const std::string& filename, const std::string& value)
+{
+    CWalletDBWrapper dbw(&bitdb, filename);
+    CDB db(dbw, "c+");
+    if (!db.Write(std::string("recovery-fixture"), value))
+        throw std::runtime_error("failed to write wallet recovery fixture");
+    db.Close();
+    bitdb.Flush(false);
+}
+
+bool ReadRecoveryFixture(const std::string& filename, std::string& value)
+{
+    CWalletDBWrapper dbw(&bitdb, filename);
+    CDB db(dbw, "r");
+    const bool result = db.Read(std::string("recovery-fixture"), value);
+    db.Close();
+    bitdb.Flush(false);
+    return result;
+}
+
+bool ThrowingRecoveryFilter(void*, CDataStream, CDataStream)
+{
+    throw std::runtime_error("injected recovery callback exception");
 }
 
 class FailingPQPersistenceKeyStore : public CCryptoKeyStore
@@ -297,6 +425,151 @@ BOOST_AUTO_TEST_CASE(bip39_records_are_key_critical)
     BOOST_CHECK(retainedByKeyOnlyRecovery(
         "cbip39passphrase", std::vector<unsigned char>(32, 0x42)));
     BOOST_CHECK(retainedByKeyOnlyRecovery("cbip39vchseed", cryptedSeed));
+}
+
+BOOST_AUTO_TEST_CASE(recovery_faults_preserve_original_database)
+{
+    using Fault = wallet_db::RecoveryTestAccess::Fault;
+    struct FaultCase {
+        const char* name;
+        Fault fault;
+        bool duplicateFirstRow;
+        bool throwingCallback;
+    };
+    const FaultCase cases[] = {
+        {"duplicate-put", Fault::NONE, true, false},
+        {"callback-exception", Fault::NONE, false, true},
+        {"null-write-transaction", Fault::NULL_WRITE_TRANSACTION, false, false},
+        {"write-commit", Fault::WRITE_COMMIT, false, false},
+        {"temporary-close", Fault::TEMP_CLOSE, false, false},
+        {"second-rename", Fault::SECOND_RENAME, false, false},
+        {"install-commit", Fault::INSTALL_COMMIT, false, false},
+    };
+
+    for (const FaultCase& faultCase : cases) {
+        const std::string filename =
+            strprintf("recovery-preserve-%s-wallet.dat", faultCase.name);
+        const std::string tempFilename = filename + ".recover.test";
+        const std::string requestedBackup = filename + ".backup.test";
+        const std::string expectedValue =
+            strprintf("original-value-%s", faultCase.name);
+        WriteRecoveryFixture(filename, expectedValue);
+        const std::string originalBytes = ReadFileBytes(GetDataDir() / filename);
+
+        std::string publishedBackup = "must-be-cleared";
+        const bool recovered = wallet_db::RecoveryTestAccess::Recover(
+            filename,
+            publishedBackup,
+            faultCase.fault,
+            faultCase.duplicateFirstRow,
+            false,
+            tempFilename,
+            requestedBackup,
+            nullptr,
+            faultCase.throwingCallback ? ThrowingRecoveryFilter : nullptr);
+
+        BOOST_CHECK_MESSAGE(!recovered, faultCase.name);
+        BOOST_CHECK_MESSAGE(publishedBackup.empty(), faultCase.name);
+        BOOST_REQUIRE_MESSAGE(fs::is_regular_file(GetDataDir() / filename),
+                              faultCase.name);
+        BOOST_CHECK_MESSAGE(ReadFileBytes(GetDataDir() / filename) == originalBytes,
+                            faultCase.name);
+        BOOST_CHECK_MESSAGE(!fs::exists(GetDataDir() / requestedBackup),
+                            faultCase.name);
+        BOOST_CHECK_MESSAGE(!fs::exists(GetDataDir() / tempFilename),
+                            faultCase.name);
+
+        std::string actualValue;
+        BOOST_REQUIRE_MESSAGE(ReadRecoveryFixture(filename, actualValue),
+                              faultCase.name);
+        BOOST_CHECK_EQUAL(actualValue, expectedValue);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(recovery_exclusive_temp_open_failure_preserves_source)
+{
+    const std::string filename = "recovery-blocked-temp-wallet.dat";
+    const std::string tempFilename = filename + ".recover.blocked";
+    const std::string requestedBackup = filename + ".backup.test";
+    const fs::path tempPath = GetDataDir() / tempFilename;
+    WriteRecoveryFixture(filename, "original-blocked-temp-value");
+    const std::string originalBytes = ReadFileBytes(GetDataDir() / filename);
+    BOOST_REQUIRE(fs::create_directory(tempPath));
+
+    std::string publishedBackup = "must-be-cleared";
+    BOOST_CHECK(!wallet_db::RecoveryTestAccess::Recover(
+        filename,
+        publishedBackup,
+        wallet_db::RecoveryTestAccess::Fault::NONE,
+        false,
+        false,
+        tempFilename,
+        requestedBackup));
+    BOOST_CHECK(publishedBackup.empty());
+    BOOST_REQUIRE(fs::is_regular_file(GetDataDir() / filename));
+    BOOST_CHECK_EQUAL(ReadFileBytes(GetDataDir() / filename), originalBytes);
+    BOOST_CHECK(!fs::exists(GetDataDir() / requestedBackup));
+    BOOST_CHECK(fs::is_directory(tempPath));
+    BOOST_REQUIRE(fs::remove(tempPath));
+}
+
+BOOST_AUTO_TEST_CASE(partial_recovery_installs_atomically_and_preserves_backup)
+{
+    const std::string filename = "partial-recovery-wallet.dat";
+    const std::string tempFilename = filename + ".recover.test";
+    const std::string requestedBackup = filename + ".backup.test";
+    const std::string expectedValue = "partial-recovery-original-value";
+    WriteRecoveryFixture(filename, expectedValue);
+    const std::string originalBytes = ReadFileBytes(GetDataDir() / filename);
+
+    std::string publishedBackup;
+    BOOST_REQUIRE(wallet_db::RecoveryTestAccess::Recover(
+        filename,
+        publishedBackup,
+        wallet_db::RecoveryTestAccess::Fault::NONE,
+        false,
+        true,
+        tempFilename,
+        requestedBackup));
+    BOOST_CHECK_EQUAL(publishedBackup, requestedBackup);
+    BOOST_REQUIRE(fs::is_regular_file(GetDataDir() / filename));
+    BOOST_REQUIRE(fs::is_regular_file(GetDataDir() / requestedBackup));
+    BOOST_CHECK_EQUAL(ReadFileBytes(GetDataDir() / requestedBackup), originalBytes);
+    BOOST_CHECK(!fs::exists(GetDataDir() / tempFilename));
+
+    std::string actualValue;
+    BOOST_REQUIRE(ReadRecoveryFixture(filename, actualValue));
+    BOOST_CHECK_EQUAL(actualValue, expectedValue);
+}
+
+BOOST_AUTO_TEST_CASE(recovery_handles_zero_length_raw_rows)
+{
+    const std::string filename = "zero-length-recovery-wallet.dat";
+    const std::string tempFilename = filename + ".recover.test";
+    const std::string requestedBackup = filename + ".backup.test";
+    const std::vector<unsigned char> empty;
+    const std::vector<unsigned char> nonemptyKey{0x42};
+    const std::vector<unsigned char> nonemptyValue{0x51};
+
+    BOOST_REQUIRE(wallet_db::RecoveryTestAccess::WriteRaw(
+        filename, empty, nonemptyValue));
+    BOOST_REQUIRE(wallet_db::RecoveryTestAccess::WriteRaw(
+        filename, nonemptyKey, empty));
+
+    std::string publishedBackup;
+    BOOST_REQUIRE(wallet_db::RecoveryTestAccess::Recover(
+        filename,
+        publishedBackup,
+        wallet_db::RecoveryTestAccess::Fault::NONE,
+        false,
+        false,
+        tempFilename,
+        requestedBackup));
+    BOOST_CHECK_EQUAL(publishedBackup, requestedBackup);
+    BOOST_CHECK(wallet_db::RecoveryTestAccess::HasRaw(
+        filename, empty, nonemptyValue.size()));
+    BOOST_CHECK(wallet_db::RecoveryTestAccess::HasRaw(
+        filename, nonemptyKey, empty.size()));
 }
 
 BOOST_AUTO_TEST_CASE(bip44_key_only_recovery_preserves_derivation_lineage)
