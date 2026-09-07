@@ -1000,6 +1000,57 @@ BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
                     tx.vin[0].scriptWitness.stack);
     }
 
+    BOOST_AUTO_TEST_CASE(compact_witness_block_empty_element_amplification)
+    {
+        // Independently encode an exact 16-MB legacy-header block containing
+        // one transaction whose witness consists entirely of empty elements.
+        // This exercises the BLOCK deserialization path, not a transaction
+        // object assembled by the implementation under test.
+        static const size_t wireSize = MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE2;
+        static const size_t legacyHeaderSize = 80;
+        static const size_t transactionCountSize = 1;
+        static const size_t transactionFixedSize = 58;
+        static const size_t witnessElements =
+            wireSize - legacyHeaderSize - transactionCountSize - transactionFixedSize;
+
+        std::vector<unsigned char> wire;
+        wire.reserve(wireSize);
+        wire.insert(wire.end(), legacyHeaderSize, 0); // nTime=0: legacy header
+        wire.push_back(1);                           // one transaction
+        AppendLE32(wire, 2);                         // nVersion
+        wire.push_back(0);                           // witness marker
+        wire.push_back(1);                           // witness flag
+        wire.push_back(1);                           // one input
+        wire.insert(wire.end(), 32, 0);              // previous txid
+        AppendLE32(wire, std::numeric_limits<uint32_t>::max());
+        wire.push_back(0);                           // empty scriptSig
+        AppendLE32(wire, std::numeric_limits<uint32_t>::max());
+        wire.push_back(0);                           // no outputs
+        AppendTestCompactSize(wire, witnessElements);
+        wire.insert(wire.end(), witnessElements, 0); // empty witness items
+        AppendLE32(wire, 0);                         // nLockTime
+        BOOST_REQUIRE_EQUAL(wire.size(), wireSize);
+
+        CDataStream input(wire, SER_NETWORK, PROTOCOL_VERSION);
+        CBlock block;
+        input >> block;
+        BOOST_REQUIRE(input.empty());
+        BOOST_REQUIRE_EQUAL(block.vtx.size(), 1U);
+        BOOST_REQUIRE_EQUAL(block.vtx[0]->vin.size(), 1U);
+        BOOST_REQUIRE_EQUAL(block.vtx[0]->vin[0].scriptWitness.stack.size(),
+                            witnessElements);
+        BOOST_CHECK(block.vtx[0]->vin[0].scriptWitness.stack[0].empty());
+        BOOST_CHECK(block.vtx[0]->vin[0].scriptWitness.stack[255].empty());
+        BOOST_CHECK(block.vtx[0]->vin[0].scriptWitness.stack[256].empty());
+        BOOST_CHECK(block.vtx[0]->vin[0].scriptWitness.stack[witnessElements - 1].empty());
+        BOOST_CHECK_LE(RecursiveDynamicUsage(block), 2 * wireSize + 1024 * 1024);
+
+        CDataStream encoded(SER_NETWORK, PROTOCOL_VERSION);
+        encoded << block;
+        BOOST_REQUIRE_EQUAL(encoded.size(), wire.size());
+        BOOST_CHECK_EQUAL(std::memcmp(encoded.data(), wire.data(), wire.size()), 0);
+    }
+
     BOOST_AUTO_TEST_CASE(compact_witness_truncated_element_is_atomic_and_chunked)
     {
         CScriptWitness witness;
