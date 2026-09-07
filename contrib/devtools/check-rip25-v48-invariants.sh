@@ -95,9 +95,18 @@ require_fixed 'MAX_BLOCK_WEIGHT_RIP25_PHASE2 / MIN_TRANSACTION_INPUT_WEIGHT' src
 reject_fixed 'fCheckTransferOverflowIsActive' src/consensus/consensus.h 'forbidden sticky transfer-overflow activation state'
 require_fixed 'const bool fTransferOverflowActive' src/consensus/tx_verify.h 'asset overflow validation lacks an explicit contextual gate'
 require_fixed 'IsTransferOverflowCheckActiveLocked(pindex->pprev' src/validation.cpp 'block validation does not derive transfer-overflow state from the candidate parent'
-require_fixed 'class CNetMessageBuffer' src/net.h 'incomplete P2P payloads lack connection-wide accounting'
-require_fixed 'recvBuffer.TryReserve' src/net.cpp 'P2P receive path allocates without reserving incomplete payload memory'
-require_fixed 'recvBuffer.Release(msg.vRecv.capacity())' src/net.cpp 'P2P completion does not release incomplete payload memory'
+require_fixed 'mapOwnerUsage' src/net.h 'P2P receive accounting lacks per-owner fairness'
+require_fixed 'nMaxProtectedBulkSize' src/net.h 'P2P receive accounting lacks a protected outbound class'
+require_fixed 'DEFAULT_OWNER_HEADROOM = 64 * 1024' src/net.h 'P2P owners lack bounded control-message headroom'
+require_fixed 'memoryBuffer.TryReserve(memoryOwner, memoryProtected' src/net.cpp 'P2P message allocations bypass owner-aware accounting'
+require_fixed 'memusage::MallocUsage(sizeof(CNetMessage) + 2 * sizeof(void*))' src/net.cpp 'P2P message/list objects are not globally charged'
+require_fixed 'memusage::MallocUsage(hdrbuf.capacity())' src/net.cpp 'P2P header allocations are not globally charged'
+require_fixed 'memusage::MallocUsage(vRecv.capacity())' src/net.cpp 'P2P payload capacity is not charged at allocator size'
+require_fixed 'memoryBuffer.Release(memoryOwner, memoryProtected, GetMemoryUsage())' src/net.cpp 'P2P message RAII ownership does not release on destruction'
+require_fixed 'MoveCompletedMessagesToProcessQueue' src/net.cpp 'P2P receive-to-process ownership handoff is missing'
+require_fixed 'nProcessQueueSize -= msgs.front().GetMemoryUsage()' src/net_processing.cpp 'P2P processing queue does not use the owned memory charge'
+reject_fixed 'recvBuffer.Release(msg.vRecv.capacity())' src/net.cpp 'P2P payload ownership is released before processing'
+reject_fixed 'nCopy + 256 * 1024' src/net.cpp 'one-byte P2P input still receives speculative 256-KiB allocation'
 orphan_function="$(sed -n '/^bool AddOrphanTx(/,/^}/p' src/net_processing.cpp)"
 require_text "$orphan_function" 'GetSerializeSize(*tx, SER_NETWORK, PROTOCOL_VERSION)' 'orphan admission is not bounded by retained raw bytes'
 require_text "$orphan_function" 'MAX_STANDARD_TX_WEIGHT / WITNESS_SCALE_FACTOR' 'orphan raw-byte limit is not the documented 100-kB bound'
@@ -385,6 +394,7 @@ behavioral_tests=(
   net_tests/incomplete_message_buffer_concurrent_global_limit
   net_tests/incomplete_message_buffer_releases_reservations
   net_tests/maximum_message_completes_with_global_buffer_limit
+  net_tests/header_only_messages_are_globally_accounted
   DoS_tests/orphan_pq_shape_uses_raw_size_limit
   rpc_tests/rip25_gbt_reports_contextual_resource_limits
   mempool_tests/rip25_reorg_purges_preactivation_policy_transactions

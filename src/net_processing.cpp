@@ -3005,7 +3005,8 @@ bool PeerLogicValidation::ProcessMessages(CNode* pfrom, std::atomic<bool>& inter
             return false;
         // Just take one message
         msgs.splice(msgs.begin(), pfrom->vProcessMsg, pfrom->vProcessMsg.begin());
-        pfrom->nProcessQueueSize -= msgs.front().vRecv.capacity() + CMessageHeader::HEADER_SIZE;
+        assert(msgs.front().GetMemoryUsage() <= pfrom->nProcessQueueSize);
+        pfrom->nProcessQueueSize -= msgs.front().GetMemoryUsage();
         pfrom->fPauseRecv = pfrom->nProcessQueueSize > connman->GetReceiveFloodSize();
         fMoreWork = !pfrom->vProcessMsg.empty();
     }

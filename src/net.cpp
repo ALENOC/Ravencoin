@@ -17,6 +17,7 @@
 #include "crypto/common.h"
 #include "crypto/sha256.h"
 #include "hash.h"
+#include "memusage.h"
 #include "primitives/transaction.h"
 #include "netbase.h"
 #include "scheduler.h"
@@ -94,27 +95,139 @@ std::string strSubVersion;
 
 limitedmap<uint256, int64_t> mapAlreadyAskedFor(MAX_INV_SZ);
 
-bool CNetMessageBuffer::TryReserve(size_t nBytes)
+const size_t CNetMessageBuffer::DEFAULT_OWNER_HEADROOM;
+
+CNetMessageBuffer::CNetMessageBuffer(size_t nMaxSizeIn) :
+    CNetMessageBuffer(nMaxSizeIn, nMaxSizeIn, DEFAULT_OWNER_HEADROOM)
 {
+}
+
+CNetMessageBuffer::CNetMessageBuffer(size_t nMaxNormalBulkSizeIn,
+                                     size_t nMaxProtectedBulkSizeIn,
+                                     size_t nOwnerHeadroomIn) :
+    nMaxNormalBulkSize(nMaxNormalBulkSizeIn),
+    nMaxProtectedBulkSize(nMaxProtectedBulkSizeIn),
+    nOwnerHeadroom(nOwnerHeadroomIn),
+    nSize(0),
+    nNormalHeadroomSize(0),
+    nNormalBulkSize(0),
+    nProtectedHeadroomSize(0),
+    nProtectedBulkSize(0)
+{
+}
+
+size_t CNetMessageBuffer::HeadroomUsage(size_t nOwnerSize) const
+{
+    return std::min(nOwnerSize, nOwnerHeadroom);
+}
+
+size_t CNetMessageBuffer::BulkUsage(size_t nOwnerSize) const
+{
+    return nOwnerSize - HeadroomUsage(nOwnerSize);
+}
+
+bool CNetMessageBuffer::TryReserve(NodeId owner, bool fProtected, size_t nBytes)
+{
+    if (nBytes == 0) {
+        return true;
+    }
+
     LOCK(cs_size);
-    if (nBytes > nMaxSize - nSize) {
+    auto it = mapOwnerUsage.find(owner);
+    if (it != mapOwnerUsage.end() && it->second.fProtected != fProtected) {
         return false;
     }
+
+    const size_t nOldOwnerSize = it == mapOwnerUsage.end() ? 0 : it->second.nSize;
+    if (nBytes > std::numeric_limits<size_t>::max() - nOldOwnerSize ||
+        nBytes > std::numeric_limits<size_t>::max() - nSize) {
+        return false;
+    }
+    const size_t nNewOwnerSize = nOldOwnerSize + nBytes;
+    const size_t nOldHeadroom = HeadroomUsage(nOldOwnerSize);
+    const size_t nNewHeadroom = HeadroomUsage(nNewOwnerSize);
+    const size_t nOldBulk = BulkUsage(nOldOwnerSize);
+    const size_t nNewBulk = BulkUsage(nNewOwnerSize);
+    const size_t nHeadroomGrowth = nNewHeadroom - nOldHeadroom;
+    const size_t nBulkGrowth = nNewBulk - nOldBulk;
+
+    size_t& nClassHeadroomSize = fProtected ? nProtectedHeadroomSize : nNormalHeadroomSize;
+    size_t& nClassBulkSize = fProtected ? nProtectedBulkSize : nNormalBulkSize;
+    const size_t nClassMaxSize = fProtected ? nMaxProtectedBulkSize : nMaxNormalBulkSize;
+    if (nClassHeadroomSize > nClassMaxSize || nClassBulkSize > nClassMaxSize ||
+        nHeadroomGrowth > nClassMaxSize - nClassHeadroomSize ||
+        nBulkGrowth > nClassMaxSize - nClassBulkSize) {
+        return false;
+    }
+
+    if (it == mapOwnerUsage.end()) {
+        try {
+            it = mapOwnerUsage.emplace(owner, OwnerUsage{0, fProtected}).first;
+        } catch (...) {
+            return false;
+        }
+    }
+    it->second.nSize = nNewOwnerSize;
+    nClassHeadroomSize += nHeadroomGrowth;
+    nClassBulkSize += nBulkGrowth;
     nSize += nBytes;
     return true;
 }
 
-void CNetMessageBuffer::Release(size_t nBytes)
+void CNetMessageBuffer::Release(NodeId owner, bool fProtected, size_t nBytes)
 {
+    if (nBytes == 0) {
+        return;
+    }
+
     LOCK(cs_size);
+    auto it = mapOwnerUsage.find(owner);
+    assert(it != mapOwnerUsage.end());
+    assert(it->second.fProtected == fProtected);
+    assert(nBytes <= it->second.nSize);
     assert(nBytes <= nSize);
+
+    const size_t nOldOwnerSize = it->second.nSize;
+    const size_t nNewOwnerSize = nOldOwnerSize - nBytes;
+    const size_t nHeadroomReduction = HeadroomUsage(nOldOwnerSize) - HeadroomUsage(nNewOwnerSize);
+    const size_t nBulkReduction = BulkUsage(nOldOwnerSize) - BulkUsage(nNewOwnerSize);
+    size_t& nClassHeadroomSize = fProtected ? nProtectedHeadroomSize : nNormalHeadroomSize;
+    size_t& nClassBulkSize = fProtected ? nProtectedBulkSize : nNormalBulkSize;
+    assert(nHeadroomReduction <= nClassHeadroomSize);
+    assert(nBulkReduction <= nClassBulkSize);
+
+    it->second.nSize = nNewOwnerSize;
+    nClassHeadroomSize -= nHeadroomReduction;
+    nClassBulkSize -= nBulkReduction;
     nSize -= nBytes;
+    if (nNewOwnerSize == 0) {
+        mapOwnerUsage.erase(it);
+    }
 }
 
 size_t CNetMessageBuffer::Size() const
 {
     LOCK(cs_size);
     return nSize;
+}
+
+size_t CNetMessageBuffer::SizeForOwner(NodeId owner) const
+{
+    LOCK(cs_size);
+    auto it = mapOwnerUsage.find(owner);
+    return it == mapOwnerUsage.end() ? 0 : it->second.nSize;
+}
+
+size_t CNetMessageBuffer::NormalBulkSize() const
+{
+    LOCK(cs_size);
+    return nNormalBulkSize;
+}
+
+size_t CNetMessageBuffer::ProtectedBulkSize() const
+{
+    LOCK(cs_size);
+    return nProtectedBulkSize;
 }
 
 void CConnman::AddOneShot(const std::string& strDest)
@@ -760,8 +873,16 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes, bool& complete
 
         // get current incomplete message, or create a new one
         if (vRecvMsg.empty() ||
-            vRecvMsg.back().complete())
-            vRecvMsg.push_back(CNetMessage(GetParams().MessageStart(), SER_NETWORK, INIT_PROTO_VERSION));
+            vRecvMsg.back().complete()) {
+            try {
+                vRecvMsg.emplace_back(GetParams().MessageStart(), SER_NETWORK,
+                                      INIT_PROTO_VERSION, recvBuffer, GetId(),
+                                      !fInbound);
+            } catch (...) {
+                LogPrint(BCLog::NET, "Receive message object limit or allocation failure for peer=%i, disconnecting\n", GetId());
+                return false;
+            }
+        }
 
         CNetMessage& msg = vRecvMsg.back();
 
@@ -770,44 +891,11 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes, bool& complete
         if (!msg.in_data)
             handled = msg.readHeader(pch, nBytes);
         else {
-            const size_t nOldCapacity = msg.vRecv.capacity();
-            const size_t nTargetSize = msg.GetDataBufferSize(nBytes);
-            const size_t nReservedGrowth = nTargetSize > nOldCapacity ? nTargetSize - nOldCapacity : 0;
-            if (nReservedGrowth != 0 && !recvBuffer.TryReserve(nReservedGrowth)) {
-                LogPrint(BCLog::NET, "Incomplete message buffer limit exceeded by peer=%i, disconnecting\n", GetId());
+            if (!msg.PrepareDataBuffer(nBytes)) {
+                LogPrint(BCLog::NET, "Receive payload limit or allocation failure for peer=%i, disconnecting\n", GetId());
                 return false;
             }
-            nRecvBufferSize += nReservedGrowth;
-            try {
-                handled = msg.readData(pch, nBytes);
-            } catch (...) {
-                // Drop all incomplete payload storage before releasing this
-                // node's reservations. This also makes allocation failures
-                // exception-safe for the global accounting invariant.
-                msg.vRecv.clear_and_free();
-                recvBuffer.Release(nRecvBufferSize);
-                nRecvBufferSize = 0;
-                LogPrint(BCLog::NET, "Failed to allocate incomplete message buffer for peer=%i, disconnecting\n", GetId());
-                return false;
-            }
-
-            const size_t nActualGrowth = msg.vRecv.capacity() - nOldCapacity;
-            if (nActualGrowth > nReservedGrowth && !recvBuffer.TryReserve(nActualGrowth - nReservedGrowth)) {
-                // reserve() is exact on supported standard libraries. Fail closed
-                // if an implementation over-allocates beyond the reservation.
-                msg.vRecv.clear_and_free();
-                recvBuffer.Release(nRecvBufferSize);
-                nRecvBufferSize = 0;
-                LogPrint(BCLog::NET, "Unaccounted message buffer allocation by peer=%i, disconnecting\n", GetId());
-                return false;
-            }
-            if (nActualGrowth > nReservedGrowth) {
-                nRecvBufferSize += nActualGrowth - nReservedGrowth;
-            }
-            if (nReservedGrowth > nActualGrowth) {
-                recvBuffer.Release(nReservedGrowth - nActualGrowth);
-                nRecvBufferSize -= nReservedGrowth - nActualGrowth;
-            }
+            handled = msg.readData(pch, nBytes);
         }
 
         if (handled < 0)
@@ -822,13 +910,6 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes, bool& complete
         nBytes -= handled;
 
         if (msg.complete()) {
-
-            // The socket handler immediately moves this message to the
-            // separately-accounted processing queue.
-            assert(msg.vRecv.capacity() <= nRecvBufferSize);
-            recvBuffer.Release(msg.vRecv.capacity());
-            nRecvBufferSize -= msg.vRecv.capacity();
-
             //store received bytes per message command
             //to prevent a memory DOS, only allow valid commands
             mapMsgCmdSize::iterator i = mapRecvBytesPerMsgCmd.find(msg.hdr.pchCommand);
@@ -842,6 +923,30 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes, bool& complete
         }
     }
 
+    return true;
+}
+
+bool CNode::MoveCompletedMessagesToProcessQueue(size_t nReceiveFloodSize)
+{
+    LOCK(cs_vRecv);
+    size_t nSizeAdded = 0;
+    auto it = vRecvMsg.begin();
+    for (; it != vRecvMsg.end(); ++it) {
+        if (!it->complete()) {
+            break;
+        }
+        assert(it->GetMemoryUsage() <= std::numeric_limits<size_t>::max() - nSizeAdded);
+        nSizeAdded += it->GetMemoryUsage();
+    }
+    if (it == vRecvMsg.begin()) {
+        return false;
+    }
+
+    LOCK(cs_vProcessMsg);
+    assert(nSizeAdded <= std::numeric_limits<size_t>::max() - nProcessQueueSize);
+    vProcessMsg.splice(vProcessMsg.end(), vRecvMsg, vRecvMsg.begin(), it);
+    nProcessQueueSize += nSizeAdded;
+    fPauseRecv = nProcessQueueSize > nReceiveFloodSize;
     return true;
 }
 
@@ -871,6 +976,78 @@ int CNode::GetSendVersion() const
     return nSendVersion;
 }
 
+
+CNetMessage::CNetMessage(const CMessageHeader::MessageStartChars& pchMessageStartIn,
+                         int nTypeIn, int nVersionIn,
+                         CNetMessageBuffer& memoryBufferIn,
+                         NodeId memoryOwnerIn, bool memoryProtectedIn) :
+    memoryBuffer(memoryBufferIn),
+    memoryOwner(memoryOwnerIn),
+    memoryProtected(memoryProtectedIn),
+    nFixedMemoryUsage(0),
+    nPayloadMemoryUsage(0),
+    in_data(false),
+    hdrbuf(nTypeIn, nVersionIn),
+    hdr(pchMessageStartIn),
+    nHdrPos(0),
+    vRecv(nTypeIn, nVersionIn),
+    nDataPos(0),
+    nTime(0)
+{
+    // Account for the list node containing this object before it becomes
+    // reachable from a receive queue.
+    const size_t nObjectUsage = memusage::MallocUsage(sizeof(CNetMessage) + 2 * sizeof(void*));
+    if (!memoryBuffer.TryReserve(memoryOwner, memoryProtected, nObjectUsage)) {
+        throw std::bad_alloc();
+    }
+    nFixedMemoryUsage = nObjectUsage;
+
+    try {
+        hdrbuf.resize(CMessageHeader::HEADER_SIZE);
+    } catch (...) {
+        memoryBuffer.Release(memoryOwner, memoryProtected, nFixedMemoryUsage);
+        nFixedMemoryUsage = 0;
+        throw;
+    }
+
+    const size_t nHeaderUsage = memusage::MallocUsage(hdrbuf.capacity());
+    if (!memoryBuffer.TryReserve(memoryOwner, memoryProtected, nHeaderUsage)) {
+        hdrbuf.clear_and_free();
+        memoryBuffer.Release(memoryOwner, memoryProtected, nFixedMemoryUsage);
+        nFixedMemoryUsage = 0;
+        throw std::bad_alloc();
+    }
+    nFixedMemoryUsage += nHeaderUsage;
+}
+
+CNetMessage::~CNetMessage()
+{
+    memoryBuffer.Release(memoryOwner, memoryProtected, GetMemoryUsage());
+}
+
+bool CNetMessage::ReconcileDataBufferUsage()
+{
+    const size_t nActualUsage = memusage::MallocUsage(vRecv.capacity());
+    if (nActualUsage > nPayloadMemoryUsage) {
+        const size_t nGrowth = nActualUsage - nPayloadMemoryUsage;
+        if (!memoryBuffer.TryReserve(memoryOwner, memoryProtected, nGrowth)) {
+            return false;
+        }
+    } else if (nPayloadMemoryUsage > nActualUsage) {
+        memoryBuffer.Release(memoryOwner, memoryProtected, nPayloadMemoryUsage - nActualUsage);
+    }
+    nPayloadMemoryUsage = nActualUsage;
+    return true;
+}
+
+void CNetMessage::ClearDataBuffer()
+{
+    vRecv.clear_and_free();
+    if (nPayloadMemoryUsage != 0) {
+        memoryBuffer.Release(memoryOwner, memoryProtected, nPayloadMemoryUsage);
+        nPayloadMemoryUsage = 0;
+    }
+}
 
 int CNetMessage::readHeader(const char *pch, unsigned int nBytes)
 {
@@ -907,14 +1084,7 @@ int CNetMessage::readData(const char *pch, unsigned int nBytes)
 {
     unsigned int nRemaining = hdr.nMessageSize - nDataPos;
     unsigned int nCopy = std::min(nRemaining, nBytes);
-
-    const size_t nTargetSize = GetDataBufferSize(nBytes);
-    if (vRecv.size() < nTargetSize) {
-        // Explicit reserve makes capacity growth match the bytes reserved by
-        // the connection-manager-wide accounting in ReceiveMsgBytes().
-        vRecv.reserve(nTargetSize);
-        vRecv.resize(nTargetSize);
-    }
+    assert(vRecv.size() >= static_cast<size_t>(nDataPos) + nCopy);
 
     hasher.Write((const unsigned char*)pch, nCopy);
     memcpy(&vRecv[nDataPos], pch, nCopy);
@@ -927,8 +1097,61 @@ size_t CNetMessage::GetDataBufferSize(unsigned int nBytes) const
 {
     const unsigned int nRemaining = hdr.nMessageSize - nDataPos;
     const unsigned int nCopy = std::min(nRemaining, nBytes);
-    // Allocate up to 256 KiB ahead, but never more than the total message size.
-    return std::min<size_t>(hdr.nMessageSize, static_cast<size_t>(nDataPos) + nCopy + 256 * 1024);
+    const size_t nRequiredSize = static_cast<size_t>(nDataPos) + nCopy;
+    if (nRequiredSize <= vRecv.size()) {
+        return vRecv.size();
+    }
+
+    // Grow geometrically from bytes actually received. This keeps total copy
+    // work linear without granting a 256-KiB allocation to a one-byte trickle.
+    const size_t nCurrentAllocation = std::max(vRecv.size(), vRecv.capacity());
+    size_t nTargetSize = nRequiredSize;
+    if (nCurrentAllocation != 0) {
+        const size_t nDoubledSize = nCurrentAllocation > hdr.nMessageSize / 2
+                                        ? hdr.nMessageSize
+                                        : nCurrentAllocation * 2;
+        nTargetSize = std::max(nTargetSize, nDoubledSize);
+    }
+    return std::min<size_t>(hdr.nMessageSize, nTargetSize);
+}
+
+bool CNetMessage::PrepareDataBuffer(unsigned int nBytes)
+{
+    const size_t nTargetSize = GetDataBufferSize(nBytes);
+    if (vRecv.size() >= nTargetSize) {
+        return true;
+    }
+
+    const size_t nExpectedCapacity = std::max(vRecv.capacity(), nTargetSize);
+    const size_t nExpectedUsage = memusage::MallocUsage(nExpectedCapacity);
+    if (nExpectedUsage > nPayloadMemoryUsage) {
+        const size_t nGrowth = nExpectedUsage - nPayloadMemoryUsage;
+        if (!memoryBuffer.TryReserve(memoryOwner, memoryProtected, nGrowth)) {
+            ClearDataBuffer();
+            return false;
+        }
+        nPayloadMemoryUsage = nExpectedUsage;
+    }
+
+    try {
+        if (vRecv.capacity() < nTargetSize) {
+            vRecv.reserve(nTargetSize);
+        }
+        vRecv.resize(nTargetSize);
+    } catch (...) {
+        if (!ReconcileDataBufferUsage()) {
+            // Any allocator over-allocation is freed before returning, so no
+            // unaccounted storage remains reachable.
+        }
+        ClearDataBuffer();
+        return false;
+    }
+
+    if (!ReconcileDataBufferUsage()) {
+        ClearDataBuffer();
+        return false;
+    }
+    return true;
 }
 
 const uint256& CNetMessage::GetMessageHash() const
@@ -1432,20 +1655,7 @@ void CConnman::ThreadSocketHandler()
                     if (!pnode->ReceiveMsgBytes(pchBuf, nBytes, notify))
                         pnode->CloseSocketDisconnect();
                     RecordBytesRecv(nBytes);
-                    if (notify) {
-                        size_t nSizeAdded = 0;
-                        auto it(pnode->vRecvMsg.begin());
-                        for (; it != pnode->vRecvMsg.end(); ++it) {
-                            if (!it->complete())
-                                break;
-                            nSizeAdded += it->vRecv.capacity() + CMessageHeader::HEADER_SIZE;
-                        }
-                        {
-                            LOCK(pnode->cs_vProcessMsg);
-                            pnode->vProcessMsg.splice(pnode->vProcessMsg.end(), pnode->vRecvMsg, pnode->vRecvMsg.begin(), it);
-                            pnode->nProcessQueueSize += nSizeAdded;
-                            pnode->fPauseRecv = pnode->nProcessQueueSize > nReceiveFloodSize;
-                        }
+                    if (notify && pnode->MoveCompletedMessagesToProcessQueue(nReceiveFloodSize)) {
                         WakeMessageHandler();
                     }
                 }
@@ -2843,8 +3053,7 @@ CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn
     nLocalServices(nLocalServicesIn),
     nMyStartingHeight(nMyStartingHeightIn),
     nSendVersion(0),
-    recvBuffer(recvBufferIn),
-    nRecvBufferSize(0)
+    recvBuffer(recvBufferIn)
 {
     nServices = NODE_NONE;
     hSocket = hSocketIn;
@@ -2910,8 +3119,6 @@ CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn
 CNode::~CNode()
 {
     CloseSocket(hSocket);
-
-    recvBuffer.Release(nRecvBufferSize);
 
     if (pfilter)
         delete pfilter;

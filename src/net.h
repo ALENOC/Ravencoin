@@ -27,6 +27,8 @@
 #include <deque>
 #include <stdint.h>
 #include <thread>
+#include <list>
+#include <map>
 #include <memory>
 #include <condition_variable>
 
@@ -118,20 +120,48 @@ struct CSerializedNetMsg
     std::string command;
 };
 
-/** Bounds memory allocated for incomplete P2P message payloads across peers. */
+/**
+ * Bounds memory retained by received P2P messages from allocation through
+ * processing. Each owner has a small guaranteed headroom; allocations above
+ * it consume a class-wide bulk pool. Outbound peers use a separate protected
+ * class so an inbound peer cannot consume all receive capacity.
+ */
 class CNetMessageBuffer
 {
 private:
+    struct OwnerUsage {
+        size_t nSize;
+        bool fProtected;
+    };
+
     mutable CCriticalSection cs_size;
-    const size_t nMaxSize;
+    const size_t nMaxNormalBulkSize;
+    const size_t nMaxProtectedBulkSize;
+    const size_t nOwnerHeadroom;
     size_t nSize GUARDED_BY(cs_size);
+    size_t nNormalHeadroomSize GUARDED_BY(cs_size);
+    size_t nNormalBulkSize GUARDED_BY(cs_size);
+    size_t nProtectedHeadroomSize GUARDED_BY(cs_size);
+    size_t nProtectedBulkSize GUARDED_BY(cs_size);
+    std::map<NodeId, OwnerUsage> mapOwnerUsage GUARDED_BY(cs_size);
+
+    size_t HeadroomUsage(size_t nOwnerSize) const;
+    size_t BulkUsage(size_t nOwnerSize) const;
 
 public:
-    explicit CNetMessageBuffer(size_t nMaxSizeIn) : nMaxSize(nMaxSizeIn), nSize(0) {}
+    static const size_t DEFAULT_OWNER_HEADROOM = 64 * 1024;
 
-    bool TryReserve(size_t nBytes);
-    void Release(size_t nBytes);
+    explicit CNetMessageBuffer(size_t nMaxSizeIn);
+    CNetMessageBuffer(size_t nMaxNormalBulkSizeIn,
+                      size_t nMaxProtectedBulkSizeIn,
+                      size_t nOwnerHeadroomIn);
+
+    bool TryReserve(NodeId owner, bool fProtected, size_t nBytes);
+    void Release(NodeId owner, bool fProtected, size_t nBytes);
     size_t Size() const;
+    size_t SizeForOwner(NodeId owner) const;
+    size_t NormalBulkSize() const;
+    size_t ProtectedBulkSize() const;
 };
 
 class NetEventsInterface;
@@ -585,6 +615,14 @@ class CNetMessage {
 private:
     mutable CHash256 hasher;
     mutable uint256 data_hash;
+    CNetMessageBuffer& memoryBuffer;
+    const NodeId memoryOwner;
+    const bool memoryProtected;
+    size_t nFixedMemoryUsage;
+    size_t nPayloadMemoryUsage;
+
+    bool ReconcileDataBufferUsage();
+    void ClearDataBuffer();
 public:
     bool in_data;                   // parsing header (false) or data (true)
 
@@ -597,13 +635,14 @@ public:
 
     int64_t nTime;                  // time (in microseconds) of message receipt.
 
-    CNetMessage(const CMessageHeader::MessageStartChars& pchMessageStartIn, int nTypeIn, int nVersionIn) : hdrbuf(nTypeIn, nVersionIn), hdr(pchMessageStartIn), vRecv(nTypeIn, nVersionIn) {
-        hdrbuf.resize(24);
-        in_data = false;
-        nHdrPos = 0;
-        nDataPos = 0;
-        nTime = 0;
-    }
+    CNetMessage(const CMessageHeader::MessageStartChars& pchMessageStartIn,
+                int nTypeIn, int nVersionIn, CNetMessageBuffer& memoryBufferIn,
+                NodeId memoryOwnerIn, bool memoryProtectedIn);
+    ~CNetMessage();
+    CNetMessage(const CNetMessage&) = delete;
+    CNetMessage& operator=(const CNetMessage&) = delete;
+    CNetMessage(CNetMessage&&) = delete;
+    CNetMessage& operator=(CNetMessage&&) = delete;
 
     bool complete() const
     {
@@ -622,7 +661,9 @@ public:
 
     int readHeader(const char *pch, unsigned int nBytes);
     size_t GetDataBufferSize(unsigned int nBytes) const;
+    bool PrepareDataBuffer(unsigned int nBytes);
     int readData(const char *pch, unsigned int nBytes);
+    size_t GetMemoryUsage() const { return nFixedMemoryUsage + nPayloadMemoryUsage; }
 };
 
 
@@ -766,7 +807,6 @@ private:
     const int nMyStartingHeight;
     int nSendVersion;
     CNetMessageBuffer& recvBuffer;
-    size_t nRecvBufferSize;
     std::list<CNetMessage> vRecvMsg;  // Used only by SocketHandler thread
 
     mutable CCriticalSection cs_addrName;
@@ -796,6 +836,7 @@ public:
     }
 
     bool ReceiveMsgBytes(const char *pch, unsigned int nBytes, bool& complete);
+    bool MoveCompletedMessagesToProcessQueue(size_t nReceiveFloodSize);
 
     void SetRecvVersion(int nVersionIn)
     {
