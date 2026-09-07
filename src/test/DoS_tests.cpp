@@ -8,6 +8,7 @@
 #include "chainparams.h"
 #include "consensus/validation.h"
 #include "crypto/mldsa.h"
+#include "hash.h"
 #include "keystore.h"
 #include "net.h"
 #include "net_processing.h"
@@ -196,6 +197,49 @@ BOOST_FIXTURE_TEST_SUITE(DoS_tests, TestingSetup)
 
         bool dummy;
         peerLogic->FinalizeNode(dummyNode.GetId(), dummy);
+    }
+
+    BOOST_AUTO_TEST_CASE(unexpected_blocktxn_is_rejected_before_body_parse)
+    {
+        std::atomic<bool> interruptDummy(false);
+        CNetMessageBuffer recvBuffer(MAX_PROTOCOL_MESSAGE_LENGTH);
+        CAddress address(ip(0xa0b0c003), NODE_NONE);
+        CNode dummyNode(id++, NODE_NETWORK, 0, INVALID_SOCKET, address, 0, 0,
+                        CAddress(), recvBuffer, "", true);
+        dummyNode.SetSendVersion(PROTOCOL_VERSION);
+        dummyNode.SetRecvVersion(PROTOCOL_VERSION);
+        dummyNode.nVersion = PROTOCOL_VERSION;
+        dummyNode.fSuccessfullyConnected = true;
+        peerLogic->InitializeNode(&dummyNode);
+
+        // Deliberately omit the transaction-count field. An unexpected hash
+        // must be discarded after its fixed-width preflight; attempting to
+        // deserialize even the count would emit a malformed-message reject.
+        CDataStream payload(SER_NETWORK, PROTOCOL_VERSION);
+        const uint256 unexpectedHash = InsecureRand256();
+        payload << unexpectedHash;
+        CMessageHeader header(GetParams().MessageStart(), NetMsgType::BLOCKTXN,
+                              payload.size());
+        const uint256 payloadHash = Hash(payload.begin(), payload.end());
+        memcpy(header.pchChecksum, payloadHash.begin(),
+               CMessageHeader::CHECKSUM_SIZE);
+        CDataStream wire(SER_NETWORK, PROTOCOL_VERSION);
+        wire << header;
+        wire += payload;
+
+        bool complete = false;
+        BOOST_REQUIRE(dummyNode.ReceiveMsgBytes(
+            wire.data(), static_cast<unsigned int>(wire.size()), complete));
+        BOOST_REQUIRE(complete);
+        BOOST_REQUIRE(dummyNode.MoveCompletedMessagesToProcessQueue(
+            MAX_PROTOCOL_MESSAGE_LENGTH));
+        const size_t sendMessagesBefore = dummyNode.vSendMsg.size();
+        BOOST_CHECK(!peerLogic->ProcessMessages(&dummyNode, interruptDummy));
+        BOOST_CHECK_EQUAL(dummyNode.vSendMsg.size(), sendMessagesBefore);
+        BOOST_CHECK(!dummyNode.fDisconnect);
+
+        bool updateConnectionTime = false;
+        peerLogic->FinalizeNode(dummyNode.GetId(), updateConnectionTime);
     }
 
     CTransactionRef RandomOrphan()

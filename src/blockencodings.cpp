@@ -17,8 +17,12 @@
 #include <unordered_map>
 
 CBlockHeaderAndShortTxIDs::CBlockHeaderAndShortTxIDs(const CBlock& block, bool fUseWTXID) :
-        nonce(GetRand(std::numeric_limits<uint64_t>::max())),
-        shorttxids(block.vtx.size() - 1), prefilledtxn(1), header(block) {
+        nonce(GetRand(std::numeric_limits<uint64_t>::max())), header(block) {
+    if (block.vtx.empty() || block.vtx.size() > MAX_BLOCK_TRANSACTION_COUNT) {
+        throw std::invalid_argument("Block transaction count is outside compact block limits");
+    }
+    shorttxids.resize(block.vtx.size() - 1);
+    prefilledtxn.resize(1);
     FillShortTxIDSelector();
     //TODO: Use our mempool prior to block acceptance to predictively fill more than just the coinbase
     prefilledtxn[0] = {0, block.vtx[0]};
@@ -175,8 +179,19 @@ bool PartiallyDownloadedBlock::IsTxAvailable(size_t index) const {
     return txn_available[index] != nullptr;
 }
 
+bool PartiallyDownloadedBlock::TryGetMissingTxCount(size_t& missing) const {
+    if (header.IsNull() || prefilled_count > txn_available.size() ||
+            mempool_count > txn_available.size() - prefilled_count) {
+        return false;
+    }
+    missing = txn_available.size() - prefilled_count - mempool_count;
+    return true;
+}
+
 ReadStatus PartiallyDownloadedBlock::FillBlock(CBlock& block, const std::vector<CTransactionRef>& vtx_missing) {
-    assert(!header.IsNull());
+    if (header.IsNull()) {
+        return READ_STATUS_INVALID;
+    }
     uint256 hash = header.GetHash();
     block = header;
     block.vtx.resize(txn_available.size());

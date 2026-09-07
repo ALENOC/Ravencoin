@@ -114,6 +114,13 @@ require_fixed 'parsed.m_compactSize = ReadCompactSize(stream)' src/script/witnes
 require_fixed 'm_serializedElements.capacity() * sizeof(unsigned char)' src/script/witness.h 'compact witness memory is absent from transaction accounting'
 require_fixed 'MAX_INITIAL_WITNESS_STACK' src/script/interpreter.cpp 'P2WSH can expand an unconditionally invalid compact witness count'
 reject_fixed 'std::vector<std::vector<unsigned char> > stack;' src/script/script.h 'nested witness vector allocation amplification was reintroduced'
+require_fixed 'MAX_BLOCK_TRANSACTION_COUNT = MAX_BLOCK_WEIGHT_RIP25_PHASE2 / MIN_TRANSACTION_WEIGHT' src/consensus/consensus.h 'block-family parser bound is not derived from the phase-2 consensus ceiling'
+require_fixed 'Block transaction count exceeds structural limit' src/primitives/block.h 'full block count is not rejected before transaction allocation'
+require_fixed 'BlockTransactions count exceeds structural limit' src/blockencodings.h 'BLOCKTXN count is not rejected before transaction allocation'
+require_fixed 'Compact block transaction count exceeds structural limit' src/blockencodings.h 'compact block combined count is not bounded before prefilled allocation'
+require_fixed 'vRecv >> resp.blockhash' src/net_processing.cpp 'BLOCKTXN request ownership is not preflighted before its transaction body'
+require_fixed 'TryGetMissingTxCount' src/blockencodings.cpp 'consumed compact-block state is not checked without assertions'
+require_min_count 'partialBlock.reset()' src/net_processing.cpp 2 'compact-block fallback leaves partial state reachable'
 orphan_function="$(sed -n '/^bool AddOrphanTx(/,/^}/p' src/net_processing.cpp)"
 require_text "$orphan_function" 'GetSerializeSize(*tx, SER_NETWORK, PROTOCOL_VERSION)' 'orphan admission is not bounded by retained raw bytes'
 require_text "$orphan_function" 'MAX_STANDARD_TX_WEIGHT / WITNESS_SCALE_FACTOR' 'orphan raw-byte limit is not the documented 100-kB bound'
@@ -407,6 +414,11 @@ behavioral_tests=(
   transaction_tests/compact_witness_truncated_element_is_atomic_and_chunked
   transaction_tests/compact_witness_move_leaves_valid_source
   transaction_tests/compact_witness_preserves_compactsize_boundaries
+  blockencodings_tests/block_family_counts_reject_before_element_read
+  blockencodings_tests/block_family_transaction_count_boundary_roundtrips
+  blockencodings_tests/block_family_count_bounds_are_atomic_and_apply_on_write
+  blockencodings_tests/consumed_partial_block_fails_closed_after_fallback
+  DoS_tests/unexpected_blocktxn_is_rejected_before_body_parse
   DoS_tests/orphan_pq_shape_uses_raw_size_limit
   rpc_tests/rip25_gbt_reports_contextual_resource_limits
   mempool_tests/rip25_reorg_purges_preactivation_policy_transactions

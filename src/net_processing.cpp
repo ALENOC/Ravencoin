@@ -2483,6 +2483,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                     return true;
                 } else if (status == READ_STATUS_FAILED) {
                     // Duplicate txindexes, the block is now in-flight, so just request it
+                    (*queuedBlockIt)->partialBlock.reset();
                     std::vector<CInv> vInv(1);
                     vInv[0] = CInv(MSG_BLOCK | GetFetchFlags(pfrom), cmpctblock.header.GetHash());
                     connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::GETDATA, vInv));
@@ -2593,7 +2594,43 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     else if (strCommand == NetMsgType::BLOCKTXN && !fImporting && !fReindex) // Ignore blocks received while importing
     {
         BlockTransactions resp;
-        vRecv >> resp;
+        vRecv >> resp.blockhash;
+
+        size_t expectedTransactionCount = 0;
+        {
+            LOCK(cs_main);
+            std::map<uint256, std::pair<NodeId, std::list<QueuedBlock>::iterator> >::iterator it = mapBlocksInFlight.find(resp.blockhash);
+            if (it == mapBlocksInFlight.end() || !it->second.second->partialBlock ||
+                    it->second.first != pfrom->GetId() ||
+                    !it->second.second->partialBlock->TryGetMissingTxCount(expectedTransactionCount)) {
+                LogPrint(BCLog::NET, "Peer %d sent us block transactions for block we weren't expecting\n", pfrom->GetId());
+                return true;
+            }
+        }
+
+        const uint64_t transactionCount = ReadCompactSize(vRecv);
+        if (transactionCount > MAX_BLOCK_TRANSACTION_COUNT) {
+            throw std::ios_base::failure("BlockTransactions count exceeds structural limit");
+        }
+        if (transactionCount != expectedTransactionCount) {
+            LOCK(cs_main);
+            std::map<uint256, std::pair<NodeId, std::list<QueuedBlock>::iterator> >::iterator it = mapBlocksInFlight.find(resp.blockhash);
+            size_t currentExpectedTransactionCount = 0;
+            if (it == mapBlocksInFlight.end() || !it->second.second->partialBlock ||
+                    it->second.first != pfrom->GetId() ||
+                    !it->second.second->partialBlock->TryGetMissingTxCount(currentExpectedTransactionCount) ||
+                    currentExpectedTransactionCount != expectedTransactionCount) {
+                LogPrint(BCLog::NET, "Peer %d sent stale block transactions for block %s\n",
+                         pfrom->GetId(), resp.blockhash.ToString());
+                return true;
+            }
+            MarkBlockAsReceived(resp.blockhash);
+            Misbehaving(pfrom->GetId(), 100);
+            LogPrintf("Peer %d sent a non-matching block transaction count for block %s\n",
+                      pfrom->GetId(), resp.blockhash.ToString());
+            return true;
+        }
+        resp.UnserializeTransactions(vRecv, transactionCount);
 
         std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>();
         bool fBlockRead = false;
@@ -2601,8 +2638,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             LOCK(cs_main);
 
             std::map<uint256, std::pair<NodeId, std::list<QueuedBlock>::iterator> >::iterator it = mapBlocksInFlight.find(resp.blockhash);
+            size_t currentExpectedTransactionCount = 0;
             if (it == mapBlocksInFlight.end() || !it->second.second->partialBlock ||
-                    it->second.first != pfrom->GetId()) {
+                    it->second.first != pfrom->GetId() ||
+                    !it->second.second->partialBlock->TryGetMissingTxCount(currentExpectedTransactionCount) ||
+                    currentExpectedTransactionCount != expectedTransactionCount) {
                 LogPrint(BCLog::NET, "Peer %d sent us block transactions for block we weren't expecting\n", pfrom->GetId());
                 return true;
             }
@@ -2616,6 +2656,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             } else if (status == READ_STATUS_FAILED) {
                 // Might have collided, fall back to getdata now :(
+                it->second.second->partialBlock.reset();
                 std::vector<CInv> invs;
                 invs.push_back(CInv(MSG_BLOCK | GetFetchFlags(pfrom), resp.blockhash));
                 connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::GETDATA, invs));

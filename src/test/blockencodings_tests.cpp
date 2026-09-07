@@ -10,9 +10,107 @@
 
 #include "test/test_raven.h"
 
+#include <algorithm>
+#include <cstring>
+#include <limits>
+#include <utility>
+
 #include <boost/test/unit_test.hpp>
 
 std::vector<std::pair<uint256, CTransactionRef>> extra_txn;
+
+namespace {
+
+void AppendLE32(std::vector<unsigned char>& bytes, uint32_t value)
+{
+    for (unsigned int shift = 0; shift < 32; shift += 8) {
+        bytes.push_back(static_cast<unsigned char>(value >> shift));
+    }
+}
+
+void AppendCompactSize(std::vector<unsigned char>& bytes, uint64_t value)
+{
+    if (value < 253) {
+        bytes.push_back(static_cast<unsigned char>(value));
+    } else if (value <= std::numeric_limits<uint16_t>::max()) {
+        bytes.push_back(253);
+        bytes.push_back(static_cast<unsigned char>(value));
+        bytes.push_back(static_cast<unsigned char>(value >> 8));
+    } else {
+        BOOST_REQUIRE(value <= std::numeric_limits<uint32_t>::max());
+        bytes.push_back(254);
+        AppendLE32(bytes, static_cast<uint32_t>(value));
+    }
+}
+
+void AppendEmptyTransaction(std::vector<unsigned char>& bytes)
+{
+    AppendLE32(bytes, CTransaction::CURRENT_VERSION);
+    bytes.push_back(0); // empty vin
+    bytes.push_back(0); // empty vout / zero optional-data flag
+    AppendLE32(bytes, 0);
+}
+
+class PrefixReadStream
+{
+private:
+    std::vector<unsigned char> m_bytes;
+    size_t m_position{0};
+
+public:
+    bool read_past_end{false};
+
+    explicit PrefixReadStream(std::vector<unsigned char> bytes) :
+        m_bytes(std::move(bytes)) {}
+
+    int GetType() const { return SER_NETWORK; }
+    int GetVersion() const { return PROTOCOL_VERSION; }
+    size_t Position() const { return m_position; }
+    size_t Size() const { return m_bytes.size(); }
+
+    void read(char* destination, size_t size)
+    {
+        if (size > m_bytes.size() - m_position) {
+            read_past_end = true;
+            throw std::ios_base::failure("test stream read past prefix");
+        }
+        if (size != 0) {
+            std::memcpy(destination, m_bytes.data() + m_position, size);
+            m_position += size;
+        }
+    }
+
+    template <typename T>
+    PrefixReadStream& operator>>(T& value)
+    {
+        ::Unserialize(*this, value);
+        return *this;
+    }
+};
+
+std::vector<unsigned char> LegacyBlockPrefix(uint64_t transactionCount)
+{
+    std::vector<unsigned char> bytes(80, 0); // nTime=0 selects the 80-byte header
+    AppendCompactSize(bytes, transactionCount);
+    return bytes;
+}
+
+std::vector<unsigned char> BlockTransactionsPrefix(uint64_t transactionCount)
+{
+    std::vector<unsigned char> bytes(32, 0); // block hash
+    AppendCompactSize(bytes, transactionCount);
+    return bytes;
+}
+
+std::vector<unsigned char> CompactBlockPrefix(uint64_t shortIDCount)
+{
+    std::vector<unsigned char> bytes(80, 0); // legacy header
+    bytes.insert(bytes.end(), 8, 0);         // nonce
+    AppendCompactSize(bytes, shortIDCount);
+    return bytes;
+}
+
+} // namespace
 
 struct RegtestingSetup : public TestingSetup
 {
@@ -111,6 +209,37 @@ BOOST_FIXTURE_TEST_SUITE(blockencodings_tests, RegtestingSetup)
             BOOST_CHECK_EQUAL(block.hashMerkleRoot.ToString(), BlockMerkleRoot(block3, &mutated).ToString());
             BOOST_CHECK(!mutated);
         }
+    }
+
+    BOOST_AUTO_TEST_CASE(consumed_partial_block_fails_closed_after_fallback)
+    {
+        CTxMemPool pool;
+        const CBlock block = BuildBlockTestCase();
+        CBlockHeaderAndShortTxIDs compact(block, true);
+        CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
+        stream << compact;
+        CBlockHeaderAndShortTxIDs decoded;
+        stream >> decoded;
+
+        PartiallyDownloadedBlock partialBlock(&pool);
+        BOOST_REQUIRE_EQUAL(partialBlock.InitData(decoded, extra_txn),
+                            READ_STATUS_OK);
+        size_t missing = 0;
+        BOOST_REQUIRE(partialBlock.TryGetMissingTxCount(missing));
+        BOOST_REQUIRE_EQUAL(missing, 2U);
+
+        // Preserve the expected cardinality but duplicate one transaction so
+        // CheckBlock reports a possible compact-relay/merkle collision.
+        std::vector<CTransactionRef> wrongTransactions(missing, block.vtx[1]);
+        CBlock reconstructed;
+        BOOST_REQUIRE_EQUAL(partialBlock.FillBlock(reconstructed,
+                                                   wrongTransactions),
+                            READ_STATUS_FAILED);
+
+        BOOST_CHECK(!partialBlock.TryGetMissingTxCount(missing));
+        BOOST_CHECK_EQUAL(partialBlock.FillBlock(reconstructed,
+                                                 wrongTransactions),
+                          READ_STATUS_INVALID);
     }
 
     class TestHeaderAndShortIDs
@@ -354,6 +483,175 @@ BOOST_FIXTURE_TEST_SUITE(blockencodings_tests, RegtestingSetup)
         BOOST_CHECK_EQUAL(req1.indexes[1], req2.indexes[1]);
         BOOST_CHECK_EQUAL(req1.indexes[2], req2.indexes[2]);
         BOOST_CHECK_EQUAL(req1.indexes[3], req2.indexes[3]);
+    }
+
+    BOOST_AUTO_TEST_CASE(block_family_counts_reject_before_element_read)
+    {
+        const uint64_t invalidCount = MAX_BLOCK_TRANSACTION_COUNT + 1;
+        BOOST_REQUIRE_EQUAL(MAX_BLOCK_TRANSACTION_COUNT, 66666U);
+
+        PrefixReadStream blockStream(LegacyBlockPrefix(invalidCount));
+        CBlock block;
+        block.vtx.push_back(MakeTransactionRef(CMutableTransaction()));
+        BOOST_CHECK_THROW(blockStream >> block, std::ios_base::failure);
+        BOOST_CHECK(!blockStream.read_past_end);
+        BOOST_CHECK_EQUAL(blockStream.Position(), blockStream.Size());
+        BOOST_REQUIRE_EQUAL(block.vtx.size(), 1U);
+
+        PrefixReadStream blockTransactionsStream(
+            BlockTransactionsPrefix(invalidCount));
+        BlockTransactions blockTransactions;
+        blockTransactions.txn.push_back(
+            MakeTransactionRef(CMutableTransaction()));
+        BOOST_CHECK_THROW(blockTransactionsStream >> blockTransactions,
+                          std::ios_base::failure);
+        BOOST_CHECK(!blockTransactionsStream.read_past_end);
+        BOOST_CHECK_EQUAL(blockTransactionsStream.Position(),
+                          blockTransactionsStream.Size());
+        BOOST_REQUIRE_EQUAL(blockTransactions.txn.size(), 1U);
+
+        PrefixReadStream shortIDStream(CompactBlockPrefix(invalidCount));
+        CBlockHeaderAndShortTxIDs shortIDs;
+        BOOST_CHECK_THROW(shortIDStream >> shortIDs, std::ios_base::failure);
+        BOOST_CHECK(!shortIDStream.read_past_end);
+        BOOST_CHECK_EQUAL(shortIDStream.Position(), shortIDStream.Size());
+
+        std::vector<unsigned char> prefilledPrefix = CompactBlockPrefix(0);
+        AppendCompactSize(prefilledPrefix, invalidCount);
+        PrefixReadStream prefilledStream(std::move(prefilledPrefix));
+        CBlockHeaderAndShortTxIDs prefilled;
+        BOOST_CHECK_THROW(prefilledStream >> prefilled, std::ios_base::failure);
+        BOOST_CHECK(!prefilledStream.read_past_end);
+        BOOST_CHECK_EQUAL(prefilledStream.Position(), prefilledStream.Size());
+
+        std::vector<unsigned char> combinedPrefix =
+            CompactBlockPrefix(MAX_BLOCK_TRANSACTION_COUNT);
+        combinedPrefix.insert(combinedPrefix.end(),
+                              MAX_BLOCK_TRANSACTION_COUNT * 6, 0);
+        AppendCompactSize(combinedPrefix, 1);
+        PrefixReadStream combinedStream(std::move(combinedPrefix));
+        CBlockHeaderAndShortTxIDs combined;
+        BOOST_CHECK_THROW(combinedStream >> combined, std::ios_base::failure);
+        BOOST_CHECK(!combinedStream.read_past_end);
+        BOOST_CHECK_EQUAL(combinedStream.Position(), combinedStream.Size());
+    }
+
+    BOOST_AUTO_TEST_CASE(block_family_transaction_count_boundary_roundtrips)
+    {
+        std::vector<unsigned char> blockWire =
+            LegacyBlockPrefix(MAX_BLOCK_TRANSACTION_COUNT);
+        blockWire.reserve(blockWire.size() + MAX_BLOCK_TRANSACTION_COUNT * 10);
+        for (size_t i = 0; i < MAX_BLOCK_TRANSACTION_COUNT; ++i) {
+            AppendEmptyTransaction(blockWire);
+        }
+
+        CDataStream blockInput(blockWire, SER_NETWORK, PROTOCOL_VERSION);
+        CBlock block;
+        blockInput >> block;
+        BOOST_REQUIRE(blockInput.empty());
+        BOOST_REQUIRE_EQUAL(block.vtx.size(), MAX_BLOCK_TRANSACTION_COUNT);
+        CDataStream blockOutput(SER_NETWORK, PROTOCOL_VERSION);
+        blockOutput << block;
+        BOOST_REQUIRE_EQUAL(blockOutput.size(), blockWire.size());
+        BOOST_CHECK_EQUAL(std::memcmp(blockOutput.data(), blockWire.data(),
+                                      blockWire.size()), 0);
+
+        std::vector<unsigned char> responseWire =
+            BlockTransactionsPrefix(MAX_BLOCK_TRANSACTION_COUNT);
+        responseWire.reserve(responseWire.size() +
+                             MAX_BLOCK_TRANSACTION_COUNT * 10);
+        for (size_t i = 0; i < MAX_BLOCK_TRANSACTION_COUNT; ++i) {
+            AppendEmptyTransaction(responseWire);
+        }
+
+        CDataStream responseInput(responseWire, SER_NETWORK, PROTOCOL_VERSION);
+        BlockTransactions response;
+        responseInput >> response;
+        BOOST_REQUIRE(responseInput.empty());
+        BOOST_REQUIRE_EQUAL(response.txn.size(), MAX_BLOCK_TRANSACTION_COUNT);
+        CDataStream responseOutput(SER_NETWORK, PROTOCOL_VERSION);
+        responseOutput << response;
+        BOOST_REQUIRE_EQUAL(responseOutput.size(), responseWire.size());
+        BOOST_CHECK_EQUAL(std::memcmp(responseOutput.data(), responseWire.data(),
+                                      responseWire.size()), 0);
+
+        std::vector<unsigned char> compactWire =
+            CompactBlockPrefix(MAX_BLOCK_TRANSACTION_COUNT);
+        compactWire.insert(compactWire.end(), MAX_BLOCK_TRANSACTION_COUNT * 6, 0);
+        AppendCompactSize(compactWire, 0); // no prefilled transactions
+
+        CDataStream compactInput(compactWire, SER_NETWORK, PROTOCOL_VERSION);
+        CBlockHeaderAndShortTxIDs compactBlock;
+        compactInput >> compactBlock;
+        BOOST_REQUIRE(compactInput.empty());
+        BOOST_REQUIRE_EQUAL(compactBlock.BlockTxCount(),
+                            MAX_BLOCK_TRANSACTION_COUNT);
+        CDataStream compactOutput(SER_NETWORK, PROTOCOL_VERSION);
+        compactOutput << compactBlock;
+        BOOST_REQUIRE_EQUAL(compactOutput.size(), compactWire.size());
+        BOOST_CHECK_EQUAL(std::memcmp(compactOutput.data(), compactWire.data(),
+                                      compactWire.size()), 0);
+    }
+
+    BOOST_AUTO_TEST_CASE(block_family_count_bounds_are_atomic_and_apply_on_write)
+    {
+        const CTransactionRef emptyTransaction =
+            MakeTransactionRef(CMutableTransaction());
+
+        CBlock oversizedBlock;
+        oversizedBlock.vtx.resize(MAX_BLOCK_TRANSACTION_COUNT + 1,
+                                  emptyTransaction);
+        CDataStream blockOutput(SER_NETWORK, PROTOCOL_VERSION);
+        BOOST_CHECK_THROW(blockOutput << oversizedBlock,
+                          std::ios_base::failure);
+        BOOST_CHECK_THROW(CBlockHeaderAndShortTxIDs(oversizedBlock, true),
+                          std::invalid_argument);
+
+        BlockTransactions oversizedResponse;
+        oversizedResponse.txn.resize(MAX_BLOCK_TRANSACTION_COUNT + 1,
+                                     emptyTransaction);
+        CDataStream responseOutput(SER_NETWORK, PROTOCOL_VERSION);
+        BOOST_CHECK_THROW(responseOutput << oversizedResponse,
+                          std::ios_base::failure);
+
+        std::vector<unsigned char> truncatedBlock = LegacyBlockPrefix(1);
+        AppendLE32(truncatedBlock, CTransaction::CURRENT_VERSION);
+        CDataStream blockInput(truncatedBlock, SER_NETWORK, PROTOCOL_VERSION);
+        CBlock block;
+        block.vtx.push_back(emptyTransaction);
+        BOOST_CHECK_THROW(blockInput >> block, std::ios_base::failure);
+        BOOST_REQUIRE_EQUAL(block.vtx.size(), 1U);
+        BOOST_CHECK(block.vtx[0] == emptyTransaction);
+
+        std::vector<unsigned char> truncatedResponse =
+            BlockTransactionsPrefix(1);
+        AppendLE32(truncatedResponse, CTransaction::CURRENT_VERSION);
+        CDataStream responseInput(truncatedResponse, SER_NETWORK,
+                                  PROTOCOL_VERSION);
+        BlockTransactions response;
+        response.txn.push_back(emptyTransaction);
+        BOOST_CHECK_THROW(responseInput >> response, std::ios_base::failure);
+        BOOST_REQUIRE_EQUAL(response.txn.size(), 1U);
+        BOOST_CHECK(response.txn[0] == emptyTransaction);
+
+        std::vector<unsigned char> validCompact = CompactBlockPrefix(1);
+        validCompact.insert(validCompact.end(), 6, 0);
+        AppendCompactSize(validCompact, 0);
+        CDataStream validCompactInput(validCompact, SER_NETWORK,
+                                      PROTOCOL_VERSION);
+        CBlockHeaderAndShortTxIDs compactBlock;
+        validCompactInput >> compactBlock;
+        BOOST_REQUIRE_EQUAL(compactBlock.BlockTxCount(), 1U);
+
+        std::vector<unsigned char> truncatedCompact = CompactBlockPrefix(0);
+        AppendCompactSize(truncatedCompact, 1);
+        AppendCompactSize(truncatedCompact, 0);
+        AppendLE32(truncatedCompact, CTransaction::CURRENT_VERSION);
+        CDataStream compactInput(truncatedCompact, SER_NETWORK,
+                                 PROTOCOL_VERSION);
+        BOOST_CHECK_THROW(compactInput >> compactBlock,
+                          std::ios_base::failure);
+        BOOST_CHECK_EQUAL(compactBlock.BlockTxCount(), 1U);
     }
 
 BOOST_AUTO_TEST_SUITE_END()
