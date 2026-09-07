@@ -11,6 +11,7 @@
 #include "checkqueue.h"
 #include "consensus/tx_verify.h"
 #include "consensus/validation.h"
+#include "core_memusage.h"
 #include "core_io.h"
 #include "key.h"
 #include "keystore.h"
@@ -22,8 +23,12 @@
 #include "script/standard.h"
 #include "utilstrencodings.h"
 
+#include <algorithm>
+#include <cstring>
+#include <limits>
 #include <map>
 #include <string>
+#include <utility>
 
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/split.hpp>
@@ -32,6 +37,67 @@
 #include <univalue.h>
 
 typedef std::vector<unsigned char> valtype;
+
+namespace {
+
+void AppendLE32(std::vector<unsigned char>& out, uint32_t value)
+{
+    for (unsigned int shift = 0; shift < 32; shift += 8) {
+        out.push_back(static_cast<unsigned char>(value >> shift));
+    }
+}
+
+void AppendTestCompactSize(std::vector<unsigned char>& out, uint64_t value)
+{
+    if (value < 253) {
+        out.push_back(static_cast<unsigned char>(value));
+    } else if (value <= std::numeric_limits<uint16_t>::max()) {
+        out.push_back(253);
+        out.push_back(static_cast<unsigned char>(value));
+        out.push_back(static_cast<unsigned char>(value >> 8));
+    } else {
+        BOOST_REQUIRE(value <= std::numeric_limits<uint32_t>::max());
+        out.push_back(254);
+        AppendLE32(out, static_cast<uint32_t>(value));
+    }
+}
+
+class RecordingFailStream
+{
+private:
+    std::vector<unsigned char> m_bytes;
+    size_t m_pos{0};
+
+public:
+    size_t max_read_request{0};
+
+    explicit RecordingFailStream(std::vector<unsigned char> bytes) :
+        m_bytes(std::move(bytes)) {}
+
+    int GetType() const { return SER_NETWORK; }
+    int GetVersion() const { return PROTOCOL_VERSION; }
+
+    void read(char* destination, size_t size)
+    {
+        max_read_request = std::max(max_read_request, size);
+        if (size > m_bytes.size() - m_pos) {
+            throw std::ios_base::failure("test stream truncated");
+        }
+        if (size != 0) {
+            std::memcpy(destination, m_bytes.data() + m_pos, size);
+            m_pos += size;
+        }
+    }
+
+    template <typename T>
+    RecordingFailStream& operator>>(T& value)
+    {
+        ::Unserialize(*this, value);
+        return *this;
+    }
+};
+
+} // namespace
 
 // In script_tests.cpp
 extern UniValue read_json(const std::string &jsondata);
@@ -862,6 +928,168 @@ BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
         for (int i = 0; i < 99; i++)
             t.vout[i].scriptPubKey = CScript() << OP_RVN_ASSET;
         BOOST_CHECK(IsStandardTx(t, reason));
+    }
+
+    BOOST_AUTO_TEST_CASE(compact_witness_empty_element_amplification)
+    {
+        // A transaction containing one input, no outputs, and N empty witness
+        // elements has 58 non-element bytes. This independently constructed
+        // vector is exactly the largest P2P message accepted by this binary.
+        static const size_t wireSize = MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE2;
+        static const size_t fixedSize = 58;
+        static const size_t witnessElements = wireSize - fixedSize;
+
+        std::vector<unsigned char> wire;
+        wire.reserve(wireSize);
+        AppendLE32(wire, 2);                         // nVersion
+        wire.push_back(0);                           // witness marker
+        wire.push_back(1);                           // witness flag
+        wire.push_back(1);                           // one input
+        wire.insert(wire.end(), 32, 0);              // previous txid
+        AppendLE32(wire, std::numeric_limits<uint32_t>::max());
+        wire.push_back(0);                           // empty scriptSig
+        AppendLE32(wire, std::numeric_limits<uint32_t>::max());
+        wire.push_back(0);                           // no outputs
+        AppendTestCompactSize(wire, witnessElements);
+        wire.insert(wire.end(), witnessElements, 0); // empty witness items
+        AppendLE32(wire, 0);                         // nLockTime
+        BOOST_REQUIRE_EQUAL(wire.size(), wireSize);
+
+        CDataStream input(wire, SER_NETWORK, PROTOCOL_VERSION);
+        CTransaction tx(deserialize, input);
+        BOOST_REQUIRE(input.empty());
+        BOOST_REQUIRE_EQUAL(tx.vin.size(), 1U);
+        BOOST_REQUIRE_EQUAL(tx.vin[0].scriptWitness.stack.size(), witnessElements);
+        BOOST_CHECK(tx.vin[0].scriptWitness.stack[0].empty());
+        BOOST_CHECK(tx.vin[0].scriptWitness.stack[255].empty());
+        BOOST_CHECK(tx.vin[0].scriptWitness.stack[256].empty());
+        BOOST_CHECK(tx.vin[0].scriptWitness.stack[witnessElements - 1].empty());
+
+        // The vulnerable vector<vector<byte>> representation owns hundreds of
+        // MiB here. Permit at most linear (2x plus index) allocator growth on
+        // all supported standard-library implementations.
+        BOOST_CHECK_LE(RecursiveDynamicUsage(tx), 2 * wireSize + 1024 * 1024);
+
+        // Unknown witness versions remain forward-compatible even with this
+        // element count; a count cap would silently turn that soft-fork rule
+        // into a new consensus restriction.
+        const CScript futureWitness = CScript() << 3 << std::vector<unsigned char>(32, 0x42);
+        ScriptError futureError = SCRIPT_ERR_UNKNOWN_ERROR;
+        BOOST_CHECK(VerifyScript(CScript(), futureWitness,
+                                 &tx.vin[0].scriptWitness,
+                                 SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS,
+                                 BaseSignatureChecker(), &futureError));
+        BOOST_CHECK_EQUAL(futureError, SCRIPT_ERR_OK);
+        BOOST_CHECK(!VerifyScript(CScript(), futureWitness,
+                                  &tx.vin[0].scriptWitness,
+                                  SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS |
+                                      SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM,
+                                  BaseSignatureChecker(), &futureError));
+        BOOST_CHECK_EQUAL(futureError,
+                          SCRIPT_ERR_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM);
+
+        CDataStream encoded(SER_NETWORK, PROTOCOL_VERSION);
+        encoded << tx;
+        BOOST_REQUIRE_EQUAL(encoded.size(), wire.size());
+        BOOST_CHECK_EQUAL(std::memcmp(encoded.data(), wire.data(), wire.size()), 0);
+
+        CTransaction roundTrip(deserialize, encoded);
+        BOOST_REQUIRE(encoded.empty());
+        BOOST_CHECK(roundTrip.GetWitnessHash() == tx.GetWitnessHash());
+        BOOST_CHECK(roundTrip.vin[0].scriptWitness.stack ==
+                    tx.vin[0].scriptWitness.stack);
+    }
+
+    BOOST_AUTO_TEST_CASE(compact_witness_truncated_element_is_atomic_and_chunked)
+    {
+        CScriptWitness witness;
+        witness.stack.push_back(std::vector<unsigned char>{0xaa});
+
+        // One element claims the canonical maximum CompactSize length, but no
+        // payload follows. Historical vector parsing resized/read in 5-MB
+        // chunks before discovering truncation.
+        RecordingFailStream stream({0x01, 0xfe, 0x00, 0x00, 0x00, 0x02});
+        BOOST_CHECK_THROW(stream >> witness.stack, std::ios_base::failure);
+        BOOST_CHECK_LE(stream.max_read_request, 64U * 1024U);
+
+        // Failed parsing must not partially replace a previously valid stack.
+        BOOST_REQUIRE_EQUAL(witness.stack.size(), 1U);
+        BOOST_REQUIRE_EQUAL(witness.stack[0].size(), 1U);
+        BOOST_CHECK_EQUAL(witness.stack[0][0], 0xaa);
+    }
+
+    BOOST_AUTO_TEST_CASE(compact_witness_move_leaves_valid_source)
+    {
+        CDataStream encoded(ParseHex("0201aa00"), SER_NETWORK, PROTOCOL_VERSION);
+        CScriptWitness source;
+        encoded >> source.stack;
+        BOOST_REQUIRE(encoded.empty());
+
+        CScriptWitness moved(std::move(source));
+        BOOST_CHECK(source.stack.empty());
+        BOOST_REQUIRE_EQUAL(moved.stack.size(), 2U);
+        BOOST_REQUIRE_EQUAL(moved.stack[0].size(), 1U);
+        BOOST_CHECK_EQUAL(moved.stack[0][0], 0xaa);
+        BOOST_CHECK(moved.stack[1].empty());
+
+        CScriptWitness assigned;
+        assigned.stack.push_back(std::vector<unsigned char>{0xbb});
+        assigned = std::move(moved);
+        BOOST_CHECK(moved.stack.empty());
+        BOOST_REQUIRE_EQUAL(assigned.stack.size(), 2U);
+        BOOST_CHECK_EQUAL(assigned.stack[0][0], 0xaa);
+        BOOST_CHECK(assigned.stack[1].empty());
+    }
+
+    BOOST_AUTO_TEST_CASE(compact_witness_preserves_compactsize_boundaries)
+    {
+        static const size_t elementCount = 260;
+        std::vector<unsigned char> wire;
+        AppendTestCompactSize(wire, elementCount);
+        for (size_t i = 0; i < elementCount; ++i) {
+            size_t size = 0;
+            if (i == 1) size = 1;
+            if (i == 2) size = 252;
+            if (i == 3) size = 253;
+            if (i == 254) size = 65535;
+            if (i == 255) size = 65536;
+            if (i == 256) size = 1;
+            if (i == 257) size = 253;
+            AppendTestCompactSize(wire, size);
+            wire.insert(wire.end(), size, static_cast<unsigned char>(i));
+        }
+
+        CDataStream input(wire, SER_NETWORK, PROTOCOL_VERSION);
+        CScriptWitness witness;
+        input >> witness.stack;
+        BOOST_REQUIRE(input.empty());
+        BOOST_REQUIRE_EQUAL(witness.stack.size(), elementCount);
+        BOOST_CHECK(witness.stack[0].empty());
+        BOOST_REQUIRE_EQUAL(witness.stack[2].size(), 252U);
+        BOOST_CHECK_EQUAL(witness.stack[2][251], 2U);
+        BOOST_REQUIRE_EQUAL(witness.stack[3].size(), 253U);
+        BOOST_CHECK_EQUAL(witness.stack[3][252], 3U);
+        BOOST_REQUIRE_EQUAL(witness.stack[254].size(), 65535U);
+        BOOST_CHECK_EQUAL(witness.stack[254][65534], 254U);
+        BOOST_REQUIRE_EQUAL(witness.stack[255].size(), 65536U);
+        BOOST_CHECK_EQUAL(witness.stack[255][65535], 255U);
+        BOOST_REQUIRE_EQUAL(witness.stack[256].size(), 1U);
+        BOOST_CHECK_EQUAL(witness.stack[256][0], 0U);
+        BOOST_REQUIRE_EQUAL(witness.stack[257].size(), 253U);
+        BOOST_CHECK_EQUAL(witness.stack[257][252], 1U);
+        BOOST_CHECK(witness.stack[259].empty());
+
+        CDataStream output(SER_NETWORK, PROTOCOL_VERSION);
+        output << witness.stack;
+        BOOST_REQUIRE_EQUAL(output.size(), wire.size());
+        BOOST_CHECK_EQUAL(std::memcmp(output.data(), wire.data(), wire.size()), 0);
+
+        CScriptWitness copied(witness);
+        BOOST_CHECK(copied.stack == witness.stack);
+        copied.stack[256].push_back(0x77);
+        BOOST_REQUIRE_EQUAL(copied.stack[256].size(), 2U);
+        BOOST_CHECK_EQUAL(copied.stack[256][1], 0x77);
+        BOOST_CHECK(copied.stack != witness.stack);
     }
 
 BOOST_AUTO_TEST_SUITE_END()

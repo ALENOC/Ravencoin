@@ -1509,13 +1509,27 @@ static bool VerifyWitnessProgram(const CScriptWitness &witness, int witversion, 
                 return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
             }
             scriptPubKey = CScript(witness.stack.back().begin(), witness.stack.back().end());
-            stack = std::vector<std::vector<unsigned char> >(witness.stack.begin(), witness.stack.end() - 1);
             uint256 hashScriptPubKey;
             CSHA256().Write(&scriptPubKey[0], scriptPubKey.size()).Finalize(hashScriptPubKey.begin());
             if (memcmp(hashScriptPubKey.begin(), program.data(), 32))
             {
                 return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
             }
+
+            // EvalScript checks MAX_STACK_SIZE after every opcode. The largest
+            // possible first-op reduction is CHECKMULTISIGVERIFY: 20 keys, 20
+            // signatures, their two counters, the historical dummy item, and
+            // no retained result (43 elements net). A larger initial stack is
+            // therefore unconditionally invalid and must be rejected before
+            // expanding a compact wire representation.
+            static const size_t MAX_INITIAL_WITNESS_STACK =
+                MAX_STACK_SIZE + 2 * MAX_PUBKEYS_PER_MULTISIG + 3;
+            if (witness.stack.size() - 1 > MAX_INITIAL_WITNESS_STACK)
+            {
+                return set_error(serror, SCRIPT_ERR_STACK_SIZE);
+            }
+            stack = witness.stack.ToVector();
+            stack.pop_back();
         }
         else if (program.size() == 20)
         {

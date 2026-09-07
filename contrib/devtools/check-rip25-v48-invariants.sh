@@ -107,6 +107,13 @@ require_fixed 'MoveCompletedMessagesToProcessQueue' src/net.cpp 'P2P receive-to-
 require_fixed 'nProcessQueueSize -= msgs.front().GetMemoryUsage()' src/net_processing.cpp 'P2P processing queue does not use the owned memory charge'
 reject_fixed 'recvBuffer.Release(msg.vRecv.capacity())' src/net.cpp 'P2P payload ownership is released before processing'
 reject_fixed 'nCopy + 256 * 1024' src/net.cpp 'one-byte P2P input still receives speculative 256-KiB allocation'
+require_fixed 'CWitnessStack stack;' src/script/script.h 'witness parsing still uses one vector object per wire element'
+require_fixed 'CHECKPOINT_INTERVAL = 256' src/script/witness.h 'compact witness representation lacks bounded random-access checkpoints'
+require_fixed 'READ_CHUNK_SIZE = 64 * 1024' src/script/witness.h 'witness elements can allocate from an unreceived advertised length'
+require_fixed 'parsed.m_compactSize = ReadCompactSize(stream)' src/script/witness.h 'witness stack is not parsed into an atomic compact destination'
+require_fixed 'm_serializedElements.capacity() * sizeof(unsigned char)' src/script/witness.h 'compact witness memory is absent from transaction accounting'
+require_fixed 'MAX_INITIAL_WITNESS_STACK' src/script/interpreter.cpp 'P2WSH can expand an unconditionally invalid compact witness count'
+reject_fixed 'std::vector<std::vector<unsigned char> > stack;' src/script/script.h 'nested witness vector allocation amplification was reintroduced'
 orphan_function="$(sed -n '/^bool AddOrphanTx(/,/^}/p' src/net_processing.cpp)"
 require_text "$orphan_function" 'GetSerializeSize(*tx, SER_NETWORK, PROTOCOL_VERSION)' 'orphan admission is not bounded by retained raw bytes'
 require_text "$orphan_function" 'MAX_STANDARD_TX_WEIGHT / WITNESS_SCALE_FACTOR' 'orphan raw-byte limit is not the documented 100-kB bound'
@@ -395,6 +402,10 @@ behavioral_tests=(
   net_tests/incomplete_message_buffer_releases_reservations
   net_tests/maximum_message_completes_with_global_buffer_limit
   net_tests/header_only_messages_are_globally_accounted
+  transaction_tests/compact_witness_empty_element_amplification
+  transaction_tests/compact_witness_truncated_element_is_atomic_and_chunked
+  transaction_tests/compact_witness_move_leaves_valid_source
+  transaction_tests/compact_witness_preserves_compactsize_boundaries
   DoS_tests/orphan_pq_shape_uses_raw_size_limit
   rpc_tests/rip25_gbt_reports_contextual_resource_limits
   mempool_tests/rip25_reorg_purges_preactivation_policy_transactions
