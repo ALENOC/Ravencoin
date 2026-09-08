@@ -28,6 +28,13 @@ void AppendLE32(std::vector<unsigned char>& bytes, uint32_t value)
     }
 }
 
+void AppendShortID(std::vector<unsigned char>& bytes, uint64_t value)
+{
+    AppendLE32(bytes, static_cast<uint32_t>(value));
+    bytes.push_back(static_cast<unsigned char>(value >> 32));
+    bytes.push_back(static_cast<unsigned char>(value >> 40));
+}
+
 void AppendCompactSize(std::vector<unsigned char>& bytes, uint64_t value)
 {
     if (value < 253) {
@@ -107,6 +114,31 @@ std::vector<unsigned char> CompactBlockPrefix(uint64_t shortIDCount)
     std::vector<unsigned char> bytes(80, 0); // legacy header
     bytes.insert(bytes.end(), 8, 0);         // nonce
     AppendCompactSize(bytes, shortIDCount);
+    return bytes;
+}
+
+std::vector<unsigned char> CompactBlockWire(
+    const CBlockHeader& header,
+    uint64_t nonce,
+    const std::vector<uint64_t>& shortIDs,
+    const std::vector<std::pair<uint64_t, CTransactionRef>>& prefilled)
+{
+    CDataStream prefix(SER_NETWORK, PROTOCOL_VERSION);
+    prefix << header << nonce;
+    std::vector<unsigned char> bytes(prefix.begin(), prefix.end());
+    AppendCompactSize(bytes, shortIDs.size());
+    for (const uint64_t shortID : shortIDs) {
+        AppendShortID(bytes, shortID);
+    }
+    AppendCompactSize(bytes, prefilled.size());
+    for (const auto& entry : prefilled) {
+        AppendCompactSize(bytes, entry.first);
+        CTransactionRef transaction = entry.second;
+        TransactionCompressor compressor(transaction);
+        CDataStream transactionBytes(SER_NETWORK, PROTOCOL_VERSION);
+        transactionBytes << compressor;
+        bytes.insert(bytes.end(), transactionBytes.begin(), transactionBytes.end());
+    }
     return bytes;
 }
 
@@ -483,6 +515,287 @@ BOOST_FIXTURE_TEST_SUITE(blockencodings_tests, RegtestingSetup)
         BOOST_CHECK_EQUAL(req1.indexes[1], req2.indexes[1]);
         BOOST_CHECK_EQUAL(req1.indexes[2], req2.indexes[2]);
         BOOST_CHECK_EQUAL(req1.indexes[3], req2.indexes[3]);
+    }
+
+    BOOST_AUTO_TEST_CASE(compact_request_wide_index_wire_and_bounds)
+    {
+        const std::vector<uint32_t> boundaryIndexes{
+            65535U, 65536U, 65537U,
+            static_cast<uint32_t>(MAX_BLOCK_TRANSACTION_COUNT - 1)};
+
+        BlockTransactionsRequest request;
+        request.indexes = boundaryIndexes;
+        CDataStream encoded(SER_NETWORK, PROTOCOL_VERSION);
+        encoded << request;
+
+        // Independent BIP152 differential encoding: the first index is
+        // absolute; every later value is current - previous - 1.
+        std::vector<unsigned char> expected(32, 0);
+        AppendCompactSize(expected, boundaryIndexes.size());
+        AppendCompactSize(expected, 65535);
+        AppendCompactSize(expected, 0);
+        AppendCompactSize(expected, 0);
+        AppendCompactSize(expected, 1127);
+        BOOST_REQUIRE_EQUAL(encoded.size(), expected.size());
+        BOOST_CHECK_EQUAL(std::memcmp(encoded.data(), expected.data(),
+                                      expected.size()), 0);
+
+        CDataStream input(expected, SER_NETWORK, PROTOCOL_VERSION);
+        BlockTransactionsRequest decoded;
+        input >> decoded;
+        BOOST_CHECK(input.empty());
+        BOOST_CHECK_EQUAL_COLLECTIONS(decoded.indexes.begin(),
+                                      decoded.indexes.end(),
+                                      boundaryIndexes.begin(),
+                                      boundaryIndexes.end());
+
+        std::vector<unsigned char> excessiveCount(32, 0);
+        AppendCompactSize(excessiveCount, MAX_BLOCK_TRANSACTION_COUNT + 1);
+        PrefixReadStream excessiveCountStream(std::move(excessiveCount));
+        BlockTransactionsRequest unchangedCount;
+        unchangedCount.indexes = {7U};
+        BOOST_CHECK_THROW(excessiveCountStream >> unchangedCount,
+                          std::ios_base::failure);
+        BOOST_CHECK(!excessiveCountStream.read_past_end);
+        BOOST_CHECK_EQUAL(excessiveCountStream.Position(),
+                          excessiveCountStream.Size());
+        BOOST_REQUIRE_EQUAL(unchangedCount.indexes.size(), 1U);
+        BOOST_CHECK_EQUAL(unchangedCount.indexes[0], 7U);
+
+        std::vector<unsigned char> excessiveIndex(32, 0);
+        AppendCompactSize(excessiveIndex, 1);
+        AppendCompactSize(excessiveIndex, MAX_BLOCK_TRANSACTION_COUNT);
+        PrefixReadStream excessiveIndexStream(std::move(excessiveIndex));
+        BlockTransactionsRequest unchangedIndex;
+        unchangedIndex.indexes = {8U};
+        BOOST_CHECK_THROW(excessiveIndexStream >> unchangedIndex,
+                          std::ios_base::failure);
+        BOOST_CHECK(!excessiveIndexStream.read_past_end);
+        BOOST_CHECK_EQUAL(excessiveIndexStream.Position(),
+                          excessiveIndexStream.Size());
+        BOOST_REQUIRE_EQUAL(unchangedIndex.indexes.size(), 1U);
+        BOOST_CHECK_EQUAL(unchangedIndex.indexes[0], 8U);
+
+        std::vector<unsigned char> cumulativeOverflow(32, 0);
+        AppendCompactSize(cumulativeOverflow, 2);
+        AppendCompactSize(cumulativeOverflow,
+                          MAX_BLOCK_TRANSACTION_COUNT - 1);
+        AppendCompactSize(cumulativeOverflow, 0);
+        PrefixReadStream cumulativeOverflowStream(
+            std::move(cumulativeOverflow));
+        BlockTransactionsRequest unchangedCumulative;
+        unchangedCumulative.indexes = {9U};
+        BOOST_CHECK_THROW(cumulativeOverflowStream >> unchangedCumulative,
+                          std::ios_base::failure);
+        BOOST_CHECK(!cumulativeOverflowStream.read_past_end);
+        BOOST_CHECK_EQUAL(cumulativeOverflowStream.Position(),
+                          cumulativeOverflowStream.Size());
+        BOOST_REQUIRE_EQUAL(unchangedCumulative.indexes.size(), 1U);
+        BOOST_CHECK_EQUAL(unchangedCumulative.indexes[0], 9U);
+
+        const std::vector<std::vector<uint32_t>> invalidIndexes{
+            {1U, 1U},
+            {2U, 1U},
+            {static_cast<uint32_t>(MAX_BLOCK_TRANSACTION_COUNT)}};
+        for (const auto& indexes : invalidIndexes) {
+            BlockTransactionsRequest invalid;
+            invalid.indexes = indexes;
+            CDataStream output(SER_NETWORK, PROTOCOL_VERSION);
+            BOOST_CHECK_THROW(output << invalid, std::ios_base::failure);
+        }
+    }
+
+    BOOST_AUTO_TEST_CASE(compact_prefilled_wide_indexes_and_positions)
+    {
+        const CBlock block = BuildBlockTestCase();
+        const CBlockHeader header = block;
+        const uint64_t compactNonce = 0x0123456789abcdefULL;
+
+        PrefilledTransaction widePrefilled;
+        widePrefilled.index = 65536;
+        widePrefilled.tx = block.vtx[0];
+        CDataStream prefilledWire(SER_NETWORK, PROTOCOL_VERSION);
+        prefilledWire << widePrefilled;
+        std::vector<unsigned char> wideIndexPrefix;
+        AppendCompactSize(wideIndexPrefix, 65536);
+        BOOST_REQUIRE(prefilledWire.size() > wideIndexPrefix.size());
+        BOOST_CHECK_EQUAL(std::memcmp(prefilledWire.data(),
+                                      wideIndexPrefix.data(),
+                                      wideIndexPrefix.size()), 0);
+
+        PrefilledTransaction decodedPrefilled;
+        prefilledWire >> decodedPrefilled;
+        BOOST_CHECK(prefilledWire.empty());
+        BOOST_CHECK_EQUAL(decodedPrefilled.index, 65536U);
+
+        PrefilledTransaction maximumPrefilled;
+        maximumPrefilled.index =
+            static_cast<uint32_t>(MAX_BLOCK_TRANSACTION_COUNT - 1);
+        maximumPrefilled.tx = block.vtx[0];
+        CDataStream maximumPrefilledWire(SER_NETWORK, PROTOCOL_VERSION);
+        maximumPrefilledWire << maximumPrefilled;
+        PrefilledTransaction decodedMaximumPrefilled;
+        maximumPrefilledWire >> decodedMaximumPrefilled;
+        BOOST_CHECK_EQUAL(decodedMaximumPrefilled.index,
+                          MAX_BLOCK_TRANSACTION_COUNT - 1);
+
+        PrefilledTransaction excessivePrefilled;
+        excessivePrefilled.index =
+            static_cast<uint32_t>(MAX_BLOCK_TRANSACTION_COUNT);
+        excessivePrefilled.tx = block.vtx[0];
+        CDataStream excessivePrefilledOutput(SER_NETWORK, PROTOCOL_VERSION);
+        BOOST_CHECK_THROW(excessivePrefilledOutput << excessivePrefilled,
+                          std::ios_base::failure);
+
+        std::vector<unsigned char> excessivePrefilledBytes;
+        AppendCompactSize(excessivePrefilledBytes,
+                          MAX_BLOCK_TRANSACTION_COUNT);
+        PrefixReadStream excessivePrefilledInput(
+            std::move(excessivePrefilledBytes));
+        PrefilledTransaction unchangedPrefilled;
+        unchangedPrefilled.index = 10;
+        unchangedPrefilled.tx = block.vtx[0];
+        BOOST_CHECK_THROW(excessivePrefilledInput >> unchangedPrefilled,
+                          std::ios_base::failure);
+        BOOST_CHECK(!excessivePrefilledInput.read_past_end);
+        BOOST_CHECK_EQUAL(unchangedPrefilled.index, 10U);
+
+        // Decode a small compact block with the same header and nonce to get
+        // its short-ID selector, then choose a non-colliding target short ID.
+        CDataStream selectorInput(
+            CompactBlockWire(header, compactNonce, {1U}, {}),
+            SER_NETWORK, PROTOCOL_VERSION);
+        CBlockHeaderAndShortTxIDs selector;
+        selectorInput >> selector;
+        BOOST_REQUIRE(selectorInput.empty());
+
+        constexpr size_t HIGH_INDEX = 65536;
+        uint256 extraHash;
+        uint64_t targetShortID = 0;
+        for (uint32_t candidate = 1;
+             candidate <= 1000 && targetShortID <= HIGH_INDEX;
+             ++candidate) {
+            extraHash.SetNull();
+            for (unsigned int byte = 0; byte < sizeof(candidate); ++byte) {
+                extraHash.begin()[byte] =
+                    static_cast<unsigned char>(candidate >> (byte * 8));
+            }
+            targetShortID = selector.GetShortID(extraHash);
+        }
+        BOOST_REQUIRE(targetShortID > HIGH_INDEX);
+
+        // The prefilled transaction occupies 65,536 and the final short ID
+        // maps to 65,537. This simultaneously crosses every former uint16_t
+        // field without exceeding the structural transaction-count ceiling.
+        std::vector<uint64_t> highShortIDs(HIGH_INDEX + 1);
+        for (size_t i = 0; i < HIGH_INDEX; ++i) {
+            highShortIDs[i] = i + 1;
+        }
+        highShortIDs.back() = targetShortID;
+        std::vector<std::pair<uint64_t, CTransactionRef>> highPrefilled;
+        highPrefilled.emplace_back(HIGH_INDEX, block.vtx[0]);
+        CDataStream highInput(
+            CompactBlockWire(header, compactNonce, highShortIDs,
+                             highPrefilled),
+            SER_NETWORK, PROTOCOL_VERSION);
+        CBlockHeaderAndShortTxIDs highCompact;
+        highInput >> highCompact;
+        BOOST_REQUIRE(highInput.empty());
+        BOOST_REQUIRE_EQUAL(highCompact.BlockTxCount(), HIGH_INDEX + 2);
+
+        CTxMemPool highPool;
+        PartiallyDownloadedBlock highPartial(&highPool);
+        const std::vector<std::pair<uint256, CTransactionRef>> highExtra{
+            {extraHash, block.vtx[1]}};
+        BOOST_REQUIRE_EQUAL(highPartial.InitData(highCompact, highExtra),
+                            READ_STATUS_OK);
+        BOOST_CHECK(!highPartial.IsTxAvailable(0));
+        BOOST_CHECK(highPartial.IsTxAvailable(HIGH_INDEX));
+        BOOST_CHECK(highPartial.IsTxAvailable(HIGH_INDEX + 1));
+        size_t highMissing = 0;
+        BOOST_REQUIRE(highPartial.TryGetMissingTxCount(highMissing));
+        BOOST_CHECK_EQUAL(highMissing, HIGH_INDEX);
+
+        // The conservative structural-parser maximum index, 66,665, remains
+        // representable when all preceding entries are short IDs.
+        const size_t maximumIndex = MAX_BLOCK_TRANSACTION_COUNT - 1;
+        std::vector<uint64_t> maximumShortIDs(maximumIndex);
+        for (size_t i = 0; i < maximumShortIDs.size(); ++i) {
+            maximumShortIDs[i] = i + 1;
+        }
+        std::vector<std::pair<uint64_t, CTransactionRef>> finalPrefilled;
+        finalPrefilled.emplace_back(maximumIndex, block.vtx[0]);
+        CDataStream maximumInput(
+            CompactBlockWire(header, compactNonce, maximumShortIDs,
+                             finalPrefilled),
+            SER_NETWORK, PROTOCOL_VERSION);
+        CBlockHeaderAndShortTxIDs maximumCompact;
+        maximumInput >> maximumCompact;
+        BOOST_REQUIRE(maximumInput.empty());
+        BOOST_REQUIRE_EQUAL(maximumCompact.BlockTxCount(),
+                            MAX_BLOCK_TRANSACTION_COUNT);
+        CTxMemPool maximumPool;
+        PartiallyDownloadedBlock maximumPartial(&maximumPool);
+        BOOST_REQUIRE_EQUAL(maximumPartial.InitData(maximumCompact, {}),
+                            READ_STATUS_OK);
+        BOOST_CHECK(maximumPartial.IsTxAvailable(maximumIndex));
+
+        // Each individual differential fits, but the cumulative absolute
+        // position does not fit the advertised two-transaction block.
+        const std::vector<std::pair<uint64_t, CTransactionRef>> invalidSequence{
+            {0U, block.vtx[0]},
+            {MAX_BLOCK_TRANSACTION_COUNT - 1, block.vtx[1]}};
+        CDataStream invalidSequenceInput(
+            CompactBlockWire(header, compactNonce, {}, invalidSequence),
+            SER_NETWORK, PROTOCOL_VERSION);
+        CBlockHeaderAndShortTxIDs invalidSequenceCompact;
+        invalidSequenceInput >> invalidSequenceCompact;
+        BOOST_REQUIRE(invalidSequenceInput.empty());
+        CTxMemPool invalidSequencePool;
+        PartiallyDownloadedBlock invalidSequencePartial(&invalidSequencePool);
+        BOOST_CHECK_EQUAL(invalidSequencePartial.InitData(
+                              invalidSequenceCompact, {}),
+                          READ_STATUS_INVALID);
+    }
+
+    BOOST_AUTO_TEST_CASE(compact_prefilled_offset_wrap_completes)
+    {
+        const CBlock block = BuildBlockTestCase();
+        const CBlockHeader header = block;
+
+        CMutableTransaction minimalMutable;
+        minimalMutable.vin.resize(1);
+        minimalMutable.vin[0].prevout.n = 0;
+        const CTransactionRef minimalTransaction =
+            MakeTransactionRef(std::move(minimalMutable));
+        BOOST_REQUIRE(!minimalTransaction->IsNull());
+
+        constexpr size_t WRAP_COUNT =
+            static_cast<size_t>(std::numeric_limits<uint16_t>::max()) + 1;
+        std::vector<std::pair<uint64_t, CTransactionRef>> prefilled;
+        prefilled.reserve(WRAP_COUNT);
+        for (size_t i = 0; i < WRAP_COUNT; ++i) {
+            prefilled.emplace_back(0, minimalTransaction);
+        }
+
+        std::vector<unsigned char> wire =
+            CompactBlockWire(header, 0, {1U}, prefilled);
+        BOOST_REQUIRE(wire.size() < MAX_BLOCK_SERIALIZED_SIZE);
+        CDataStream input(wire, SER_NETWORK, PROTOCOL_VERSION);
+        CBlockHeaderAndShortTxIDs compact;
+        input >> compact;
+        BOOST_REQUIRE(input.empty());
+        BOOST_REQUIRE_EQUAL(compact.BlockTxCount(), WRAP_COUNT + 1);
+
+        CTxMemPool pool;
+        PartiallyDownloadedBlock partial(&pool);
+        BOOST_REQUIRE_EQUAL(partial.InitData(compact, {}), READ_STATUS_OK);
+        BOOST_CHECK(partial.IsTxAvailable(0));
+        BOOST_CHECK(partial.IsTxAvailable(WRAP_COUNT - 1));
+        BOOST_CHECK(!partial.IsTxAvailable(WRAP_COUNT));
+        size_t missing = 0;
+        BOOST_REQUIRE(partial.TryGetMissingTxCount(missing));
+        BOOST_CHECK_EQUAL(missing, 1U);
     }
 
     BOOST_AUTO_TEST_CASE(block_family_counts_reject_before_element_read)

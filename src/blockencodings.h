@@ -36,7 +36,7 @@ class BlockTransactionsRequest {
 public:
     // A BlockTransactionsRequest message
     uint256 blockhash;
-    std::vector<uint16_t> indexes;
+    std::vector<uint32_t> indexes;
 
     ADD_SERIALIZE_METHODS;
 
@@ -45,30 +45,38 @@ public:
         READWRITE(blockhash);
         uint64_t indexes_size = (uint64_t)indexes.size();
         READWRITE(COMPACTSIZE(indexes_size));
+        if (indexes_size > MAX_BLOCK_TRANSACTION_COUNT) {
+            throw std::ios_base::failure("BlockTransactionsRequest count exceeds structural limit");
+        }
         if (ser_action.ForRead()) {
-            size_t i = 0;
-            while (indexes.size() < indexes_size) {
-                indexes.resize(std::min((uint64_t)(1000 + indexes.size()), indexes_size));
-                for (; i < indexes.size(); i++) {
-                    uint64_t index = 0;
-                    READWRITE(COMPACTSIZE(index));
-                    if (index > std::numeric_limits<uint16_t>::max())
-                        throw std::ios_base::failure("index overflowed 16 bits");
-                    indexes[i] = index;
+            std::vector<uint32_t> parsed;
+            parsed.reserve(static_cast<size_t>(indexes_size));
+            uint64_t next_index = 0;
+            for (uint64_t i = 0; i < indexes_size; ++i) {
+                uint64_t differential_index = 0;
+                READWRITE(COMPACTSIZE(differential_index));
+                if (differential_index >= MAX_BLOCK_TRANSACTION_COUNT ||
+                        next_index >= MAX_BLOCK_TRANSACTION_COUNT ||
+                        differential_index >= MAX_BLOCK_TRANSACTION_COUNT - next_index) {
+                    throw std::ios_base::failure("BlockTransactionsRequest index exceeds structural limit");
                 }
+                const uint64_t absolute_index = next_index + differential_index;
+                parsed.push_back(static_cast<uint32_t>(absolute_index));
+                next_index = absolute_index + 1;
             }
-
-            uint16_t offset = 0;
-            for (size_t j = 0; j < indexes.size(); j++) {
-                if (uint64_t(indexes[j]) + uint64_t(offset) > std::numeric_limits<uint16_t>::max())
-                    throw std::ios_base::failure("indexes overflowed 16 bits");
-                indexes[j] = indexes[j] + offset;
-                offset = indexes[j] + 1;
-            }
+            indexes.swap(parsed);
         } else {
+            uint64_t next_index = 0;
             for (size_t i = 0; i < indexes.size(); i++) {
-                uint64_t index = indexes[i] - (i == 0 ? 0 : (indexes[i - 1] + 1));
-                READWRITE(COMPACTSIZE(index));
+                const uint64_t absolute_index = indexes[i];
+                if (absolute_index >= MAX_BLOCK_TRANSACTION_COUNT ||
+                        absolute_index < next_index) {
+                    throw std::ios_base::failure(
+                        "BlockTransactionsRequest indexes are not strictly increasing within structural limit");
+                }
+                uint64_t differential_index = absolute_index - next_index;
+                READWRITE(COMPACTSIZE(differential_index));
+                next_index = absolute_index + 1;
             }
         }
     }
@@ -134,7 +142,7 @@ public:
 struct PrefilledTransaction {
     // Used as an offset since last prefilled tx in CBlockHeaderAndShortTxIDs,
     // as a proper transaction-in-block-index in PartiallyDownloadedBlock
-    uint16_t index;
+    uint32_t index{0};
     CTransactionRef tx;
 
     ADD_SERIALIZE_METHODS;
@@ -143,9 +151,10 @@ struct PrefilledTransaction {
     inline void SerializationOp(Stream& s, Operation ser_action) {
         uint64_t idx = index;
         READWRITE(COMPACTSIZE(idx));
-        if (idx > std::numeric_limits<uint16_t>::max())
-            throw std::ios_base::failure("index overflowed 16-bits");
-        index = idx;
+        if (idx >= MAX_BLOCK_TRANSACTION_COUNT) {
+            throw std::ios_base::failure("PrefilledTransaction index exceeds structural limit");
+        }
+        index = static_cast<uint32_t>(idx);
         READWRITE(REF(TransactionCompressor(tx)));
     }
 };

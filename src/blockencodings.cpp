@@ -53,28 +53,28 @@ uint64_t CBlockHeaderAndShortTxIDs::GetShortID(const uint256& txhash) const {
 ReadStatus PartiallyDownloadedBlock::InitData(const CBlockHeaderAndShortTxIDs& cmpctblock, const std::vector<std::pair<uint256, CTransactionRef>>& extra_txn) {
     if (cmpctblock.header.IsNull() || (cmpctblock.shorttxids.empty() && cmpctblock.prefilledtxn.empty()))
         return READ_STATUS_INVALID;
-    if (cmpctblock.shorttxids.size() + cmpctblock.prefilledtxn.size() > GetMaxBlockWeight() / MIN_SERIALIZABLE_TRANSACTION_WEIGHT)
+    if (cmpctblock.shorttxids.size() > MAX_BLOCK_TRANSACTION_COUNT ||
+            cmpctblock.prefilledtxn.size() > MAX_BLOCK_TRANSACTION_COUNT - cmpctblock.shorttxids.size())
         return READ_STATUS_INVALID;
 
     assert(header.IsNull() && txn_available.empty());
     header = cmpctblock.header;
     txn_available.resize(cmpctblock.BlockTxCount());
 
-    int32_t lastprefilledindex = -1;
+    uint64_t next_prefilled_index = 0;
     for (size_t i = 0; i < cmpctblock.prefilledtxn.size(); i++) {
-        if (cmpctblock.prefilledtxn[i].tx->IsNull())
+        if (!cmpctblock.prefilledtxn[i].tx || cmpctblock.prefilledtxn[i].tx->IsNull())
             return READ_STATUS_INVALID;
 
-        lastprefilledindex += cmpctblock.prefilledtxn[i].index + 1; //index is a uint16_t, so can't overflow here
-        if (lastprefilledindex > std::numeric_limits<uint16_t>::max())
-            return READ_STATUS_INVALID;
-        if ((uint32_t)lastprefilledindex > cmpctblock.shorttxids.size() + i) {
+        const uint64_t absolute_index = next_prefilled_index + cmpctblock.prefilledtxn[i].index;
+        if (absolute_index >= cmpctblock.BlockTxCount()) {
             // If we are inserting a tx at an index greater than our full list of shorttxids
             // plus the number of prefilled txn we've inserted, then we have txn for which we
             // have neither a prefilled txn or a shorttxid!
             return READ_STATUS_INVALID;
         }
-        txn_available[lastprefilledindex] = cmpctblock.prefilledtxn[i].tx;
+        txn_available[static_cast<size_t>(absolute_index)] = cmpctblock.prefilledtxn[i].tx;
+        next_prefilled_index = absolute_index + 1;
     }
     prefilled_count = cmpctblock.prefilledtxn.size();
 
@@ -82,12 +82,14 @@ ReadStatus PartiallyDownloadedBlock::InitData(const CBlockHeaderAndShortTxIDs& c
     // Because well-formed cmpctblock messages will have a (relatively) uniform distribution
     // of short IDs, any highly-uneven distribution of elements can be safely treated as a
     // READ_STATUS_FAILED.
-    std::unordered_map<uint64_t, uint16_t> shorttxids(cmpctblock.shorttxids.size());
-    uint16_t index_offset = 0;
+    std::unordered_map<uint64_t, uint32_t> shorttxids(cmpctblock.shorttxids.size());
+    size_t index_offset = 0;
     for (size_t i = 0; i < cmpctblock.shorttxids.size(); i++) {
-        while (txn_available[i + index_offset])
+        while (i + index_offset < txn_available.size() && txn_available[i + index_offset])
             index_offset++;
-        shorttxids[cmpctblock.shorttxids[i]] = i + index_offset;
+        if (i + index_offset >= txn_available.size())
+            return READ_STATUS_INVALID;
+        shorttxids[cmpctblock.shorttxids[i]] = static_cast<uint32_t>(i + index_offset);
         // To determine the chance that the number of entries in a bucket exceeds N,
         // we use the fact that the number of elements in a single bucket is
         // binomially distributed (with n = the number of shorttxids S, and p =
@@ -112,7 +114,7 @@ ReadStatus PartiallyDownloadedBlock::InitData(const CBlockHeaderAndShortTxIDs& c
     const std::vector<std::pair<uint256, CTxMemPool::txiter> >& vTxHashes = pool->vTxHashes;
     for (size_t i = 0; i < vTxHashes.size(); i++) {
         uint64_t shortid = cmpctblock.GetShortID(vTxHashes[i].first);
-        std::unordered_map<uint64_t, uint16_t>::iterator idit = shorttxids.find(shortid);
+        std::unordered_map<uint64_t, uint32_t>::iterator idit = shorttxids.find(shortid);
         if (idit != shorttxids.end()) {
             if (!have_txn[idit->second]) {
                 txn_available[idit->second] = vTxHashes[i].second->GetSharedTx();
@@ -138,7 +140,7 @@ ReadStatus PartiallyDownloadedBlock::InitData(const CBlockHeaderAndShortTxIDs& c
 
     for (size_t i = 0; i < extra_txn.size(); i++) {
         uint64_t shortid = cmpctblock.GetShortID(extra_txn[i].first);
-        std::unordered_map<uint64_t, uint16_t>::iterator idit = shorttxids.find(shortid);
+        std::unordered_map<uint64_t, uint32_t>::iterator idit = shorttxids.find(shortid);
         if (idit != shorttxids.end()) {
             if (!have_txn[idit->second]) {
                 txn_available[idit->second] = extra_txn[i].second;

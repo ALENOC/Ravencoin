@@ -2493,7 +2493,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 BlockTransactionsRequest req;
                 for (size_t i = 0; i < cmpctblock.BlockTxCount(); i++) {
                     if (!partialBlock.IsTxAvailable(i))
-                        req.indexes.push_back(i);
+                        req.indexes.push_back(static_cast<uint32_t>(i));
                 }
                 if (req.indexes.empty()) {
                     // Dirty hack to jump to BLOCKTXN code (TODO: move message handling into their own functions)

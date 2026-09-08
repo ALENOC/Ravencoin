@@ -118,6 +118,15 @@ require_fixed 'MAX_BLOCK_TRANSACTION_COUNT = MAX_BLOCK_WEIGHT_RIP25_PHASE2 / MIN
 require_fixed 'Block transaction count exceeds structural limit' src/primitives/block.h 'full block count is not rejected before transaction allocation'
 require_fixed 'BlockTransactions count exceeds structural limit' src/blockencodings.h 'BLOCKTXN count is not rejected before transaction allocation'
 require_fixed 'Compact block transaction count exceeds structural limit' src/blockencodings.h 'compact block combined count is not bounded before prefilled allocation'
+require_fixed 'std::vector<uint32_t> indexes;' src/blockencodings.h 'compact-block request indexes still truncate above 65,535'
+require_fixed 'BlockTransactionsRequest count exceeds structural limit' src/blockencodings.h 'compact-block request count is not bounded before allocation'
+require_fixed 'BlockTransactionsRequest indexes are not strictly increasing within structural limit' src/blockencodings.h 'compact-block request serialization can underflow a differential index'
+require_fixed 'uint32_t index{0};' src/blockencodings.h 'prefilled compact-block indexes still truncate above 65,535'
+require_fixed 'std::unordered_map<uint64_t, uint32_t> shorttxids' src/blockencodings.cpp 'compact-block short-ID positions still truncate above 65,535'
+require_fixed 'size_t index_offset = 0;' src/blockencodings.cpp 'compact-block prefilled offset can wrap at 65,536'
+require_fixed 'i + index_offset < txn_available.size()' src/blockencodings.cpp 'compact-block short-ID placement has no explicit vector bound'
+reject_fixed 'std::unordered_map<uint64_t, uint16_t> shorttxids' src/blockencodings.cpp '16-bit compact-block short-ID position map was reintroduced'
+reject_fixed 'uint16_t index_offset = 0;' src/blockencodings.cpp '16-bit compact-block prefilled offset was reintroduced'
 require_fixed 'vRecv >> resp.blockhash' src/net_processing.cpp 'BLOCKTXN request ownership is not preflighted before its transaction body'
 require_fixed 'TryGetMissingTxCount' src/blockencodings.cpp 'consumed compact-block state is not checked without assertions'
 require_min_count 'partialBlock.reset()' src/net_processing.cpp 2 'compact-block fallback leaves partial state reachable'
@@ -418,6 +427,9 @@ behavioral_tests=(
   blockencodings_tests/block_family_transaction_count_boundary_roundtrips
   blockencodings_tests/block_family_count_bounds_are_atomic_and_apply_on_write
   blockencodings_tests/consumed_partial_block_fails_closed_after_fallback
+  blockencodings_tests/compact_request_wide_index_wire_and_bounds
+  blockencodings_tests/compact_prefilled_wide_indexes_and_positions
+  blockencodings_tests/compact_prefilled_offset_wrap_completes
   DoS_tests/unexpected_blocktxn_is_rejected_before_body_parse
   DoS_tests/orphan_pq_shape_uses_raw_size_limit
   rpc_tests/rip25_gbt_reports_contextual_resource_limits
@@ -431,7 +443,12 @@ behavioral_tests=(
 
 for test_filter in "${behavioral_tests[@]}"; do
   echo "RIP-25/v4.8 behavioral invariant: $test_filter"
-  "$test_binary" --run_test="$test_filter" --log_level=test_suite
+  if [[ "$test_filter" == 'blockencodings_tests/compact_prefilled_offset_wrap_completes' ]] &&
+      command -v timeout >/dev/null 2>&1; then
+    timeout 30s "$test_binary" --run_test="$test_filter" --log_level=test_suite
+  else
+    "$test_binary" --run_test="$test_filter" --log_level=test_suite
+  fi
 done
 
 echo 'RIP-25/v4.8 structural + behavioral invariants: OK'
