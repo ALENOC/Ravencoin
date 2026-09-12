@@ -228,6 +228,18 @@ bool VerifyWallets()
             if (!CWalletDB::Recover(walletFile, (void *)&dummyWallet, CWalletDB::RecoverKeysOnlyFilter, backup_filename)) {
                 return false;
             }
+            if (backup_filename.empty()) {
+                return InitError(strprintf(
+                    _("Wallet salvage for %s did not report the retained original file."),
+                    walletFile));
+            }
+            const fs::path backup_path = GetDataDir() / backup_filename;
+            InitWarning(strprintf(
+                _("Wallet salvage retained the original %s as %s. "
+                  "The retained file may contain recoverable unencrypted private-key material "
+                  "even if the recovered wallet is encrypted. Protect it and remove it securely "
+                  "only after verifying recovery."),
+                walletFile, backup_path.string()));
         }
 
         std::string strWarning;

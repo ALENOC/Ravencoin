@@ -5,6 +5,7 @@
 
 """Test fail-closed wallet encryption rewrite recovery."""
 
+import glob
 import os
 
 from test_framework.test_framework import RavenTestFramework
@@ -14,7 +15,7 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 class WalletEncryptionRewriteTest(RavenTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
-        self.num_nodes = 1
+        self.num_nodes = 2
 
     def induce_rewrite_failure(self, node_index):
         passphrase = "RewriteFailurePassphrase"
@@ -64,6 +65,37 @@ class WalletEncryptionRewriteTest(RavenTestFramework):
             0, address, private_key, passphrase
         )
 
+        address, private_key, passphrase, rewrite_path = (
+            self.induce_rewrite_failure(1)
+        )
+        wallet_dir = os.path.dirname(rewrite_path)
+        self.start_node(1, extra_args=["-salvagewallet=1"])
+
+        retained_backups = glob.glob(
+            os.path.join(wallet_dir, "wallet.dat.*.bak")
+        )
+        assert_equal(len(retained_backups), 1)
+        retained_backup = retained_backups[0]
+        debug_log = os.path.join(wallet_dir, "debug.log")
+        with open(debug_log, encoding="utf-8") as log_file:
+            log_text = log_file.read()
+        salvage_warnings = [
+            line for line in log_text.splitlines()
+            if "Warning: Wallet salvage retained the original wallet.dat as" in line
+        ]
+        assert_equal(len(salvage_warnings), 1)
+        salvage_warning = salvage_warnings[0]
+        assert retained_backup in salvage_warning
+        assert_equal(
+            salvage_warning.count("Wallet salvage retained the original wallet.dat as"),
+            1,
+        )
+        assert "may contain recoverable unencrypted private-key material" in salvage_warning
+
+        os.rmdir(rewrite_path)
+        self.assert_encrypted_key_survives(
+            1, address, private_key, passphrase
+        )
 
 
 if __name__ == "__main__":

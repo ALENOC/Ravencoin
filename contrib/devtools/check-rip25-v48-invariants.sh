@@ -254,6 +254,18 @@ require_fixed 'encryption_rewrite_preserves_noncritical_load_status' src/wallet/
 require_fixed 'wallet_encryption_rewrite.py' test/functional/test_runner.py 'wallet rewrite-failure RPC regression is not in the functional suite'
 require_fixed 'Wallet encryption failed after the live key state changed' test/functional/wallet_encryption_rewrite.py 'wallet rewrite-failure RPC shutdown is untested'
 require_fixed 'Wallet encryption recovery could not complete' test/functional/wallet_encryption_rewrite.py 'wallet rewrite-failure startup quarantine is untested'
+verify_wallets_function="$(sed -n '/^bool VerifyWallets(/,/^bool OpenWallets(/p' src/wallet/init.cpp)"
+require_text "$verify_wallets_function" 'const fs::path backup_path = GetDataDir() / backup_filename' 'explicit wallet salvage does not identify the retained original path'
+require_text "$verify_wallets_function" 'may contain recoverable unencrypted private-key material' 'explicit wallet salvage does not warn that the retained original is sensitive'
+salvage_recover_line="$(grep -nF 'CWalletDB::Recover(walletFile' <<<"$verify_wallets_function" | cut -d: -f1 || true)"
+salvage_warning_line="$(grep -nF 'InitWarning(strprintf(' <<<"$verify_wallets_function" | head -n1 | cut -d: -f1 || true)"
+[[ -n "$salvage_recover_line" && -n "$salvage_warning_line" ]] || fail 'cannot locate explicit wallet salvage warning boundaries'
+(( salvage_recover_line < salvage_warning_line )) || fail 'explicit wallet salvage warning does not follow successful recovery'
+require_fixed 'explicit_salvage_compacts_pending_wallet_and_retains_sensitive_original' src/wallet/test/pq_wallet_tests.cpp 'explicit salvage artifact regression is missing'
+require_fixed 'start_node(1, extra_args=["-salvagewallet=1"])' test/functional/wallet_encryption_rewrite.py 'explicit salvage warning is not exercised through startup'
+require_fixed 'may contain recoverable unencrypted private-key material' test/functional/wallet_encryption_rewrite.py 'explicit salvage warning text is not asserted'
+require_fixed 'assert retained_backup in salvage_warning' test/functional/wallet_encryption_rewrite.py 'explicit salvage test does not bind the retained path to the warning'
+require_fixed 'assert "may contain recoverable unencrypted private-key material" in salvage_warning' test/functional/wallet_encryption_rewrite.py 'explicit salvage test does not bind the plaintext risk to the warning'
 
 # BIP39 rows are private-key material. Salvage/load must preserve a complete
 # lineage, and key derivation must never substitute the deterministic empty seed.
