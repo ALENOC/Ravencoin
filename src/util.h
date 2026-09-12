@@ -297,6 +297,9 @@ public:
     void ForceSetArg(const std::string &strArg, const std::string &strValue);
 
     void ForceSetArg(const std::string &strArg, const int64_t &nValue);
+
+    /** Remove every application-owned value for an argument. */
+    void ClearArg(const std::string& strArg);
 };
 
 extern ArgsManager gArgs;

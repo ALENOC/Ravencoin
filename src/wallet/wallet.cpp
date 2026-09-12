@@ -4989,8 +4989,8 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
     int64_t nStart = GetTimeMillis();
     bool fFirstRun = true;
     std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, walletFile));
-    CWallet *walletInstance = new CWallet(std::move(dbw));
-    DBErrors nLoadWalletRet = walletInstance->LoadWallet(fFirstRun);
+    std::unique_ptr<CWallet> walletInstance(new CWallet(std::move(dbw)));
+    DBErrors nLoadWalletRet = walletInstance->LoadWallet(fFirstRun, false);
     if (nLoadWalletRet != DB_LOAD_OK)
     {
         if (nLoadWalletRet == DB_CORRUPT) {
@@ -5079,7 +5079,6 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
             return nullptr;
         }
 
-        walletInstance->SetBestChain(chainActive.GetLocator());
     }
     else if (gArgs.IsArgSet("-usehd")) {
         bool useHD = gArgs.GetBoolArg("-usehd", true);
@@ -5094,8 +5093,6 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
     }
 
     LogPrintf(" wallet      %15dms\n", GetTimeMillis() - nStart);
-
-    RegisterValidationInterface(walletInstance);
 
     // Try to top up keypool. No-op if the wallet is locked.
     walletInstance->TopUpKeyPool();
@@ -5152,6 +5149,7 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
         if (walletdb.ReadBestBlock(locator))
             pindexRescan = FindForkInGlobalIndex(chainActive, locator);
     }
+    bool updateBestChain = fFirstRun;
     if (chainActive.Tip() && chainActive.Tip() != pindexRescan)
     {
         //We can't rescan beyond non-pruned blocks, stop and throw an error
@@ -5179,9 +5177,16 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
         }
 
         nStart = GetTimeMillis();
-        walletInstance->ScanForWalletTransactions(pindexRescan, nullptr, true);
+        CBlockIndex* failedBlock =
+            walletInstance->ScanForWalletTransactions(pindexRescan, nullptr, true);
+        if (failedBlock) {
+            InitError(strprintf(
+                _("Error rescanning wallet: block %d could not be read. Restore the missing block data or restart with -reindex."),
+                failedBlock->nHeight));
+            return nullptr;
+        }
         LogPrintf(" rescan      %15dms\n", GetTimeMillis() - nStart);
-        walletInstance->SetBestChain(chainActive.GetLocator());
+        updateBestChain = true;
         walletInstance->dbw->IncrementUpdateCounter();
 
         // Restore wallet transaction metadata after -zapwallettxes=1
@@ -5209,6 +5214,8 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
             }
         }
     }
+    if (updateBestChain)
+        walletInstance->SetBestChain(chainActive.GetLocator());
     walletInstance->SetBroadcastTransactions(gArgs.GetBoolArg("-walletbroadcast", DEFAULT_WALLETBROADCAST));
 
     {
@@ -5218,7 +5225,22 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
         LogPrintf("mapAddressBook.size() = %u\n",  walletInstance->mapAddressBook.size());
     }
 
-    return walletInstance;
+    CWallet* publishedWallet = walletInstance.get();
+    try {
+        RegisterValidationInterface(publishedWallet);
+    } catch (...) {
+        UnregisterValidationInterface(publishedWallet);
+        throw;
+    }
+    try {
+        uiInterface.LoadWallet(publishedWallet);
+    } catch (const std::exception& e) {
+        LogPrintf("Wallet load observer failed: %s\n", e.what());
+    } catch (...) {
+        LogPrintf("Wallet load observer failed with an unknown exception\n");
+    }
+
+    return walletInstance.release();
 }
 
 std::atomic<bool> CWallet::fFlushScheduled(false);

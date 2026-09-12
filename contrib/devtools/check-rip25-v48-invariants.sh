@@ -307,6 +307,47 @@ for first_run_state in mapPQKeys mapCryptedPQKeys mapMasterKeys IsCrypted IsHDEn
 done
 wallet_load_function="$(sed -n '/^DBErrors CWallet::LoadWallet(bool& fFirstRunRet, bool notifyLoad)/,/^}/p' src/wallet/wallet.cpp)"
 require_text "$wallet_load_function" 'fFirstRunRet = IsFirstRun()' 'wallet load duplicates an incomplete first-run predicate'
+require_text "$wallet_load_function" $'if (notifyLoad)\n        uiInterface.LoadWallet(this);' 'wallet load notification is not controlled by the publication guard'
+load_self_notifications="$(grep -Fc 'uiInterface.LoadWallet(this)' src/wallet/wallet.cpp || true)"
+(( load_self_notifications == 1 )) || fail 'wallet load has an unguarded or duplicate observer publication'
+
+# A factory-owned candidate remains private and under RAII ownership until all
+# initialization, persistence, and rescan work has succeeded.
+wallet_factory_function="$(sed -n '/^CWallet\* CWallet:: CreateWalletFromFile(/,/^std::atomic<bool> CWallet::fFlushScheduled/p' src/wallet/wallet.cpp)"
+require_text "$wallet_factory_function" 'std::unique_ptr<CWallet> walletInstance' 'wallet factory does not retain RAII ownership of its unpublished candidate'
+require_text "$wallet_factory_function" 'LoadWallet(fFirstRun, false)' 'wallet factory publishes the candidate during database load'
+reject_fixed 'CWallet *walletInstance = new CWallet' src/wallet/wallet.cpp 'wallet factory still leaks raw ownership on failure'
+require_text "$wallet_factory_function" 'RegisterValidationInterface(publishedWallet)' 'wallet factory never registers its completed candidate'
+require_text "$wallet_factory_function" 'UnregisterValidationInterface(publishedWallet)' 'wallet factory leaves partial validation registration on failure'
+require_text "$wallet_factory_function" 'uiInterface.LoadWallet(publishedWallet)' 'wallet factory never publishes its completed candidate'
+require_text "$wallet_factory_function" 'Wallet load observer failed:' 'wallet factory lets observer exceptions destroy a retained wallet'
+require_text "$wallet_factory_function" 'Wallet load observer failed with an unknown exception' 'wallet factory lets nonstandard observer exceptions destroy a retained wallet'
+require_text "$wallet_factory_function" 'return walletInstance.release()' 'wallet factory releases ownership before successful publication'
+require_text "$wallet_factory_function" 'CBlockIndex* failedBlock =' 'wallet factory ignores the initial rescan result'
+require_text "$wallet_factory_function" 'if (failedBlock)' 'wallet factory publishes after a failed initial rescan'
+require_text "$wallet_factory_function" 'bool updateBestChain = fFirstRun' 'wallet factory loses the successful first-run locator update'
+require_text "$wallet_factory_function" 'updateBestChain = true' 'wallet factory loses the locator update after a successful rescan'
+require_text "$wallet_factory_function" 'if (updateBestChain)' 'wallet factory rewrites the best-chain locator on every load'
+factory_best_chain_count="$(grep -Fc 'walletInstance->SetBestChain(chainActive.GetLocator())' <<<"$wallet_factory_function" || true)"
+(( factory_best_chain_count == 1 )) || fail 'wallet factory persists the active tip outside the successful rescan path'
+factory_complete_line="$(grep -nF 'SetBroadcastTransactions' <<<"$wallet_factory_function" | tail -n1 | cut -d: -f1 || true)"
+factory_rescan_line="$(grep -nF 'ScanForWalletTransactions(pindexRescan' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_rescan_failure_line="$(grep -nF 'if (failedBlock)' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_best_chain_line="$(grep -nF 'walletInstance->SetBestChain(chainActive.GetLocator())' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_register_line="$(grep -nF 'RegisterValidationInterface(publishedWallet)' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_unregister_line="$(grep -nF 'UnregisterValidationInterface(publishedWallet)' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_notify_line="$(grep -nF 'uiInterface.LoadWallet(publishedWallet)' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_release_line="$(grep -nF 'return walletInstance.release()' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+[[ -n "$factory_complete_line" && -n "$factory_rescan_line" && -n "$factory_rescan_failure_line" && -n "$factory_best_chain_line" && -n "$factory_register_line" && -n "$factory_unregister_line" && -n "$factory_notify_line" && -n "$factory_release_line" ]] || fail 'cannot locate wallet factory publication boundaries'
+(( factory_rescan_line < factory_rescan_failure_line && factory_rescan_failure_line < factory_best_chain_line && factory_best_chain_line < factory_register_line && factory_complete_line < factory_register_line && factory_register_line < factory_unregister_line && factory_unregister_line < factory_notify_line && factory_notify_line < factory_release_line )) || fail 'wallet candidate is published before initialization completes'
+require_fixed 'failed_wallet_creation_is_not_published' src/wallet/test/pq_wallet_tests.cpp 'failed wallet-creation publication regression is missing'
+require_fixed 'throwing_load_observer_cannot_dangle_wallet' src/wallet/test/pq_wallet_tests.cpp 'throwing wallet-observer lifetime regression is missing'
+require_fixed 'nonstandard_load_observer_cannot_dangle_wallet' src/wallet/test/pq_wallet_tests.cpp 'nonstandard wallet-observer lifetime regression is missing'
+require_fixed 'failed-rescan-wallet.dat' src/wallet/test/wallet_tests.cpp 'failed initial-rescan publication regression is missing'
+require_fixed 'successful-rescan-wallet.dat' src/wallet/test/wallet_tests.cpp 'successful initial-rescan locator regression is missing'
+require_fixed 'ScopedWalletFactoryTestState' src/wallet/test/wallet_tests.cpp 'wallet factory test state is not restored after exceptions'
+require_fixed 'gArgs.ClearArg("-rescan")' src/wallet/test/wallet_tests.cpp 'wallet factory test leaves a previously absent rescan argument set'
+require_fixed 'gArgs.ClearArg("-keypool")' src/wallet/test/wallet_tests.cpp 'wallet factory test leaves a previously absent keypool argument set'
 
 # Locked encrypted wallets must not retain allocated plaintext BIP39 buffers.
 for secure_field in vchWords vchPassphrase g_vchSeed; do

@@ -8,6 +8,7 @@
 #include "hash.h"
 #include "pqkey.h"
 #include "test/test_raven.h"
+#include "ui_interface.h"
 #include "util.h"
 #include "utilstrencodings.h"
 #include "wallet/db.h"
@@ -2190,4 +2191,85 @@ BOOST_AUTO_TEST_CASE(explicit_salvage_compacts_pending_wallet_and_retains_sensit
     BOOST_REQUIRE(recovered->GetPQKey(witnessProgram, recoveredKey));
     BOOST_CHECK(recoveredKey.MatchesPubKey(pubkey));
 }
+
+BOOST_AUTO_TEST_CASE(failed_wallet_creation_is_not_published)
+{
+    const std::string filename = "failed-unpublished-wallet.dat";
+    unsigned int loadNotifications = 0;
+    CWallet* notifiedWallet = nullptr;
+
+    boost::signals2::scoped_connection loadConnection(
+        uiInterface.LoadWallet.connect(
+            [&](CWallet* wallet) {
+                ++loadNotifications;
+                notifiedWallet = wallet;
+            }));
+    boost::signals2::scoped_connection mnemonicConnection(
+        uiInterface.ShowMnemonic.connect(
+            [](int) {
+                throw std::runtime_error("injected mnemonic UI failure");
+            }));
+
+    CWallet* unexpectedlyCreated = nullptr;
+    BOOST_CHECK_THROW(
+        unexpectedlyCreated = CWallet::CreateWalletFromFile(filename),
+        std::runtime_error);
+    if (unexpectedlyCreated) {
+        UnregisterValidationInterface(unexpectedlyCreated);
+        delete unexpectedlyCreated;
+    }
+    BOOST_CHECK_EQUAL(loadNotifications, 0U);
+    BOOST_CHECK(notifiedWallet == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(throwing_load_observer_cannot_dangle_wallet)
+{
+    const std::string filename = "throwing-load-observer-wallet.dat";
+    CWallet* notifiedWallet = nullptr;
+    boost::signals2::scoped_connection retainingConnection(
+        uiInterface.LoadWallet.connect(
+            [&](CWallet* wallet) {
+                notifiedWallet = wallet;
+            }));
+    boost::signals2::scoped_connection throwingConnection(
+        uiInterface.LoadWallet.connect(
+            [](CWallet*) {
+                throw std::runtime_error("injected load observer failure");
+            }));
+
+    CWallet* createdWallet = nullptr;
+    BOOST_CHECK_NO_THROW(
+        createdWallet = CWallet::CreateWalletFromFile(filename));
+    BOOST_REQUIRE(createdWallet != nullptr);
+    BOOST_CHECK_EQUAL(createdWallet, notifiedWallet);
+
+    UnregisterValidationInterface(createdWallet);
+    delete createdWallet;
+}
+
+BOOST_AUTO_TEST_CASE(nonstandard_load_observer_cannot_dangle_wallet)
+{
+    const std::string filename = "nonstandard-load-observer-wallet.dat";
+    CWallet* notifiedWallet = nullptr;
+    boost::signals2::scoped_connection retainingConnection(
+        uiInterface.LoadWallet.connect(
+            [&](CWallet* wallet) {
+                notifiedWallet = wallet;
+            }));
+    boost::signals2::scoped_connection throwingConnection(
+        uiInterface.LoadWallet.connect(
+            [](CWallet*) {
+                throw 7;
+            }));
+
+    CWallet* createdWallet = nullptr;
+    BOOST_CHECK_NO_THROW(
+        createdWallet = CWallet::CreateWalletFromFile(filename));
+    BOOST_REQUIRE(createdWallet != nullptr);
+    BOOST_CHECK_EQUAL(createdWallet, notifiedWallet);
+
+    UnregisterValidationInterface(createdWallet);
+    delete createdWallet;
+}
+
 BOOST_AUTO_TEST_SUITE_END()
