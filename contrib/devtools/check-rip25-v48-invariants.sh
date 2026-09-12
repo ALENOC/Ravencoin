@@ -186,6 +186,75 @@ require_text "$encrypt_wallet_function" '!pwalletdbEncryption->EraseBip39Passphr
 require_text "$encrypt_wallet_function" '!pwalletdbEncryption->EraseBip39VchSeed(false)' 'BIP39 seed erase failure is ignored during encryption'
 require_fixed 'HasPlaintextBip39(hasPlaintextBip39)' src/wallet/wallet.cpp 'encrypted backup does not scan for plaintext BIP39 records'
 
+# A failed post-encryption compaction must stay quarantined across crashes,
+# restarts, downgrade attempts, direct wallet calls, and RPC/Qt TOCTOU.
+require_fixed 'WALLET_ENCRYPTION_REWRITE_MIN_VERSION = 0x7fffffff' src/wallet/walletdb.h 'wallet encryption recovery lacks a downgrade fence'
+require_text "$encrypt_wallet_function" 'pwalletdbEncryption->TxnBegin(DB_TXN_SYNC)' 'wallet encryption marker transaction is not synchronous'
+require_text "$encrypt_wallet_function" 'WriteEncryptionRewritePending(previousMinVersion)' 'wallet encryption does not persist its rewrite marker'
+require_text "$encrypt_wallet_function" 'WALLET_ENCRYPTION_REWRITE_MIN_VERSION' 'wallet encryption does not persist its downgrade fence'
+require_text "$encrypt_wallet_function" 'pwalletdbEncryption->TxnCommit(DB_TXN_SYNC)' 'wallet encryption marker commit is not synchronous'
+require_text "$encrypt_wallet_function" 'NewKeyPoolInternal(true)' 'wallet encryption cannot perform its guarded post-commit keypool rotation'
+marker_begin_line="$(grep -nF 'pwalletdbEncryption->TxnBegin(DB_TXN_SYNC)' <<<"$encrypt_wallet_function" | cut -d: -f1 || true)"
+marker_write_line="$(grep -nF 'WriteEncryptionRewritePending(previousMinVersion)' <<<"$encrypt_wallet_function" | cut -d: -f1 || true)"
+marker_commit_line="$(grep -nF 'pwalletdbEncryption->TxnCommit(DB_TXN_SYNC)' <<<"$encrypt_wallet_function" | cut -d: -f1 || true)"
+rewrite_complete_line="$(grep -nF 'CompleteEncryptionRewrite()' <<<"$encrypt_wallet_function" | tail -n1 | cut -d: -f1 || true)"
+[[ -n "$marker_begin_line" && -n "$marker_write_line" && -n "$marker_commit_line" && -n "$rewrite_complete_line" ]] || fail 'cannot locate wallet encryption recovery transaction boundaries'
+(( marker_begin_line < marker_write_line && marker_write_line < marker_commit_line && marker_commit_line < rewrite_complete_line )) || fail 'wallet encryption rewrite state is not committed before compaction'
+
+complete_rewrite_function="$(sed -n '/^bool CWallet::CompleteEncryptionRewrite(/,/^bool CWallet::EncryptWallet(/p' src/wallet/wallet.cpp)"
+require_text "$complete_rewrite_function" 'if (!dbw->Rewrite())' 'wallet recovery clears its marker before compaction succeeds'
+require_text "$complete_rewrite_function" 'walletdb.TxnBegin(DB_TXN_SYNC)' 'wallet recovery marker clearance is not synchronous'
+require_text "$complete_rewrite_function" 'walletdb.WriteMinVersion(previousMinVersion)' 'wallet recovery does not restore the prior minversion'
+require_text "$complete_rewrite_function" 'walletdb.EraseEncryptionRewritePending()' 'wallet recovery does not clear its marker'
+require_text "$complete_rewrite_function" 'walletdb.TxnCommit(DB_TXN_SYNC)' 'wallet recovery marker-clear commit is not synchronous'
+require_text "$complete_rewrite_function" 'fEncryptionRewritePending = false' 'wallet recovery clears no in-memory quarantine state'
+compact_line="$(grep -nF 'if (!dbw->Rewrite())' <<<"$complete_rewrite_function" | cut -d: -f1 || true)"
+clear_begin_line="$(grep -nF 'walletdb.TxnBegin(DB_TXN_SYNC)' <<<"$complete_rewrite_function" | cut -d: -f1 || true)"
+clear_marker_line="$(grep -nF 'walletdb.EraseEncryptionRewritePending()' <<<"$complete_rewrite_function" | cut -d: -f1 || true)"
+clear_commit_line="$(grep -nF 'walletdb.TxnCommit(DB_TXN_SYNC)' <<<"$complete_rewrite_function" | cut -d: -f1 || true)"
+clear_memory_line="$(grep -nF 'fEncryptionRewritePending = false' <<<"$complete_rewrite_function" | cut -d: -f1 || true)"
+[[ -n "$compact_line" && -n "$clear_begin_line" && -n "$clear_marker_line" && -n "$clear_commit_line" && -n "$clear_memory_line" ]] || fail 'cannot locate wallet encryption recovery clear boundaries'
+(( compact_line < clear_begin_line && clear_begin_line < clear_marker_line && clear_marker_line < clear_commit_line && clear_commit_line < clear_memory_line )) || fail 'wallet encryption recovery clears quarantine before durable compaction'
+
+new_keypool_function="$(sed -n '/^bool CWallet::NewKeyPoolInternal(/,/^}/p' src/wallet/wallet.cpp)"
+topup_guard_function="$(sed -n '/^bool CWallet::TopUpKeyPoolInternal(/,/^}/p' src/wallet/wallet.cpp)"
+reserve_key_function="$(sed -n '/^void CWallet::ReserveKeyFromKeyPool(/,/^}/p' src/wallet/wallet.cpp)"
+keep_key_function="$(sed -n '/^void CWallet::KeepKey(/,/^}/p' src/wallet/wallet.cpp)"
+return_key_function="$(sed -n '/^void CWallet::ReturnKey(/,/^}/p' src/wallet/wallet.cpp)"
+get_pool_key_function="$(sed -n '/^bool CWallet::GetKeyFromPool(/,/^}/p' src/wallet/wallet.cpp)"
+require_text "$new_keypool_function" 'fEncryptionRewritePending && !allowEncryptionRewritePending' 'NewKeyPool can bypass encryption-rewrite quarantine'
+require_text "$topup_guard_function" 'fEncryptionRewritePending && !allowEncryptionRewritePending' 'TopUpKeyPool can bypass encryption-rewrite quarantine'
+require_text "$reserve_key_function" 'if (fEncryptionRewritePending)' 'ReserveKeyFromKeyPool can bypass encryption-rewrite quarantine'
+require_text "$keep_key_function" 'if (fEncryptionRewritePending)' 'KeepKey can bypass encryption-rewrite quarantine'
+require_text "$return_key_function" 'if (fEncryptionRewritePending)' 'ReturnKey can bypass encryption-rewrite quarantine'
+require_text "$get_pool_key_function" 'if (fEncryptionRewritePending)' 'GetKeyFromPool can bypass encryption-rewrite quarantine'
+require_fixed 'return NewKeyPoolInternal(false)' src/wallet/wallet.cpp 'public NewKeyPool enables the private quarantine bypass'
+require_fixed 'return TopUpKeyPoolInternal(kpSize, false)' src/wallet/wallet.cpp 'public TopUpKeyPool enables the private quarantine bypass'
+unlock_wallet_function="$(sed -n '/^bool CWallet::Unlock(const SecureString/,/^}/p' src/wallet/wallet.cpp)"
+change_passphrase_function="$(sed -n '/^bool CWallet::ChangeWalletPassphrase(/,/^}/p' src/wallet/wallet.cpp)"
+commit_wallet_function="$(sed -n '/^bool CWallet::CommitTransaction(/,/^}/p' src/wallet/wallet.cpp)"
+backup_wallet_function="$(sed -n '/^bool CWallet::BackupWallet(/,/^}/p' src/wallet/wallet.cpp)"
+ensure_wallet_function="$(sed -n '/^bool EnsureWalletIsAvailable(/,/^}/p' src/wallet/rpcwallet.cpp)"
+require_text "$unlock_wallet_function" 'if (fEncryptionRewritePending)' 'wallet unlock can bypass encryption-rewrite quarantine'
+require_text "$change_passphrase_function" 'if (fEncryptionRewritePending)' 'wallet passphrase change can bypass encryption-rewrite quarantine'
+require_text "$commit_wallet_function" 'if (fEncryptionRewritePending)' 'wallet transaction commit can bypass encryption-rewrite quarantine'
+require_text "$backup_wallet_function" 'if (fEncryptionRewritePending)' 'wallet backup can bypass in-memory encryption-rewrite quarantine'
+require_text "$backup_wallet_function" 'ReadEncryptionRewritePending' 'wallet backup ignores on-disk encryption-rewrite state'
+require_text "$ensure_wallet_function" 'IsEncryptionRewritePending()' 'wallet RPC entry points ignore encryption-rewrite quarantine'
+read_rewrite_marker_function="$(sed -n '/^bool CWalletDB::ReadEncryptionRewritePending(/,/^}/p' src/wallet/walletdb.cpp)"
+marker_absent_validation="$(sed -n '/if (markerExistsResult == DB_NOTFOUND)/,/std::pair<uint32_t, int> marker;/p' <<<"$read_rewrite_marker_function")"
+marker_present_validation="$(sed -n '/std::pair<uint32_t, int> marker;/,/pending = true;/p' <<<"$read_rewrite_marker_function")"
+require_text "$marker_absent_validation" 'storedMinVersion != WALLET_ENCRYPTION_REWRITE_MIN_VERSION' 'wallet rewrite fence without a marker is accepted'
+require_text "$marker_present_validation" 'storedMinVersion != WALLET_ENCRYPTION_REWRITE_MIN_VERSION' 'wallet rewrite marker without its downgrade fence is accepted'
+require_fixed 'DB_NEED_REWRITE_ENCRYPTION_NONCRITICAL' src/wallet/wallet.cpp 'wallet recovery loses noncritical load status'
+require_fixed 'rewrite_failure_quarantines_until_restart_recovery' src/wallet/test/pq_wallet_tests.cpp 'wallet rewrite-failure quarantine regression is missing'
+require_fixed 'wallet_database_sync_transaction_flushes_log' src/wallet/test/pq_wallet_tests.cpp 'wallet synchronous transaction regression is missing'
+require_fixed 'encryption_rewrite_marker_states_fail_closed' src/wallet/test/pq_wallet_tests.cpp 'wallet rewrite marker fail-closed regression is missing'
+require_fixed 'encryption_rewrite_preserves_noncritical_load_status' src/wallet/test/pq_wallet_tests.cpp 'wallet recovery noncritical-status regression is missing'
+require_fixed 'wallet_encryption_rewrite.py' test/functional/test_runner.py 'wallet rewrite-failure RPC regression is not in the functional suite'
+require_fixed 'Wallet encryption failed after the live key state changed' test/functional/wallet_encryption_rewrite.py 'wallet rewrite-failure RPC shutdown is untested'
+require_fixed 'Wallet encryption recovery could not complete' test/functional/wallet_encryption_rewrite.py 'wallet rewrite-failure startup quarantine is untested'
+
 # BIP39 rows are private-key material. Salvage/load must preserve a complete
 # lineage, and key derivation must never substitute the deterministic empty seed.
 to_seed_function="$(sed -n '/^bool CMnemonic::ToSeedWithPbkdf2(/,/^}/p' src/wallet/bip39.cpp)"
@@ -218,13 +287,13 @@ require_text "$derive_child_function" 'if (!GetBip39Seed(seed))' 'BIP44 derivati
 if grep -Fq 'g_vchSeed' <<<"$derive_child_function"; then
   fail 'BIP44 derivation reads mutable plaintext seed storage directly'
 fi
-topup_keypool_function="$(sed -n '/^bool CWallet::TopUpKeyPool(/,/^}/p' src/wallet/wallet.cpp)"
+topup_keypool_function="$(sed -n '/^bool CWallet::TopUpKeyPoolInternal(/,/^}/p' src/wallet/wallet.cpp)"
 require_text "$topup_keypool_function" 'IsBip44Enabled() && !HasValidBip39Seed()' 'keypool state can mutate before BIP39 seed validation'
 first_run_function="$(sed -n '/^bool CWallet::IsFirstRun(/,/^}/p' src/wallet/wallet.cpp)"
 for first_run_state in mapPQKeys mapCryptedPQKeys mapMasterKeys IsCrypted IsHDEnabled g_vchSeed vchCryptedBip39VchSeed; do
   require_text "$first_run_function" "$first_run_state" "first-run detection ignores existing $first_run_state wallet state"
 done
-wallet_load_function="$(sed -n '/^DBErrors CWallet::LoadWallet(/,/^}/p' src/wallet/wallet.cpp)"
+wallet_load_function="$(sed -n '/^DBErrors CWallet::LoadWallet(bool& fFirstRunRet, bool notifyLoad)/,/^}/p' src/wallet/wallet.cpp)"
 require_text "$wallet_load_function" 'fFirstRunRet = IsFirstRun()' 'wallet load duplicates an incomplete first-run predicate'
 
 # Locked encrypted wallets must not retain allocated plaintext BIP39 buffers.

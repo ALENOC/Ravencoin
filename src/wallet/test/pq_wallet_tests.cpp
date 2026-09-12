@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "chainparamsbase.h"
+#include "consensus/validation.h"
 #include "fs.h"
 #include "hash.h"
 #include "pqkey.h"
@@ -1765,7 +1766,29 @@ BOOST_AUTO_TEST_CASE(rewrite_namespace_transaction_abort_preserves_source)
     }
 }
 
-BOOST_AUTO_TEST_CASE(rewrite_failure_prevents_encryption_success_and_backup)
+BOOST_AUTO_TEST_CASE(wallet_database_sync_transaction_flushes_log)
+{
+    const std::string filename = "wallet-sync-transaction.dat";
+    CWalletDBWrapper dbw(&bitdb, filename);
+    CWalletDB walletdb(dbw, "c+", false);
+
+    DB_LOG_STAT* clearedLogStats = nullptr;
+    BOOST_REQUIRE_EQUAL(
+        bitdb.dbenv->log_stat(&clearedLogStats, DB_STAT_CLEAR), 0);
+    free(clearedLogStats);
+
+    BOOST_REQUIRE(walletdb.TxnBegin(DB_TXN_SYNC));
+    BOOST_REQUIRE(walletdb.WriteMinVersion(FEATURE_WALLETCRYPT));
+    BOOST_REQUIRE(walletdb.TxnCommit(DB_TXN_SYNC));
+
+    DB_LOG_STAT* transactionLogStats = nullptr;
+    BOOST_REQUIRE_EQUAL(bitdb.dbenv->log_stat(&transactionLogStats, 0), 0);
+    BOOST_REQUIRE(transactionLogStats != nullptr);
+    BOOST_CHECK_GE(transactionLogStats->st_scount, 1U);
+    free(transactionLogStats);
+}
+
+BOOST_AUTO_TEST_CASE(rewrite_failure_quarantines_until_restart_recovery)
 {
     const std::string filename = "pq-rewrite-failure-wallet.dat";
     const std::string backupFilename = "pq-rewrite-failure-wallet-backup.dat";
@@ -1775,7 +1798,9 @@ BOOST_AUTO_TEST_CASE(rewrite_failure_prevents_encryption_success_and_backup)
     key.MakeNewKey();
     BOOST_REQUIRE(key.IsValid());
     const CPQPubKey pubkey = key.GetPubKey();
+    const uint256 witnessProgram = pubkey.GetWitnessProgram();
     const std::vector<unsigned char> secret = RawSecret(key);
+    const fs::path rewritePath = GetDataDir() / (filename + ".rewrite");
 
     {
         std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
@@ -1783,24 +1808,306 @@ BOOST_AUTO_TEST_CASE(rewrite_failure_prevents_encryption_success_and_backup)
             LOCK(wallet->cs_wallet);
             BOOST_REQUIRE(wallet->AddPQKeyPubKey(key, pubkey));
         }
+        bitdb.Flush(false);
+        BOOST_REQUIRE(FileContainsSecret(GetDataDir() / filename, secret));
 
         // CDB::Rewrite creates this path as a database file. A directory at
         // that exact path deterministically injects rewrite failure.
-        const fs::path rewritePath = GetDataDir() / (filename + ".rewrite");
         BOOST_REQUIRE(fs::create_directory(rewritePath));
-        BOOST_CHECK(!wallet->EncryptWallet(passphrase));
-        BOOST_CHECK(wallet->IsCrypted());
 
-        BOOST_CHECK(!wallet->BackupWallet((GetDataDir() / backupFilename).string()));
-        BOOST_CHECK(!fs::exists(GetDataDir() / backupFilename));
+        BOOST_REQUIRE(!wallet->EncryptWallet(passphrase));
+        BOOST_REQUIRE(wallet->IsCrypted());
+        BOOST_REQUIRE(wallet->IsLocked());
+        BOOST_REQUIRE(wallet->IsEncryptionRewritePending());
 
+        {
+            CWalletDBWrapper rawDbw(&bitdb, filename);
+            CDB rawDb(rawDbw, "r");
+            std::pair<uint32_t, int> marker;
+            int minVersion = 0;
+            CryptedPQValue cryptedRecord;
+            BOOST_REQUIRE(rawDb.Read(
+                std::string("encryption_rewrite_pending"), marker));
+            BOOST_CHECK_EQUAL(
+                marker.first, WALLET_ENCRYPTION_REWRITE_MARKER_VERSION);
+            BOOST_CHECK_GE(marker.second, FEATURE_WALLETCRYPT);
+            BOOST_CHECK_LE(marker.second, CLIENT_VERSION);
+            BOOST_REQUIRE(rawDb.Read(std::string("minversion"), minVersion));
+            BOOST_CHECK_EQUAL(
+                minVersion, WALLET_ENCRYPTION_REWRITE_MIN_VERSION);
+            BOOST_REQUIRE(rawDb.Read(
+                std::make_pair(std::string("cpqkey"), witnessProgram),
+                cryptedRecord));
+            BOOST_CHECK(!rawDb.Exists(
+                std::make_pair(std::string("pqkey"), witnessProgram)));
+        }
+        bitdb.Flush(false);
+        BOOST_REQUIRE(FileContainsSecret(GetDataDir() / filename, secret));
+
+        // Remove the injected filesystem failure before testing quarantine.
+        // Backup and unlock must still refuse instead of repairing the live
+        // wallet through an unrelated operation.
         BOOST_REQUIRE(fs::remove(rewritePath));
-        BOOST_REQUIRE(wallet->BackupWallet((GetDataDir() / backupFilename).string()));
+
+        size_t pendingKeypoolSize = 0;
+        {
+            LOCK(wallet->cs_wallet);
+            pendingKeypoolSize = wallet->KeypoolCountExternalKeys();
+        }
+        BOOST_REQUIRE_GT(pendingKeypoolSize, 0U);
+        BOOST_REQUIRE(!wallet->NewKeyPool());
+        BOOST_REQUIRE(!wallet->TopUpKeyPool(2));
+        CPubKey quarantinedKey;
+        BOOST_REQUIRE(!wallet->GetKeyFromPool(quarantinedKey));
+        CReserveKey quarantinedReserveKey(wallet.get());
+        BOOST_REQUIRE(!quarantinedReserveKey.GetReservedKey(quarantinedKey));
+        {
+            LOCK(wallet->cs_wallet);
+            BOOST_CHECK_EQUAL(
+                wallet->KeypoolCountExternalKeys(), pendingKeypoolSize);
+        }
+
+        BOOST_REQUIRE(!wallet->Unlock(passphrase));
+        BOOST_REQUIRE(!wallet->ChangeWalletPassphrase(passphrase, passphrase));
+        BOOST_REQUIRE(!wallet->BackupWallet(
+            (GetDataDir() / backupFilename).string()));
+        BOOST_REQUIRE(!fs::exists(GetDataDir() / backupFilename));
+
+        CWalletTx preparedTransaction;
+        CReserveKey reserveKey(wallet.get());
+        CValidationState state;
+        BOOST_REQUIRE(!wallet->CommitTransaction(
+            preparedTransaction, reserveKey, nullptr, state));
+
+        bitdb.Flush(false);
+        BOOST_REQUIRE(FileContainsSecret(GetDataDir() / filename, secret));
+
+        // Recreate the same blocker to prove that an unsuccessful restart does
+        // not publish or clear the pending state.
+        BOOST_REQUIRE(fs::create_directory(rewritePath));
     }
 
     bitdb.Flush(false);
-    BOOST_CHECK(!FileContainsSecret(GetDataDir() / filename, secret));
+
+    {
+        std::unique_ptr<CWalletDBWrapper> dbw(
+            new CWalletDBWrapper(&bitdb, filename));
+        CWallet wallet(std::move(dbw));
+        bool firstRun = true;
+        BOOST_CHECK_EQUAL(
+            wallet.LoadWallet(firstRun), DB_NEED_REWRITE_ENCRYPTION);
+        BOOST_CHECK(wallet.IsEncryptionRewritePending());
+        BOOST_CHECK(wallet.IsCrypted());
+        BOOST_CHECK(wallet.IsLocked());
+        BOOST_CHECK(!wallet.Unlock(passphrase));
+    }
+    bitdb.Flush(false);
+    BOOST_REQUIRE(FileContainsSecret(GetDataDir() / filename, secret));
+
+    {
+        CWalletDBWrapper rawDbw(&bitdb, filename);
+        CDB rawDb(rawDbw, "r");
+        BOOST_CHECK(rawDb.Exists(std::string("encryption_rewrite_pending")));
+        int minVersion = 0;
+        BOOST_REQUIRE(rawDb.Read(std::string("minversion"), minVersion));
+        BOOST_CHECK_EQUAL(minVersion, WALLET_ENCRYPTION_REWRITE_MIN_VERSION);
+    }
+
+    BOOST_REQUIRE(fs::remove(rewritePath));
+    bitdb.Flush(false);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_CHECK(!wallet->IsEncryptionRewritePending());
+        BOOST_CHECK(wallet->IsCrypted());
+        BOOST_CHECK(wallet->IsLocked());
+
+        // Inspect before backup. Otherwise BackupWallet's own compaction could
+        // hide a missing startup recovery.
+        bitdb.Flush(false);
+        BOOST_CHECK(!FileContainsSecret(GetDataDir() / filename, secret));
+        {
+            CWalletDBWrapper rawDbw(&bitdb, filename);
+            CDB rawDb(rawDbw, "r");
+            BOOST_CHECK(!rawDb.Exists(
+                std::string("encryption_rewrite_pending")));
+            int minVersion = 0;
+            BOOST_REQUIRE(rawDb.Read(std::string("minversion"), minVersion));
+            BOOST_CHECK_NE(minVersion, WALLET_ENCRYPTION_REWRITE_MIN_VERSION);
+            CryptedPQValue cryptedRecord;
+            BOOST_REQUIRE(rawDb.Read(
+                std::make_pair(std::string("cpqkey"), witnessProgram),
+                cryptedRecord));
+            BOOST_CHECK(!rawDb.Exists(
+                std::make_pair(std::string("pqkey"), witnessProgram)));
+        }
+
+        BOOST_REQUIRE(wallet->Unlock(passphrase));
+        CPQKey loadedKey;
+        BOOST_REQUIRE(wallet->GetPQKey(witnessProgram, loadedKey));
+        BOOST_CHECK(loadedKey.MatchesPubKey(pubkey));
+        BOOST_REQUIRE(wallet->BackupWallet(
+            (GetDataDir() / backupFilename).string()));
+    }
+
+    bitdb.Flush(false);
     BOOST_CHECK(!FileContainsSecret(GetDataDir() / backupFilename, secret));
+}
+
+BOOST_AUTO_TEST_CASE(encryption_rewrite_marker_states_fail_closed)
+{
+    const SecureString passphrase("rewrite-marker-state-passphrase");
+
+    auto createEncryptedWallet = [&](const std::string& filename) {
+        CKey key;
+        key.MakeNewKey(true);
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        {
+            LOCK(wallet->cs_wallet);
+            BOOST_REQUIRE(wallet->AddKeyPubKey(key, key.GetPubKey()));
+        }
+        BOOST_REQUIRE(wallet->EncryptWallet(passphrase));
+        return wallet;
+    };
+
+    for (int state = 0; state < 3; ++state) {
+        const std::string filename =
+            strprintf("rewrite-marker-invalid-state-%d.dat", state);
+        const std::string backupFilename =
+            strprintf("rewrite-marker-invalid-state-%d-backup.dat", state);
+        std::unique_ptr<CWallet> liveWallet =
+            createEncryptedWallet(filename);
+        bitdb.Flush(false);
+
+        {
+            CWalletDBWrapper rawDbw(&bitdb, filename);
+            CDB rawDb(rawDbw, "r+");
+            int previousMinVersion = 0;
+            BOOST_REQUIRE(rawDb.Read(
+                std::string("minversion"), previousMinVersion));
+            BOOST_REQUIRE_NE(
+                previousMinVersion, WALLET_ENCRYPTION_REWRITE_MIN_VERSION);
+
+            if (state == 0) {
+                BOOST_REQUIRE(rawDb.Write(
+                    std::string("minversion"),
+                    WALLET_ENCRYPTION_REWRITE_MIN_VERSION));
+            } else if (state == 1) {
+                BOOST_REQUIRE(rawDb.Write(
+                    std::string("encryption_rewrite_pending"),
+                    std::make_pair(
+                        WALLET_ENCRYPTION_REWRITE_MARKER_VERSION,
+                        previousMinVersion)));
+            } else {
+                BOOST_REQUIRE(rawDb.Write(
+                    std::string("encryption_rewrite_pending"),
+                    std::make_pair(
+                        WALLET_ENCRYPTION_REWRITE_MARKER_VERSION + 1,
+                        previousMinVersion)));
+                BOOST_REQUIRE(rawDb.Write(
+                    std::string("minversion"),
+                    WALLET_ENCRYPTION_REWRITE_MIN_VERSION));
+            }
+        }
+        bitdb.Flush(false);
+
+        BOOST_CHECK(!liveWallet->BackupWallet(
+            (GetDataDir() / backupFilename).string()));
+        BOOST_CHECK(!fs::exists(GetDataDir() / backupFilename));
+        liveWallet.reset();
+        bitdb.Flush(false);
+
+        std::unique_ptr<CWalletDBWrapper> dbw(
+            new CWalletDBWrapper(&bitdb, filename));
+        CWallet wallet(std::move(dbw));
+        bool firstRun = false;
+        BOOST_CHECK_EQUAL(wallet.LoadWallet(firstRun), DB_CORRUPT);
+        bitdb.Flush(false);
+    }
+
+    const std::string unencryptedFilename =
+        "rewrite-marker-unencrypted-state.dat";
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(unencryptedFilename);
+    }
+    {
+        CWalletDBWrapper rawDbw(&bitdb, unencryptedFilename);
+        CDB rawDb(rawDbw, "r+");
+        BOOST_REQUIRE(rawDb.Write(
+            std::string("encryption_rewrite_pending"),
+            std::make_pair(
+                WALLET_ENCRYPTION_REWRITE_MARKER_VERSION,
+                static_cast<int>(FEATURE_WALLETCRYPT))));
+        BOOST_REQUIRE(rawDb.Write(
+            std::string("minversion"),
+            WALLET_ENCRYPTION_REWRITE_MIN_VERSION));
+    }
+    bitdb.Flush(false);
+
+    std::unique_ptr<CWalletDBWrapper> unencryptedDbw(
+        new CWalletDBWrapper(&bitdb, unencryptedFilename));
+    CWallet unencryptedWallet(std::move(unencryptedDbw));
+    bool firstRun = false;
+    BOOST_CHECK_EQUAL(unencryptedWallet.LoadWallet(firstRun), DB_CORRUPT);
+}
+
+BOOST_AUTO_TEST_CASE(encryption_rewrite_preserves_noncritical_load_status)
+{
+    const std::string filename =
+        "rewrite-marker-noncritical-wallet.dat";
+    const SecureString passphrase("rewrite-marker-noncritical-passphrase");
+    const fs::path rewritePath = GetDataDir() / (filename + ".rewrite");
+
+    {
+        CKey key;
+        key.MakeNewKey(true);
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        {
+            LOCK(wallet->cs_wallet);
+            BOOST_REQUIRE(wallet->AddKeyPubKey(key, key.GetPubKey()));
+        }
+        BOOST_REQUIRE(fs::create_directory(rewritePath));
+        BOOST_REQUIRE(!wallet->EncryptWallet(passphrase));
+        BOOST_REQUIRE(wallet->IsEncryptionRewritePending());
+    }
+    bitdb.Flush(false);
+
+    CDataStream malformedNameKey(SER_DISK, CLIENT_VERSION);
+    malformedNameKey << std::string("name");
+    const std::vector<unsigned char> malformedKey(
+        malformedNameKey.begin(), malformedNameKey.end());
+    BOOST_REQUIRE(wallet_db::RecoveryTestAccess::WriteRaw(
+        filename, malformedKey, std::vector<unsigned char>()));
+
+    {
+        std::unique_ptr<CWalletDBWrapper> dbw(
+            new CWalletDBWrapper(&bitdb, filename));
+        CWallet wallet(std::move(dbw));
+        bool firstRun = false;
+        BOOST_CHECK_EQUAL(
+            wallet.LoadWallet(firstRun),
+            DB_NEED_REWRITE_ENCRYPTION_NONCRITICAL);
+        BOOST_CHECK(wallet.IsEncryptionRewritePending());
+    }
+
+    BOOST_REQUIRE(fs::remove(rewritePath));
+    bitdb.Flush(false);
+
+    {
+        std::unique_ptr<CWalletDBWrapper> dbw(
+            new CWalletDBWrapper(&bitdb, filename));
+        CWallet wallet(std::move(dbw));
+        bool firstRun = false;
+        BOOST_CHECK_EQUAL(wallet.LoadWallet(firstRun), DB_NONCRITICAL_ERROR);
+        BOOST_CHECK(!wallet.IsEncryptionRewritePending());
+    }
+
+    CWalletDBWrapper rawDbw(&bitdb, filename);
+    CDB rawDb(rawDbw, "r");
+    BOOST_CHECK(!rawDb.Exists(std::string("encryption_rewrite_pending")));
+    int minVersion = 0;
+    BOOST_REQUIRE(rawDb.Read(std::string("minversion"), minVersion));
+    BOOST_CHECK_NE(minVersion, WALLET_ENCRYPTION_REWRITE_MIN_VERSION);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

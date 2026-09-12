@@ -292,10 +292,10 @@ public:
     }
 
     template <typename K>
-    bool Exists(const K& key)
+    int ExistsStatus(const K& key)
     {
         if (!pdb)
-            return false;
+            return DB_NOTFOUND;
 
         // Key
         CDataStream ssKey(SER_DISK, CLIENT_VERSION);
@@ -308,7 +308,13 @@ public:
 
         // Clear memory
         memory_cleanse(datKey.get_data(), datKey.get_size());
-        return (ret == 0);
+        return ret;
+    }
+
+    template <typename K>
+    bool Exists(const K& key)
+    {
+        return ExistsStatus(key) == 0;
     }
 
     Dbc* GetCursor()
@@ -358,22 +364,22 @@ public:
     }
 
 public:
-    bool TxnBegin()
+    bool TxnBegin(int flags = DB_TXN_WRITE_NOSYNC)
     {
         if (!pdb || activeTxn)
             return false;
-        DbTxn* ptxn = bitdb.TxnBegin();
+        DbTxn* ptxn = bitdb.TxnBegin(flags);
         if (!ptxn)
             return false;
         activeTxn = ptxn;
         return true;
     }
 
-    bool TxnCommit()
+    bool TxnCommit(int flags = 0)
     {
         if (!pdb || !activeTxn)
             return false;
-        int ret = activeTxn->commit(0);
+        int ret = activeTxn->commit(flags);
         activeTxn = nullptr;
         return (ret == 0);
     }

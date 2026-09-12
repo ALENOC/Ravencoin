@@ -123,6 +123,7 @@ BASE_SCRIPTS= [
     'wallet_listtransactions.py',
     'feature_minchainwork.py',
     'wallet_encryption.py',
+    'wallet_encryption_rewrite.py',
     'feature_listmyassets.py',
     'mempool_reorg.py',
     'rpc_txoutproof.py',

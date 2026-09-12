@@ -536,6 +536,8 @@ bool CWallet::Unlock(const SecureString& strWalletPassphrase)
 
     {
         LOCK(cs_wallet);
+        if (fEncryptionRewritePending)
+            return false;
         for (const MasterKeyMap::value_type& pMasterKey : mapMasterKeys)
         {
             if(!crypter.SetKeyFromPassphrase(strWalletPassphrase, pMasterKey.second.vchSalt, pMasterKey.second.nDeriveIterations, pMasterKey.second.nDerivationMethod))
@@ -548,6 +550,18 @@ bool CWallet::Unlock(const SecureString& strWalletPassphrase)
         }
     }
     return false;
+}
+
+bool CWallet::IsEncryptionRewritePending() const
+{
+    LOCK(cs_wallet);
+    return fEncryptionRewritePending;
+}
+
+void CWallet::SetEncryptionRewritePending(bool pending)
+{
+    AssertLockHeld(cs_wallet);
+    fEncryptionRewritePending = pending;
 }
 
 bool CWallet::Lock()
@@ -572,6 +586,8 @@ bool CWallet::ChangeWalletPassphrase(const SecureString& strOldWalletPassphrase,
 
     {
         LOCK(cs_wallet);
+        if (fEncryptionRewritePending)
+            return false;
         Lock();
 
         CCrypter crypter;
@@ -775,6 +791,53 @@ void CWallet::AddToSpends(const uint256& wtxid)
         AddToSpends(txin.prevout, wtxid);
 }
 
+bool CWallet::CompleteEncryptionRewrite()
+{
+    AssertLockHeld(cs_wallet);
+    if (!fEncryptionRewritePending)
+        return false;
+
+    if (!dbw->Rewrite())
+        return false;
+
+    int previousMinVersion = 0;
+    {
+        CWalletDB walletdb(*dbw);
+        bool markerPending = false;
+        if (!walletdb.ReadEncryptionRewritePending(markerPending, previousMinVersion) ||
+            !markerPending)
+            return false;
+        if (!walletdb.TxnBegin(DB_TXN_SYNC))
+            return false;
+        if (!walletdb.WriteMinVersion(previousMinVersion) ||
+            !walletdb.EraseEncryptionRewritePending()) {
+            walletdb.TxnAbort();
+            return false;
+        }
+        if (!walletdb.TxnCommit(DB_TXN_SYNC))
+            return false;
+    }
+
+    {
+        CWalletDB walletdb(*dbw, "r");
+        bool markerPending = true;
+        int ignoredPreviousMinVersion = 0;
+        if (!walletdb.ReadEncryptionRewritePending(
+                markerPending, ignoredPreviousMinVersion) || markerPending)
+            return false;
+    }
+    {
+        CDB rawdb(*dbw, "r");
+        int storedMinVersion = 0;
+        if (!rawdb.Read(std::string("minversion"), storedMinVersion) ||
+            storedMinVersion != previousMinVersion)
+            return false;
+    }
+
+    fEncryptionRewritePending = false;
+    return true;
+}
+
 bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
 {
     if (IsCrypted())
@@ -843,6 +906,8 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
                 delete pwalletdbEncryption;
                 pwalletdbEncryption = nullptr;
             }
+            if (!Lock())
+                LogPrintf("EncryptWallet: failed to lock quarantined wallet\n");
             return false;
         };
 
@@ -851,7 +916,7 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
         try {
             assert(!pwalletdbEncryption);
             pwalletdbEncryption = new CWalletDB(*dbw);
-            if (!pwalletdbEncryption->TxnBegin()) {
+            if (!pwalletdbEncryption->TxnBegin(DB_TXN_SYNC)) {
                 return abortEncryptionSetup(false);
             }
             transactionActive = true;
@@ -873,6 +938,7 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
                 return abortEncryptionSetup(true);
             }
             keysMutated = true;
+            fEncryptionRewritePending = true;
 
             if(hdChain.IsBip44()) {
                 if (!pwalletdbEncryption->EraseBip39Words(false) ||
@@ -903,7 +969,15 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
                 }
             }
 
-            const bool transactionCommitted = pwalletdbEncryption->TxnCommit();
+            const int previousMinVersion = nWalletVersion;
+            if (!pwalletdbEncryption->WriteEncryptionRewritePending(previousMinVersion) ||
+                !pwalletdbEncryption->WriteMinVersion(
+                    WALLET_ENCRYPTION_REWRITE_MIN_VERSION)) {
+                return failEncryptionAfterKeyMutation(true);
+            }
+
+            const bool transactionCommitted =
+                pwalletdbEncryption->TxnCommit(DB_TXN_SYNC);
             // TxnCommit consumes the transaction handle even on failure.
             transactionActive = false;
             if (!transactionCommitted) {
@@ -913,33 +987,26 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
             delete pwalletdbEncryption;
             pwalletdbEncryption = nullptr;
 
-            Lock();
-            Unlock(strWalletPassphrase);
+            if (!Lock() || !CCryptoKeyStore::Unlock(_vMasterKey))
+                return failEncryptionAfterKeyMutation(false);
 
             // if we are using HD, replace the HD seed with a new one
             if (IsHDEnabled() && !hdChain.IsBip44()) {
                 if (!SetHDSeed(GenerateNewSeed())) {
-                    return false;
+                    return failEncryptionAfterKeyMutation(false);
                 }
             }
 
-            if (!hdChain.IsBip44())
-                NewKeyPool();
+            if (!hdChain.IsBip44() && !NewKeyPoolInternal(true))
+                return failEncryptionAfterKeyMutation(false);
 
-            Lock();
+            if (!Lock())
+                return failEncryptionAfterKeyMutation(false);
 
             // Need to completely rewrite the wallet file; if we don't, bdb might keep
             // bits of the unencrypted private key in slack space in the database file.
-            if (!dbw->Rewrite())
+            if (!CompleteEncryptionRewrite())
                 return false;
-
-            if (hdChain.IsBip44()) {
-                CWalletDB walletdb(*dbw);
-                walletdb.WriteBip39Words(nWordHash, vchCryptedBip39Words, true);
-                walletdb.WriteBip39VchSeed(vchCryptedBip39VchSeed, true);
-                if (!vchCryptedBip39Passphrase.empty())
-                    walletdb.WriteBip39Passphrase(vchCryptedBip39Passphrase, true);
-            }
         } catch (const std::exception& e) {
             LogPrintf("EncryptWallet: exception while encrypting wallet: %s\n", e.what());
             return keysMutated
@@ -3994,6 +4061,8 @@ bool CWallet::CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey, CCon
 {
     {
         LOCK2(cs_main, cs_wallet);
+        if (fEncryptionRewritePending)
+            return false;
         LogPrintf("CommitTransaction:\n%s", wtxNew.tx->ToString());
         {
             // Take key pair from key pool so it won't be used again
@@ -4068,10 +4137,28 @@ bool CWallet::IsFirstRun()
 
 DBErrors CWallet::LoadWallet(bool& fFirstRunRet)
 {
+    return LoadWallet(fFirstRunRet, true);
+}
+
+DBErrors CWallet::LoadWallet(bool& fFirstRunRet, bool notifyLoad)
+{
     LOCK2(cs_main, cs_wallet);
 
     fFirstRunRet = false;
     DBErrors nLoadWalletRet = CWalletDB(*dbw,"cr+").LoadWallet(this);
+    const bool rewriteHadNoncriticalErrors =
+        nLoadWalletRet == DB_NEED_REWRITE_ENCRYPTION_NONCRITICAL;
+    if (nLoadWalletRet == DB_NEED_REWRITE_ENCRYPTION ||
+        rewriteHadNoncriticalErrors)
+    {
+        if (!CompleteEncryptionRewrite())
+            return rewriteHadNoncriticalErrors
+                ? DB_NEED_REWRITE_ENCRYPTION_NONCRITICAL
+                : DB_NEED_REWRITE_ENCRYPTION;
+        nLoadWalletRet = rewriteHadNoncriticalErrors
+            ? DB_NONCRITICAL_ERROR
+            : DB_LOAD_OK;
+    }
     if (nLoadWalletRet == DB_NEED_REWRITE)
     {
         if (dbw->Rewrite("\x04pool"))
@@ -4092,7 +4179,8 @@ DBErrors CWallet::LoadWallet(bool& fFirstRunRet)
     if (nLoadWalletRet != DB_LOAD_OK)
         return nLoadWalletRet;
 
-    uiInterface.LoadWallet(this);
+    if (notifyLoad)
+        uiInterface.LoadWallet(this);
 
     return DB_LOAD_OK;
 }
@@ -4207,10 +4295,12 @@ const std::string& CWallet::GetAccountName(const CScript& scriptPubKey) const
  * Mark old keypool keys as used,
  * and generate all new keys
  */
-bool CWallet::NewKeyPool()
+bool CWallet::NewKeyPoolInternal(bool allowEncryptionRewritePending)
 {
     {
         LOCK(cs_wallet);
+        if (fEncryptionRewritePending && !allowEncryptionRewritePending)
+            return false;
         CWalletDB walletdb(*dbw);
 
         for (int64_t nIndex : setInternalKeyPool) {
@@ -4225,12 +4315,17 @@ bool CWallet::NewKeyPool()
 
         m_pool_key_to_index.clear();
 
-        if (!TopUpKeyPool()) {
+        if (!TopUpKeyPoolInternal(0, allowEncryptionRewritePending)) {
             return false;
         }
         LogPrintf("CWallet::NewKeyPool rewrote keypool\n");
     }
     return true;
+}
+
+bool CWallet::NewKeyPool()
+{
+    return NewKeyPoolInternal(false);
 }
 
 size_t CWallet::KeypoolCountExternalKeys()
@@ -4258,10 +4353,14 @@ void CWallet::LoadKeyPool(int64_t nIndex, const CKeyPool &keypool)
         mapKeyMetadata[keyid] = CKeyMetadata(keypool.nTime);
 }
 
-bool CWallet::TopUpKeyPool(unsigned int kpSize)
+bool CWallet::TopUpKeyPoolInternal(
+    unsigned int kpSize, bool allowEncryptionRewritePending)
 {
     {
         LOCK(cs_wallet);
+
+        if (fEncryptionRewritePending && !allowEncryptionRewritePending)
+            return false;
 
         if (IsLocked())
             return false;
@@ -4318,12 +4417,20 @@ bool CWallet::TopUpKeyPool(unsigned int kpSize)
     return true;
 }
 
+bool CWallet::TopUpKeyPool(unsigned int kpSize)
+{
+    return TopUpKeyPoolInternal(kpSize, false);
+}
+
 void CWallet::ReserveKeyFromKeyPool(int64_t& nIndex, CKeyPool& keypool, bool fRequestedInternal)
 {
     nIndex = -1;
     keypool.vchPubKey = CPubKey();
     {
         LOCK(cs_wallet);
+
+        if (fEncryptionRewritePending)
+            return;
 
         if (!IsLocked())
             TopUpKeyPool();
@@ -4358,6 +4465,10 @@ void CWallet::ReserveKeyFromKeyPool(int64_t& nIndex, CKeyPool& keypool, bool fRe
 
 void CWallet::KeepKey(int64_t nIndex)
 {
+    LOCK(cs_wallet);
+    if (fEncryptionRewritePending)
+        return;
+
     // Remove from key pool
     CWalletDB walletdb(*dbw);
     walletdb.ErasePool(nIndex);
@@ -4369,6 +4480,8 @@ void CWallet::ReturnKey(int64_t nIndex, bool fInternal, const CPubKey& pubkey)
     // Return to key pool
     {
         LOCK(cs_wallet);
+        if (fEncryptionRewritePending)
+            return;
         if (fInternal) {
             setInternalKeyPool.insert(nIndex);
         } else {
@@ -4384,6 +4497,8 @@ bool CWallet::GetKeyFromPool(CPubKey& result, bool internal)
     CKeyPool keypool;
     {
         LOCK(cs_wallet);
+        if (fEncryptionRewritePending)
+            return false;
         int64_t nIndex = 0;
         ReserveKeyFromKeyPool(nIndex, keypool, internal);
         if (nIndex == -1)
@@ -4897,6 +5012,12 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
             InitError(strprintf(_("Wallet needed to be rewritten: restart %s to complete"), _(PACKAGE_NAME)));
             return nullptr;
         }
+        else if (nLoadWalletRet == DB_NEED_REWRITE_ENCRYPTION ||
+                 nLoadWalletRet == DB_NEED_REWRITE_ENCRYPTION_NONCRITICAL)
+        {
+            InitError(strprintf(_("Wallet encryption recovery could not complete: restart %s after resolving the database error"), _(PACKAGE_NAME)));
+            return nullptr;
+        }
         else {
             InitError(strprintf(_("Error loading %s"), walletFile));
             return nullptr;
@@ -5117,6 +5238,18 @@ void CWallet::postInitProcess(CScheduler& scheduler)
 bool CWallet::BackupWallet(const std::string& strDest)
 {
     LOCK(cs_wallet);
+    if (fEncryptionRewritePending)
+        return false;
+
+    {
+        CWalletDB walletdb(*dbw, "r");
+        bool markerPending = false;
+        int previousMinVersion = 0;
+        if (!walletdb.ReadEncryptionRewritePending(
+                markerPending, previousMinVersion) || markerPending)
+            return false;
+    }
+
     if (IsCrypted()) {
         {
             LOCK(cs_KeyStore);

@@ -226,6 +226,52 @@ bool CWalletDB::HasPlaintextBip39(bool& hasPlaintext)
     return pcursor->close() == 0;
 }
 
+bool CWalletDB::WriteEncryptionRewritePending(int previousMinVersion)
+{
+    return WriteIC(std::string("encryption_rewrite_pending"),
+                   std::make_pair(WALLET_ENCRYPTION_REWRITE_MARKER_VERSION,
+                                  previousMinVersion));
+}
+
+bool CWalletDB::EraseEncryptionRewritePending()
+{
+    return EraseIC(std::string("encryption_rewrite_pending"));
+}
+
+bool CWalletDB::ReadEncryptionRewritePending(bool& pending, int& previousMinVersion)
+{
+    pending = false;
+    previousMinVersion = 0;
+    const std::string markerKey = "encryption_rewrite_pending";
+    const std::string minVersionKey = "minversion";
+    const int markerExistsResult = batch.ExistsStatus(markerKey);
+    const int minVersionExistsResult = batch.ExistsStatus(minVersionKey);
+    if ((markerExistsResult != 0 && markerExistsResult != DB_NOTFOUND) ||
+        (minVersionExistsResult != 0 && minVersionExistsResult != DB_NOTFOUND))
+        return false;
+
+    int storedMinVersion = 0;
+    const bool hasMinVersion = minVersionExistsResult == 0;
+    if (hasMinVersion && !batch.Read(minVersionKey, storedMinVersion))
+        return false;
+
+    if (markerExistsResult == DB_NOTFOUND)
+        return !hasMinVersion ||
+               storedMinVersion != WALLET_ENCRYPTION_REWRITE_MIN_VERSION;
+
+    std::pair<uint32_t, int> marker;
+    if (!batch.Read(markerKey, marker) ||
+        marker.first != WALLET_ENCRYPTION_REWRITE_MARKER_VERSION ||
+        marker.second < FEATURE_WALLETCRYPT || marker.second > CLIENT_VERSION ||
+        !hasMinVersion ||
+        storedMinVersion != WALLET_ENCRYPTION_REWRITE_MIN_VERSION)
+        return false;
+
+    pending = true;
+    previousMinVersion = marker.second;
+    return true;
+}
+
 bool CWalletDB::WriteMasterKey(unsigned int nID, const CMasterKey& kMasterKey)
 {
     return WriteIC(std::make_pair(std::string("mkey"), nID), kMasterKey, true);
@@ -376,6 +422,8 @@ public:
     bool fHasCryptedBip39Words;
     bool fHasCryptedBip39Passphrase;
     bool fHasCryptedBip39Seed;
+    bool fEncryptionRewritePending;
+    int nEncryptionRewritePreviousMinVersion;
     bool fAnyUnordered;
     int nFileVersion;
     std::vector<uint256> vWalletUpgrade;
@@ -392,6 +440,8 @@ public:
         fHasCryptedBip39Words = false;
         fHasCryptedBip39Passphrase = false;
         fHasCryptedBip39Seed = false;
+        fEncryptionRewritePending = false;
+        nEncryptionRewritePreviousMinVersion = 0;
         fAnyUnordered = false;
         nFileVersion = 0;
     }
@@ -861,6 +911,25 @@ bool ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
                 return false;
             }
         }
+        else if (strType == "encryption_rewrite_pending")
+        {
+            std::pair<uint32_t, int> marker;
+            if (!ssKey.empty())
+            {
+                strErr = "Error reading wallet database: encryption rewrite marker key corrupt";
+                return false;
+            }
+            ssValue >> marker;
+            if (marker.first != WALLET_ENCRYPTION_REWRITE_MARKER_VERSION ||
+                marker.second < FEATURE_WALLETCRYPT ||
+                marker.second > CLIENT_VERSION || !ssValue.empty())
+            {
+                strErr = "Error reading wallet database: encryption rewrite marker corrupt";
+                return false;
+            }
+            wss.fEncryptionRewritePending = true;
+            wss.nEncryptionRewritePreviousMinVersion = marker.second;
+        }
     } catch (...)
     {
         return false;
@@ -876,7 +945,8 @@ bool CWalletDB::IsKeyType(const std::string& strType)
             strType == "hdchain" ||
             strType == "bip39words" || strType == "bip39passphrase" ||
             strType == "bip39vchseed" || strType == "cbip39words" ||
-            strType == "cbip39passphrase" || strType == "cbip39vchseed");
+            strType == "cbip39passphrase" || strType == "cbip39vchseed" ||
+            strType == "encryption_rewrite_pending");
 }
 
 DBErrors CWalletDB::LoadWallet(CWallet* pwallet)
@@ -884,12 +954,20 @@ DBErrors CWalletDB::LoadWallet(CWallet* pwallet)
     CWalletScanState wss;
     bool fNoncriticalErrors = false;
     DBErrors result = DB_LOAD_OK;
+    int nMinVersion = 0;
+    bool hasMinVersion = false;
+    bool rewritePending = false;
+    int rewritePreviousMinVersion = 0;
 
     LOCK(pwallet->cs_wallet);
     try {
-        int nMinVersion = 0;
-        if (batch.Read((std::string)"minversion", nMinVersion))
-        {
+        hasMinVersion = batch.Read((std::string)"minversion", nMinVersion);
+        if (hasMinVersion && nMinVersion == WALLET_ENCRYPTION_REWRITE_MIN_VERSION) {
+            if (!ReadEncryptionRewritePending(
+                    rewritePending, rewritePreviousMinVersion) || !rewritePending)
+                return DB_CORRUPT;
+            pwallet->LoadMinVersion(rewritePreviousMinVersion);
+        } else if (hasMinVersion) {
             if (nMinVersion > CLIENT_VERSION)
                 return DB_TOO_NEW;
             pwallet->LoadMinVersion(nMinVersion);
@@ -955,6 +1033,20 @@ DBErrors CWalletDB::LoadWallet(CWallet* pwallet)
     const bool hasEncryptionEvidence = wss.fHasCryptedPQKeys || wss.fIsEncrypted ||
         hasCryptedBip39 || !pwallet->mapMasterKeys.empty();
 
+    if (wss.fEncryptionRewritePending) {
+        pwallet->SetEncryptionRewritePending(true);
+        if (!rewritePending || !hasMinVersion ||
+            nMinVersion != WALLET_ENCRYPTION_REWRITE_MIN_VERSION ||
+            wss.nEncryptionRewritePreviousMinVersion != rewritePreviousMinVersion ||
+            !hasEncryptionEvidence || pwallet->mapMasterKeys.empty()) {
+            LogPrintf("Error reading wallet database: encryption rewrite state is inconsistent\n");
+            result = DB_CORRUPT;
+        }
+    } else if (rewritePending || nMinVersion == WALLET_ENCRYPTION_REWRITE_MIN_VERSION) {
+        LogPrintf("Error reading wallet database: encryption rewrite marker is missing\n");
+        result = DB_CORRUPT;
+    }
+
     if ((wss.fHasPlaintextKeys || wss.fHasPlaintextPQKeys || hasPlaintextBip39) &&
         hasEncryptionEvidence) {
         LogPrintf("Error reading wallet database: encrypted wallet contains plaintext private keys\n");
@@ -983,8 +1075,11 @@ DBErrors CWalletDB::LoadWallet(CWallet* pwallet)
 
     // Any wallet corruption at all: skip any rewriting or
     // upgrading, we don't want to make it worse.
-    if (result != DB_LOAD_OK)
+    if (result != DB_LOAD_OK) {
+        if (wss.fEncryptionRewritePending && result == DB_NONCRITICAL_ERROR)
+            return DB_NEED_REWRITE_ENCRYPTION_NONCRITICAL;
         return result;
+    }
 
     LogPrintf("nFileVersion = %d\n", wss.nFileVersion);
 
@@ -999,7 +1094,8 @@ DBErrors CWalletDB::LoadWallet(CWallet* pwallet)
         WriteTx(pwallet->mapWallet[hash]);
 
     // Rewrite encrypted wallets of versions 0.4.0 and 0.5.0rc:
-    if (wss.fIsEncrypted && (wss.nFileVersion == 40000 || wss.nFileVersion == 50000))
+    if (!wss.fEncryptionRewritePending && wss.fIsEncrypted &&
+        (wss.nFileVersion == 40000 || wss.nFileVersion == 50000))
         return DB_NEED_REWRITE;
 
     if (wss.nFileVersion < CLIENT_VERSION) // Update
@@ -1013,6 +1109,9 @@ DBErrors CWalletDB::LoadWallet(CWallet* pwallet)
     for (CAccountingEntry& entry : pwallet->laccentries) {
         pwallet->wtxOrdered.insert(make_pair(entry.nOrderPos, CWallet::TxPair(nullptr, &entry)));
     }
+
+    if (wss.fEncryptionRewritePending)
+        return DB_NEED_REWRITE_ENCRYPTION;
 
     return result;
 }
@@ -1195,6 +1294,11 @@ bool CWalletDB::RecoverKeysOnlyFilter(void *callbackData, CDataStream ssKey, CDa
     } catch (...) {
         return false;
     }
+    // Key-only recovery creates a compact replacement database. Drop both the
+    // pending marker and its minversion fence instead of copying only one half
+    // of the recovery protocol.
+    if (strType == "encryption_rewrite_pending")
+        return false;
     if (!IsKeyType(strType))
         return false;
 
@@ -1310,14 +1414,14 @@ bool CWalletDB::WriteHDChain(const CHDChain& chain)
     return WriteIC(std::string("hdchain"), chain);
 }
 
-bool CWalletDB::TxnBegin()
+bool CWalletDB::TxnBegin(int flags)
 {
-    return batch.TxnBegin();
+    return batch.TxnBegin(flags);
 }
 
-bool CWalletDB::TxnCommit()
+bool CWalletDB::TxnCommit(int flags)
 {
-    return batch.TxnCommit();
+    return batch.TxnCommit(flags);
 }
 
 bool CWalletDB::TxnAbort()

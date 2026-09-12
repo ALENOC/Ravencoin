@@ -675,9 +675,12 @@ private:
 class CWallet final : public CCryptoKeyStore, public CValidationInterface
 {
 private:
+    friend class CWalletDB;
+
     static std::atomic<bool> fFlushScheduled;
     std::atomic<bool> fAbortRescan;
     std::atomic<bool> fScanningWallet;
+    bool fEncryptionRewritePending;
 
     /**
      * Select a set of coins such that nValueRet >= nTargetValue and at least
@@ -714,6 +717,12 @@ private:
     void MarkConflicted(const uint256& hashBlock, const uint256& hashTx);
 
     void SyncMetaData(std::pair<TxSpends::iterator, TxSpends::iterator>);
+
+    void SetEncryptionRewritePending(bool pending);
+    bool CompleteEncryptionRewrite();
+    bool NewKeyPoolInternal(bool allowEncryptionRewritePending);
+    bool TopUpKeyPoolInternal(unsigned int kpSize,
+                              bool allowEncryptionRewritePending);
 
     /* Used by TransactionAddedToMemorypool/BlockConnected/Disconnected.
      * Should be called with pindexBlock and posInBlock if this is for a transaction that is included in a block. */
@@ -815,6 +824,7 @@ public:
         nRelockTime = 0;
         fAbortRescan = false;
         fScanningWallet = false;
+        fEncryptionRewritePending = false;
     }
 
     std::map<uint256, CWalletTx> mapWallet;
@@ -969,6 +979,7 @@ public:
 
     bool Lock() override;
     bool Unlock(const SecureString& strWalletPassphrase);
+    bool IsEncryptionRewritePending() const;
     bool ChangeWalletPassphrase(const SecureString& strOldWalletPassphrase, const SecureString& strNewWalletPassphrase);
     bool EncryptWallet(const SecureString& strWalletPassphrase);
 
@@ -1097,6 +1108,7 @@ public:
     bool IsFirstRun();
 
     DBErrors LoadWallet(bool& fFirstRunRet);
+    DBErrors LoadWallet(bool& fFirstRunRet, bool notifyLoad);
     DBErrors ZapWalletTx(std::vector<CWalletTx>& vWtx);
     DBErrors ZapSelectTx(std::vector<uint256>& vHashIn, std::vector<uint256>& vHashOut);
 

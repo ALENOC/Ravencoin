@@ -64,7 +64,15 @@ std::string HelpRequiringPassphrase(CWallet * const pwallet)
 
 bool EnsureWalletIsAvailable(CWallet * const pwallet, bool avoidException)
 {
-    if (pwallet) return true;
+    if (pwallet) {
+        if (!pwallet->IsEncryptionRewritePending())
+            return true;
+        if (avoidException)
+            return false;
+        throw JSONRPCError(
+            RPC_WALLET_ERROR,
+            "Wallet encryption recovery is pending. Restart before using this wallet.");
+    }
     if (avoidException) return false;
     if (::vpwallets.empty()) {
         // Note: It isn't currently possible to trigger this error because

@@ -56,8 +56,13 @@ enum DBErrors
     DB_NONCRITICAL_ERROR,
     DB_TOO_NEW,
     DB_LOAD_FAIL,
-    DB_NEED_REWRITE
+    DB_NEED_REWRITE,
+    DB_NEED_REWRITE_ENCRYPTION,
+    DB_NEED_REWRITE_ENCRYPTION_NONCRITICAL
 };
+
+static constexpr uint32_t WALLET_ENCRYPTION_REWRITE_MARKER_VERSION = 1;
+static constexpr int WALLET_ENCRYPTION_REWRITE_MIN_VERSION = 0x7fffffff;
 
 /* simple HD chain data model */
 class CHDChain
@@ -224,6 +229,9 @@ public:
     bool HasPlaintextKeys(bool& hasPlaintext);
     bool HasPlaintextPQKeys(bool& hasPlaintext);
     bool HasPlaintextBip39(bool& hasPlaintext);
+    bool WriteEncryptionRewritePending(int previousMinVersion);
+    bool EraseEncryptionRewritePending();
+    bool ReadEncryptionRewritePending(bool& pending, int& previousMinVersion);
 
     bool WriteMasterKey(unsigned int nID, const CMasterKey& kMasterKey);
 
@@ -278,9 +286,9 @@ public:
     bool WriteHDChain(const CHDChain& chain);
 
     //! Begin a new transaction
-    bool TxnBegin();
+    bool TxnBegin(int flags = DB_TXN_WRITE_NOSYNC);
     //! Commit current transaction
-    bool TxnCommit();
+    bool TxnCommit(int flags = 0);
     //! Abort current transaction
     bool TxnAbort();
     //! Read wallet version
