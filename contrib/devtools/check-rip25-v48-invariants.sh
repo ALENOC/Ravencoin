@@ -277,8 +277,9 @@ require_text "$to_seed_function" 'seedRet.swap(derivedSeed)' 'BIP39 PBKDF2 publi
 require_fixed 'return ToSeedWithPbkdf2(mnemonic, passphrase, seedRet, PKCS5_PBKDF2_HMAC)' src/wallet/bip39.cpp 'production BIP39 derivation bypasses the checked PBKDF2 adapter'
 set_mnemonic_function="$(sed -n '/^bool CHDChain::SetMnemonic(/,/^}/p' src/wallet/walletdb.cpp)"
 require_text "$set_mnemonic_function" 'if (!CMnemonic::ToSeed' 'HD chain ignores BIP39 derivation failure'
-generate_seed_function="$(sed -n '/^CPubKey CWallet::GenerateNewSeed(/,/^}/p' src/wallet/wallet.cpp)"
+generate_seed_function="$(sed -n '/^CPubKey CWallet::GenerateNewSeed(CWalletDB\* pwalletdb)/,/^}/p' src/wallet/wallet.cpp)"
 require_text "$generate_seed_function" 'throw std::runtime_error(std::string(__func__) + ": SetMnemonic failed")' 'wallet creation does not abort after BIP39 derivation failure'
+require_text "$generate_seed_function" 'SetHDChain(newHdChain, false, pwalletdb)' 'BIP44 seed creation bypasses the caller transaction'
 kdf_failure_line="$(grep -nF 'if (!newHdChain.SetMnemonic' <<<"$generate_seed_function" | cut -d: -f1 || true)"
 seed_publish_line="$(grep -nF 'if (!AddVchSeed(vchSeed))' <<<"$generate_seed_function" | cut -d: -f1 || true)"
 chain_persist_line="$(grep -nF 'SetHDChain(newHdChain' <<<"$generate_seed_function" | cut -d: -f1 || true)"
@@ -348,6 +349,64 @@ require_fixed 'successful-rescan-wallet.dat' src/wallet/test/wallet_tests.cpp 's
 require_fixed 'ScopedWalletFactoryTestState' src/wallet/test/wallet_tests.cpp 'wallet factory test state is not restored after exceptions'
 require_fixed 'gArgs.ClearArg("-rescan")' src/wallet/test/wallet_tests.cpp 'wallet factory test leaves a previously absent rescan argument set'
 require_fixed 'gArgs.ClearArg("-keypool")' src/wallet/test/wallet_tests.cpp 'wallet factory test leaves a previously absent keypool argument set'
+
+# New BIP44 wallets publish one atomic lineage: HD chain, complete BIP39
+# material, derived keys, and keypool records share one synchronous transaction.
+set_hd_chain_function="$(sed -n '/^bool CWallet::SetHDChain(const CHDChain& chain, bool memonly, CWalletDB\* pwalletdb)/,/^}/p' src/wallet/wallet.cpp)"
+generate_seed_function="$(sed -n '/^CPubKey CWallet::GenerateNewSeed(CWalletDB\* pwalletdb)/,/^}/p' src/wallet/wallet.cpp)"
+generate_key_function="$(sed -n '/^CPubKey CWallet::GenerateNewKey(/,/^}/p' src/wallet/wallet.cpp)"
+derive_child_function="$(sed -n '/^void CWallet::DeriveNewChildKey(/,/^}/p' src/wallet/wallet.cpp)"
+require_text "$set_hd_chain_function" 'pwalletdb ? pwalletdb->WriteHDChain(chain)' 'HD chain persistence bypasses the caller transaction'
+require_text "$set_hd_chain_function" 'if (!written)' 'HD chain persistence does not fail closed'
+require_text "$generate_seed_function" 'SetHDChain(newHdChain, false, pwalletdb)' 'BIP44 seed generation discards the caller transaction'
+require_text "$generate_key_function" 'SetMinVersion(FEATURE_COMPRPUBKEY, &walletdb)' 'key generation persists minversion outside the caller transaction'
+require_text "$generate_key_function" 'DeriveNewChildKey(walletdb, metadata, secret' 'child derivation bypasses the caller transaction'
+require_text "$generate_key_function" 'AddKeyPubKeyWithDB(walletdb, secret, pubkey)' 'key persistence bypasses the caller transaction'
+require_text "$derive_child_function" 'walletdb.WriteHDChain(hdChain)' 'HD child counter bypasses the caller transaction'
+require_text "$topup_keypool_function" 'if (!pwalletdb)' 'keypool generation never selects the caller database transaction'
+require_text "$topup_keypool_function" 'GenerateNewKey(*pwalletdb, internal)' 'key generation bypasses the caller database transaction'
+require_text "$topup_keypool_function" 'pwalletdb->WritePool(index' 'keypool records bypass the caller database transaction'
+if grep -Fq 'CWalletDB walletdb(*dbw)' <<<"$topup_keypool_function"; then
+  fail 'keypool generation always opens a second database handle'
+fi
+topup_walletdb_fallback="$(sed -n '/^[[:space:]]*if (!pwalletdb) {/,/^[[:space:]]*}/p' <<<"$topup_keypool_function")"
+require_text "$topup_walletdb_fallback" 'pwalletdb = ownedWalletdb.get()' 'keypool fallback does not retain the selected database handle'
+topup_walletdb_assignment_count="$(grep -Ec '^[[:space:]]*pwalletdb[[:space:]]*=' <<<"$topup_keypool_function" || true)"
+(( topup_walletdb_assignment_count == 1 )) || fail 'keypool generation can rebind the caller database handle'
+require_text "$wallet_factory_function" 'active(walletdb.TxnBegin(DB_TXN_SYNC))' 'BIP44 creation transaction is absent or asynchronous'
+require_text "$wallet_factory_function" 'walletdb.TxnAbort()' 'BIP44 creation transaction lacks rollback cleanup'
+require_text "$wallet_factory_function" 'walletdb.TxnCommit(DB_TXN_SYNC)' 'BIP44 creation commit is not synchronous'
+require_text "$wallet_factory_function" 'GenerateNewSeed(&walletdb)' 'BIP44 seed lineage bypasses the creation transaction'
+require_text "$wallet_factory_function" 'TopUpKeyPoolInternal(0, false, &walletdb)' 'initial keypool bypasses the creation transaction'
+for record_write in WriteBip39Words WriteBip39VchSeed WriteBip39Passphrase; do
+  require_text "$wallet_factory_function" "walletdb.$record_write" "BIP44 creation omits transactional $record_write"
+  record_write_count="$(grep -Fc "$record_write" <<<"$wallet_factory_function" || true)"
+  (( record_write_count == 1 )) || fail "BIP44 $record_write occurs outside the single creation boundary"
+done
+factory_mnemonic_line="$(grep -nF 'uiInterface.ShowMnemonic' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_creation_begin_line="$(grep -nF 'active(walletdb.TxnBegin(DB_TXN_SYNC))' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_creation_construct_line="$(grep -nF '} transaction(walletdb);' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_seed_line="$(grep -nF 'GenerateNewSeed(&walletdb)' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_words_line="$(grep -nF 'walletdb.WriteBip39Words' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_seed_record_line="$(grep -nF 'walletdb.WriteBip39VchSeed' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_passphrase_line="$(grep -nF 'walletdb.WriteBip39Passphrase' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_keypool_line="$(grep -nF 'TopUpKeyPoolInternal(0, false, &walletdb)' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_creation_commit_line="$(grep -nF 'if (!transaction.Commit())' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_clear_line="$(grep -nF 'walletInstance->hdChain.ClearSensitiveData()' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+[[ -n "$factory_mnemonic_line" && -n "$factory_creation_begin_line" && -n "$factory_creation_construct_line" && -n "$factory_seed_line" && -n "$factory_words_line" && -n "$factory_seed_record_line" && -n "$factory_passphrase_line" && -n "$factory_keypool_line" && -n "$factory_creation_commit_line" && -n "$factory_clear_line" ]] || fail 'cannot locate the BIP44 atomic-creation boundaries'
+(( factory_mnemonic_line < factory_creation_begin_line && factory_creation_begin_line < factory_creation_construct_line && factory_creation_construct_line < factory_seed_line && factory_seed_line < factory_words_line && factory_words_line < factory_seed_record_line && factory_seed_record_line < factory_keypool_line && factory_keypool_line < factory_passphrase_line && factory_passphrase_line < factory_creation_commit_line && factory_creation_commit_line < factory_clear_line )) || fail 'BIP44 creation publishes lineage or keys outside its atomic boundary'
+for unique_anchor in \
+  'uiInterface.ShowMnemonic' \
+  'active(walletdb.TxnBegin(DB_TXN_SYNC))' \
+  '} transaction(walletdb);' \
+  'GenerateNewSeed(&walletdb)' \
+  'TopUpKeyPoolInternal(0, false, &walletdb)' \
+  'transaction.Commit()' \
+  'walletInstance->hdChain.ClearSensitiveData()'; do
+  unique_anchor_count="$(grep -Fc "$unique_anchor" <<<"$wallet_factory_function" || true)"
+  (( unique_anchor_count == 1 )) || fail "BIP44 creation boundary anchor is absent or duplicated: $unique_anchor"
+done
+require_fixed 'bip44_creation_transaction_aborts_lineage_and_keypool' src/wallet/test/pq_wallet_tests.cpp 'BIP44 atomic-creation regression is missing'
 
 # Locked encrypted wallets must not retain allocated plaintext BIP39 buffers.
 for secure_field in vchWords vchPassphrase g_vchSeed; do

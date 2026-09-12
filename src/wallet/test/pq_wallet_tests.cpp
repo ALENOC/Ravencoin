@@ -358,6 +358,109 @@ public:
     }
 };
 
+class ScopedArgState
+{
+private:
+    std::string name;
+    bool wasSet;
+    std::string value;
+
+public:
+    explicit ScopedArgState(const std::string& nameIn)
+        : name(nameIn), wasSet(gArgs.IsArgSet(nameIn)),
+          value(gArgs.GetArg(nameIn, std::string()))
+    {
+    }
+
+    ~ScopedArgState()
+    {
+        if (wasSet)
+            gArgs.ForceSetArg(name, value);
+        else
+            gArgs.ClearArg(name);
+    }
+};
+
+class ScopedMnemonicGlobals
+{
+private:
+    std::string words;
+    std::string passphrase;
+
+public:
+    ScopedMnemonicGlobals()
+        : words(my_words), passphrase(my_passphrase)
+    {
+    }
+
+    ~ScopedMnemonicGlobals()
+    {
+        my_words = words;
+        my_passphrase = passphrase;
+    }
+};
+
+class ScopedThreadCancellation
+{
+private:
+    std::thread& thread;
+    std::atomic<bool>& firstStop;
+    std::atomic<bool>& secondStop;
+
+public:
+    ScopedThreadCancellation(
+        std::thread& threadIn,
+        std::atomic<bool>& firstStopIn,
+        std::atomic<bool>& secondStopIn)
+        : thread(threadIn), firstStop(firstStopIn), secondStop(secondStopIn)
+    {
+    }
+
+    ~ScopedThreadCancellation()
+    {
+        firstStop = true;
+        secondStop = true;
+        if (thread.joinable())
+            thread.join();
+    }
+};
+
+bool WalletContainsAnyRecordType(
+    const std::string& filename,
+    const std::vector<std::string>& recordTypes)
+{
+    CWalletDBWrapper dbw(&bitdb, filename);
+    CDB db(dbw, "r");
+    Dbc* cursor = db.GetCursor();
+    if (!cursor)
+        throw std::runtime_error("failed to open wallet record cursor");
+
+    while (true) {
+        CDataStream key(SER_DISK, CLIENT_VERSION);
+        CDataStream value(SER_DISK, CLIENT_VERSION);
+        const int result = db.ReadAtCursor(cursor, key, value);
+        if (result == DB_NOTFOUND)
+            break;
+        if (result != 0) {
+            cursor->close();
+            throw std::runtime_error("failed to read wallet record cursor");
+        }
+
+        std::string type;
+        key >> type;
+        for (const std::string& expected : recordTypes) {
+            if (type == expected) {
+                cursor->close();
+                return true;
+            }
+        }
+    }
+
+    if (cursor->close() != 0)
+        throw std::runtime_error("failed to close wallet record cursor");
+    return false;
+}
+
 std::unique_ptr<CWallet> LoadPQWallet(const std::string& filename)
 {
     std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
@@ -2190,6 +2293,203 @@ BOOST_AUTO_TEST_CASE(explicit_salvage_compacts_pending_wallet_and_retains_sensit
     CPQKey recoveredKey;
     BOOST_REQUIRE(recovered->GetPQKey(witnessProgram, recoveredKey));
     BOOST_CHECK(recoveredKey.MatchesPubKey(pubkey));
+}
+
+BOOST_AUTO_TEST_CASE(bip44_creation_transaction_aborts_lineage_and_keypool)
+{
+    const std::string filename = "bip44-atomic-creation-wallet.dat";
+    const std::vector<unsigned char> expectedWords = Bip39TestWords();
+    const std::vector<unsigned char> expectedPassphrase = Bip39TestPassphrase();
+    const std::vector<unsigned char> expectedSeed = Bip39TestSeed();
+    const uint256 expectedWordHash = Hash(expectedWords.begin(), expectedWords.end());
+
+    ScopedArgState mnemonicArg("-mnemonic");
+    ScopedArgState passphraseArg("-mnemonicpassphrase");
+    ScopedMnemonicGlobals mnemonicGlobals;
+    gArgs.ClearArg("-mnemonic");
+    gArgs.ClearArg("-mnemonicpassphrase");
+    my_words.clear();
+    my_passphrase.clear();
+
+    {
+        CWalletDBWrapper fillerDbw(&bitdb, filename);
+        CDB filler(fillerDbw, "c+");
+        BOOST_REQUIRE(filler.TxnBegin());
+        const std::vector<unsigned char> padding(256, 0x41);
+        for (int i = 0; i < 512; ++i) {
+            BOOST_REQUIRE(filler.Write(
+                strprintf("bip39passphq%03d", i), padding));
+            BOOST_REQUIRE(filler.Write(
+                strprintf("bip39passphs%03d", i), padding));
+        }
+        BOOST_REQUIRE(filler.TxnCommit());
+    }
+
+    unsigned int promptCount = 0;
+    unsigned int loadNotifications = 0;
+    bool blockFirstPrompt = true;
+    std::atomic<bool> startBlocker{false};
+    std::atomic<bool> blockerReady{false};
+    std::atomic<bool> releaseBlocker{false};
+    std::atomic<bool> cancelBlocker{false};
+    std::atomic<bool> blockerWriteSucceeded{false};
+    std::atomic<bool> blockerAbortSucceeded{false};
+    std::atomic<bool> blockerDeadlineExpired{false};
+    std::thread blockerThread([&] {
+        while (!startBlocker && !cancelBlocker)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (cancelBlocker)
+            return;
+
+        try {
+            CWalletDBWrapper blockerDbw(&bitdb, filename);
+            CWalletDB blocker(blockerDbw);
+            if (blocker.TxnBegin()) {
+                blockerWriteSucceeded = blocker.WriteBip39Passphrase(
+                    std::vector<unsigned char>(expectedPassphrase.size(), 0x72),
+                    false);
+                blockerReady = true;
+                const std::chrono::steady_clock::time_point deadline =
+                    std::chrono::steady_clock::now() + std::chrono::seconds(60);
+                while (!releaseBlocker &&
+                       std::chrono::steady_clock::now() < deadline) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+                if (!releaseBlocker)
+                    blockerDeadlineExpired = true;
+                blockerAbortSucceeded = blocker.TxnAbort();
+                return;
+            }
+        } catch (...) {
+        }
+        blockerReady = true;
+    });
+    ScopedThreadCancellation blockerThreadCleanup(
+        blockerThread, cancelBlocker, releaseBlocker);
+    boost::signals2::scoped_connection loadConnection(
+        uiInterface.LoadWallet.connect(
+            [&](CWallet*) {
+                ++loadNotifications;
+            }));
+    boost::signals2::scoped_connection mnemonicConnection(
+        uiInterface.ShowMnemonic.connect(
+            [&](int) {
+                ++promptCount;
+                my_words = BIP39_TEST_MNEMONIC;
+                my_passphrase = BIP39_TEST_PASSPHRASE;
+                if (!blockFirstPrompt)
+                    return;
+
+                blockFirstPrompt = false;
+                startBlocker = true;
+                while (!blockerReady)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                if (!blockerWriteSucceeded) {
+                    throw std::runtime_error(
+                        "failed to establish BIP39 creation blocker");
+                }
+            }));
+
+    ScopedDBExpiredLockTimeout timeout(bitdb.dbenv, 100000);
+    std::atomic<bool> detectorFailed{false};
+    std::atomic<bool> timeoutObserved{false};
+    std::atomic<bool> factoryAttemptComplete{false};
+    std::atomic<bool> detectorDeadlineExpired{false};
+    std::thread detectorThread([&] {
+        const std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        while (!factoryAttemptComplete &&
+               std::chrono::steady_clock::now() < deadline) {
+            int rejected = 0;
+            if (bitdb.dbenv->lock_detect(0, DB_LOCK_EXPIRE, &rejected) != 0) {
+                detectorFailed = true;
+                break;
+            }
+            if (rejected > 0) {
+                timeoutObserved = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (!factoryAttemptComplete && !timeoutObserved && !detectorFailed)
+            detectorDeadlineExpired = true;
+        releaseBlocker = true;
+    });
+    ScopedThreadCancellation detectorThreadCleanup(
+        detectorThread, factoryAttemptComplete, releaseBlocker);
+    CWallet* failedWallet = nullptr;
+    BOOST_CHECK_NO_THROW(
+        failedWallet = CWallet::CreateWalletFromFile(filename));
+    factoryAttemptComplete = true;
+    releaseBlocker = true;
+    detectorThread.join();
+    cancelBlocker = true;
+    blockerThread.join();
+    if (failedWallet) {
+        UnregisterValidationInterface(failedWallet);
+        delete failedWallet;
+        BOOST_FAIL("wallet creation unexpectedly survived the blocked write");
+    }
+
+    BOOST_CHECK(!detectorFailed);
+    BOOST_CHECK(!detectorDeadlineExpired);
+    BOOST_CHECK(!blockerDeadlineExpired);
+    BOOST_CHECK(timeoutObserved);
+    BOOST_CHECK(blockerWriteSucceeded);
+    BOOST_CHECK(blockerAbortSucceeded);
+    BOOST_CHECK_EQUAL(promptCount, 1U);
+    BOOST_CHECK_EQUAL(loadNotifications, 0U);
+    BOOST_CHECK(!WalletContainsAnyRecordType(
+        filename,
+        {"hdchain", "bip39words", "bip39passphrase", "bip39vchseed"}));
+    BOOST_CHECK(!WalletContainsAnyRecordType(
+        filename, {"key", "wkey", "ckey", "keymeta", "pool"}));
+
+    {
+        std::unique_ptr<CWalletDBWrapper> probeDbw(
+            new CWalletDBWrapper(&bitdb, filename));
+        CWallet probe(std::move(probeDbw));
+        bool firstRun = false;
+        BOOST_REQUIRE_EQUAL(probe.LoadWallet(firstRun, false), DB_LOAD_OK);
+        BOOST_CHECK(firstRun);
+    }
+
+    CWallet* createdWallet = nullptr;
+    BOOST_CHECK_NO_THROW(
+        createdWallet = CWallet::CreateWalletFromFile(filename));
+    BOOST_REQUIRE(createdWallet != nullptr);
+    BOOST_CHECK_EQUAL(promptCount, 2U);
+    BOOST_CHECK_EQUAL(loadNotifications, 1U);
+    loadConnection.disconnect();
+    mnemonicConnection.disconnect();
+    UnregisterValidationInterface(createdWallet);
+    delete createdWallet;
+    bitdb.Flush(false);
+
+    std::unique_ptr<CWalletDBWrapper> reloadedDbw(
+        new CWalletDBWrapper(&bitdb, filename));
+    std::unique_ptr<CWallet> reloaded(new CWallet(std::move(reloadedDbw)));
+    bool firstRun = true;
+    BOOST_REQUIRE_EQUAL(reloaded->LoadWallet(firstRun, false), DB_LOAD_OK);
+    BOOST_CHECK(!firstRun);
+
+    uint256 wordHash;
+    std::vector<unsigned char> words;
+    std::vector<unsigned char> passphrase;
+    std::vector<unsigned char> seed;
+    reloaded->GetBip39Data(wordHash, words, passphrase, seed);
+    BOOST_CHECK(wordHash == expectedWordHash);
+    BOOST_CHECK(words == expectedWords);
+    BOOST_CHECK(passphrase == expectedPassphrase);
+    BOOST_CHECK(seed == expectedSeed);
+
+    const std::vector<unsigned char> expectedBytes = ParseHex(
+        "023765b56ecb006a47d775beee38c45a9fe5dbe11d100b2e2ea3c99196dc915a2d");
+    const CPubKey expectedFirstExternal(expectedBytes.begin(), expectedBytes.end());
+    BOOST_REQUIRE(expectedFirstExternal.IsValid());
+    CPubKey firstExternal;
+    BOOST_REQUIRE(reloaded->GetKeyFromPool(firstExternal, false));
+    BOOST_CHECK(firstExternal == expectedFirstExternal);
 }
 
 BOOST_AUTO_TEST_CASE(failed_wallet_creation_is_not_published)

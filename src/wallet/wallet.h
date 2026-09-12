@@ -722,7 +722,10 @@ private:
     bool CompleteEncryptionRewrite();
     bool NewKeyPoolInternal(bool allowEncryptionRewritePending);
     bool TopUpKeyPoolInternal(unsigned int kpSize,
-                              bool allowEncryptionRewritePending);
+                              bool allowEncryptionRewritePending,
+                              CWalletDB* pwalletdb = nullptr);
+    bool SetHDChain(const CHDChain& chain, bool memonly, CWalletDB* pwalletdb);
+    CPubKey GenerateNewSeed(CWalletDB* pwalletdb);
 
     /* Used by TransactionAddedToMemorypool/BlockConnected/Disconnected.
      * Should be called with pindexBlock and posInBlock if this is for a transaction that is included in a block. */
