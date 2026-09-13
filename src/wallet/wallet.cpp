@@ -3502,13 +3502,15 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
     if (!AreAssetsDeployed() && (fTransferAsset || fNewAsset || fReissueAsset))
         return false;
 
-    if (fNewAsset && (assets.size() < 1 || !IsValidDestination(destination)))
+    if (fNewAsset && (assets.size() < 1 || !IsValidDestination(destination) ||
+                      !IsSupportedAssetDestination(destination)))
         return error("%s : Tried creating a new asset transaction and the asset was null or the destination was invalid", __func__);
 
     if ((fNewAsset && fTransferAsset) || (fReissueAsset && fTransferAsset) || (fReissueAsset && fNewAsset))
         return error("%s : Only one type of asset transaction allowed per transaction");
 
-    if (fReissueAsset && (reissueAsset.IsNull() || !IsValidDestination(destination)))
+    if (fReissueAsset && (reissueAsset.IsNull() || !IsValidDestination(destination) ||
+                          !IsSupportedAssetDestination(destination)))
         return error("%s : Tried reissuing an asset and the reissue data was null or the destination was invalid", __func__);
     /** RVN END */
 
@@ -3624,8 +3626,28 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
             }
 
             /** RVN START */
+            const bool needsAssetChangeScript =
+                fTransferAsset || fReissueAsset || assetType == AssetType::SUB ||
+                assetType == AssetType::UNIQUE || assetType == AssetType::MSGCHANNEL ||
+                assetType == AssetType::SUB_QUALIFIER || assetType == AssetType::RESTRICTED;
+
             if (!boost::get<CNoDestination>(&coin_control.assetDestChange)) {
+                if (needsAssetChangeScript && !IsSupportedAssetDestination(coin_control.assetDestChange)) {
+                    strFailReason = _("Asset change requires a legacy P2PKH address; RIP-25 witness-v2 protects native RVN only");
+                    return false;
+                }
                 assetScriptChange = GetScriptForDestination(coin_control.assetDestChange);
+            } else if (needsAssetChangeScript) {
+                CTxDestination nativeChangeDestination;
+                if (ExtractDestination(scriptChange, nativeChangeDestination) &&
+                    IsSupportedAssetDestination(nativeChangeDestination)) {
+                    assetScriptChange = scriptChange;
+                } else {
+                    CKeyID assetChangeKeyID;
+                    if (!CreateNewChangeAddress(reservekey, assetChangeKeyID, strFailReason))
+                        return false;
+                    assetScriptChange = GetScriptForDestination(assetChangeKeyID);
+                }
             } else {
                 assetScriptChange = scriptChange;
             }

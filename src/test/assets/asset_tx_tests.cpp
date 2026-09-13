@@ -37,6 +37,52 @@ void AddAssetCoin(CCoinsViewCache& coins, const COutPoint& outpoint, const std::
 
 BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
 
+    BOOST_AUTO_TEST_CASE(asset_destination_scope_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+
+        const CKeyID p2pkh;
+        const CScriptID p2sh;
+        const WitnessV2PQDestination pq(uint256S("03"));
+
+        BOOST_CHECK(IsSupportedAssetDestination(p2pkh));
+        BOOST_CHECK(!IsSupportedAssetDestination(p2sh));
+        BOOST_CHECK(!IsSupportedAssetDestination(pq));
+        BOOST_CHECK(!IsSupportedAssetDestination(CNoDestination()));
+
+        BOOST_CHECK(IsSupportedNullAssetDestination(p2pkh));
+        BOOST_CHECK(IsSupportedNullAssetDestination(p2sh));
+        BOOST_CHECK(!IsSupportedNullAssetDestination(pq));
+        BOOST_CHECK(!IsSupportedNullAssetDestination(CNoDestination()));
+    }
+
+    BOOST_AUTO_TEST_CASE(pq_asset_envelope_is_not_witness_v2_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+
+        CScript script = GetScriptForWitnessV2PQ(uint256S("03"));
+        int witnessVersion = -1;
+        std::vector<unsigned char> witnessProgram;
+        BOOST_REQUIRE(script.IsWitnessProgram(witnessVersion, witnessProgram));
+        BOOST_CHECK_EQUAL(witnessVersion, 2);
+
+        CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(script);
+
+        int assetType = 0;
+        bool isOwner = false;
+        BOOST_CHECK(!script.IsWitnessProgram(witnessVersion, witnessProgram));
+        BOOST_CHECK(!script.IsAssetScript(assetType, isOwner));
+
+        CMutableTransaction mutableTx;
+        mutableTx.vin.emplace_back(COutPoint(uint256S("04"), 0));
+        mutableTx.vout.emplace_back(0, script);
+
+        const CTransaction tx(mutableTx);
+        CValidationState state;
+        BOOST_CHECK(!CheckTransaction(tx, state));
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-op-rvn-asset-not-in-right-script-location");
+    }
+
     BOOST_AUTO_TEST_CASE(asset_tx_valid_test)
     {
         BOOST_TEST_MESSAGE("Running Asset TX Valid Test");

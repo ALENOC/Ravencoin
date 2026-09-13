@@ -14,7 +14,7 @@ License: MIT
 
 ## Abstract
 
-This RIP proposes adding **ML-DSA-44** (FIPS 204) as a post-quantum digital signature scheme to Ravencoin via a new **witness version 2** program. New PQ addresses use ML-DSA-44 exclusively (no ECDSA). Existing ECDSA addresses (witness v0) continue working unchanged. Users gradually migrate funds from ECDSA to ML-DSA-44 addresses, making the system quantum-resistant before quantum computers can break ECDSA.
+This RIP proposes adding **ML-DSA-44** (FIPS 204) as a post-quantum digital signature scheme to Ravencoin via a new **witness version 2** program. New PQ addresses use ML-DSA-44 exclusively (no ECDSA). Existing ECDSA addresses (witness v0) continue working unchanged. Users can migrate native RVN from ECDSA to ML-DSA-44 addresses before quantum computers can break ECDSA. Ravencoin asset outputs are not covered by this version of RIP-25.
 
 The upgrade is deployed as a **soft fork** following the SegWit extensibility model. A phased block weight increase from 8 MWU to 16 MWU, combined with a PQ witness discount factor, ensures that network throughput remains adequate during and after migration.
 
@@ -323,16 +323,30 @@ public:
 
 #### 7.2 Wallet Migration
 
-Users migrate by sending their funds from legacy addresses to new PQ addresses:
+Users migrate native RVN by sending it from legacy addresses to new PQ addresses:
 
 1. Generate new PQ address via `getnewpqaddress` RPC (or wallet UI)
 2. Create transaction spending UTXOs from legacy address to PQ address
 3. Sign with existing ECDSA key (standard legacy transaction)
 4. Broadcast and confirm
 
-After migration, all new change outputs can go to PQ addresses.
+After migration, native RVN change outputs can go to PQ addresses. Asset-bearing change outputs remain limited to the legacy asset destination format.
 
-#### 7.3 Emergency Response Plan
+#### 7.3 Asset Scope
+
+RIP-25 witness-v2 protects native RVN outputs only. It does not change the Ravencoin asset script envelope, which binds spendable asset outputs to legacy P2PKH key identifiers. This limitation applies to:
+
+- normal and reissuable assets;
+- owner tokens such as `ASSET!`;
+- unique assets;
+- restricted assets such as `$ASSET`, whose administration depends on `ASSET!`;
+- qualifier and sub-qualifier assets.
+
+A wallet or raw-transaction RPC must reject a witness-v2 PQ destination when constructing an asset-bearing output. Appending `OP_RVN_ASSET` data to an `OP_2 <32-byte-program>` script does not create a PQ asset output: it makes the script cease to be a witness program, and current consensus rejects the misplaced asset opcode.
+
+Asset owners therefore retain a post-quantum exposure until a separately specified and activated PQ asset extension exists. In particular, theft of `ASSET!` can transfer administrative control and can authorize reissuance where the asset remains reissuable. See [RIP-25 PQ Asset Extension Design Note](RIP-0025-PQ-Assets-Followup.md).
+
+#### 7.4 Emergency Response Plan
 
 If ECDSA is broken before migration completes:
 
@@ -349,7 +363,7 @@ This proposal is a **soft fork**. Backwards compatibility is maintained as follo
 - **Unupgraded nodes**: See witness v2 outputs as "anyone-can-spend" per BIP141 rules
 - **Legacy addresses**: Continue to work indefinitely
 - **Legacy transactions**: Continue to be valid. No existing transaction type is modified
-- **Asset transactions**: All asset operations work with both legacy and PQ addresses
+- **Asset transactions**: Unchanged and outside this RIP. Spendable asset outputs continue to require legacy P2PKH ownership conditions
 - **Migration**: Voluntary. Users migrate funds at their own pace
 
 ---
@@ -361,6 +375,7 @@ This proposal is a **soft fork**. Backwards compatibility is maintained as follo
 - **Consensus determinism**: ML-DSA verification must produce identical results across all platforms. liboqs provides constant-time, platform-independent implementations.
 - **DoS resistance**: Larger transactions increase bandwidth. The PQ witness discount and block weight limits provide economic protection.
 - **Side-channel**: ML-DSA signing uses rejection sampling. Constant-time liboqs implementations mitigate timing attacks.
+- **Asset owner-token exposure**: RIP-25 does not protect `ASSET!` or other asset UTXOs. A future activated asset extension is required before asset ownership and administration can be considered quantum-resistant.
 
 ---
 
