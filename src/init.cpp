@@ -17,6 +17,7 @@
 #include "checkpoints.h"
 #include "compat/sanity.h"
 #include "consensus/validation.h"
+#include "crypto/mldsa.h"
 #include "fs.h"
 #include "httpserver.h"
 #include "httprpc.h"
@@ -818,6 +819,11 @@ bool InitSanityCheck(void)
 
     if (!Random_SanityCheck()) {
         InitError("OS cryptographic RNG sanity check failure. Aborting.");
+        return false;
+    }
+
+    if (!mldsa::SelfTest()) {
+        InitError("ML-DSA-44 consensus backend sanity check failure. Aborting.");
         return false;
     }
 

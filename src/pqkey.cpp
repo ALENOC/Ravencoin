@@ -35,34 +35,46 @@ bool CPQPubKey::Verify(const uint256& hash, const std::vector<unsigned char>& si
 
 // --- CPQKey ---
 
+void CPQKey::Clear()
+{
+    if (!keydata.empty())
+        memory_cleanse(keydata.data(), keydata.size());
+    fValid = false;
+    pubkey = CPQPubKey();
+}
+
 void CPQKey::MakeNewKey()
 {
+    Clear();
     unsigned char pk[mldsa::PUBLICKEY_BYTES];
 
     if (!mldsa::KeyGenRandom(pk, keydata.data())) {
-        fValid = false;
-        pubkey = CPQPubKey();
+        Clear();
+        memory_cleanse(pk, sizeof(pk));
         return;
     }
 
     pubkey = CPQPubKey(pk, pk + mldsa::PUBLICKEY_BYTES);
+    memory_cleanse(pk, sizeof(pk));
     fValid = true;
 }
 
 bool CPQKey::SetSeed(const unsigned char* seed)
 {
+    Clear();
     if (!seed)
         return false;
 
     unsigned char pk[mldsa::PUBLICKEY_BYTES];
 
     if (!mldsa::KeyGen(pk, keydata.data(), seed)) {
-        fValid = false;
-        pubkey = CPQPubKey();
+        Clear();
+        memory_cleanse(pk, sizeof(pk));
         return false;
     }
 
     pubkey = CPQPubKey(pk, pk + mldsa::PUBLICKEY_BYTES);
+    memory_cleanse(pk, sizeof(pk));
     fValid = true;
     return true;
 }
@@ -93,13 +105,14 @@ bool CPQKey::Sign(const uint256& hash, std::vector<unsigned char>& sigOut) const
 bool CPQKey::SetKeyData(const KeyData& data)
 {
     if (data.size() != mldsa::SECRETKEY_BYTES) {
-        fValid = false;
-        pubkey = CPQPubKey();
+        Clear();
         return false;
     }
 
-    if (keydata.data() != data.data())
+    if (keydata.data() != data.data()) {
+        Clear();
         std::memcpy(keydata.data(), data.data(), mldsa::SECRETKEY_BYTES);
+    }
     pubkey = CPQPubKey();
     fValid = true;
     return true;
@@ -128,9 +141,7 @@ bool CPQKey::SetKeyData(const KeyData& data, const CPQPubKey& pubkeyIn)
         return false;
 
     if (!MatchesPubKey(pubkeyIn)) {
-        memory_cleanse(keydata.data(), keydata.size());
-        pubkey = CPQPubKey();
-        fValid = false;
+        Clear();
         return false;
     }
 
