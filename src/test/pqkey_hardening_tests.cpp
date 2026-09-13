@@ -9,6 +9,7 @@
 #include "consensus/consensus.h"
 #include "consensus/validation.h"
 #include "crypto/mldsa.h"
+#include "crypto/sha256.h"
 #include "hash.h"
 #include "keystore.h"
 #include "policy/policy.h"
@@ -19,9 +20,12 @@
 #include "script/standard.h"
 #include "streams.h"
 #include "test/test_raven.h"
+#include "utilstrencodings.h"
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cstring>
 #include <memory>
 #include <type_traits>
@@ -157,14 +161,33 @@ BOOST_AUTO_TEST_CASE(mldsa_rejects_null_inputs)
     size_t siglen = 0;
     const unsigned char msg[] = "RIP-25 null input regression";
 
+    std::memset(pk, 0x5a, sizeof(pk));
+    std::memset(sk, 0x5a, sizeof(sk));
     BOOST_CHECK(!mldsa::KeyGen(nullptr, sk, seed));
+    BOOST_CHECK(std::all_of(std::begin(sk), std::end(sk), [](unsigned char byte) { return byte == 0; }));
+
+    std::memset(pk, 0x5a, sizeof(pk));
     BOOST_CHECK(!mldsa::KeyGen(pk, nullptr, seed));
+    BOOST_CHECK(std::all_of(std::begin(pk), std::end(pk), [](unsigned char byte) { return byte == 0; }));
+
+    std::memset(pk, 0x5a, sizeof(pk));
+    std::memset(sk, 0x5a, sizeof(sk));
     BOOST_CHECK(!mldsa::KeyGen(pk, sk, nullptr));
+    BOOST_CHECK(std::all_of(std::begin(pk), std::end(pk), [](unsigned char byte) { return byte == 0; }));
+    BOOST_CHECK(std::all_of(std::begin(sk), std::end(sk), [](unsigned char byte) { return byte == 0; }));
+
+    std::memset(sk, 0x5a, sizeof(sk));
     BOOST_CHECK(!mldsa::KeyGenRandom(nullptr, sk));
+    BOOST_CHECK(std::all_of(std::begin(sk), std::end(sk), [](unsigned char byte) { return byte == 0; }));
+
+    std::memset(pk, 0x5a, sizeof(pk));
     BOOST_CHECK(!mldsa::KeyGenRandom(pk, nullptr));
+    BOOST_CHECK(std::all_of(std::begin(pk), std::end(pk), [](unsigned char byte) { return byte == 0; }));
 
     BOOST_REQUIRE(mldsa::KeyGen(pk, sk, seed));
+    siglen = 123;
     BOOST_CHECK(!mldsa::Sign(nullptr, &siglen, msg, sizeof(msg) - 1, sk));
+    BOOST_CHECK_EQUAL(siglen, 0U);
     BOOST_CHECK(!mldsa::Sign(sig, nullptr, msg, sizeof(msg) - 1, sk));
     BOOST_CHECK(!mldsa::Sign(sig, &siglen, nullptr, sizeof(msg) - 1, sk));
     BOOST_CHECK(!mldsa::Sign(sig, &siglen, msg, sizeof(msg) - 1, nullptr));
@@ -173,7 +196,7 @@ BOOST_AUTO_TEST_CASE(mldsa_rejects_null_inputs)
     BOOST_CHECK(!mldsa::Verify(sig, mldsa::SIGNATURE_BYTES, msg, sizeof(msg) - 1, nullptr));
 }
 
-BOOST_AUTO_TEST_CASE(deterministic_keygen_restores_system_rng)
+BOOST_AUTO_TEST_CASE(deterministic_keygen_does_not_depend_on_global_rng)
 {
     unsigned char seed[mldsa::SEED_BYTES];
     std::memset(seed, 0x5a, sizeof(seed));
@@ -188,6 +211,48 @@ BOOST_AUTO_TEST_CASE(deterministic_keygen_restores_system_rng)
 
     BOOST_CHECK(std::memcmp(pk1, pk2, mldsa::PUBLICKEY_BYTES) == 0);
     BOOST_CHECK(std::memcmp(sk1, sk2, mldsa::SECRETKEY_BYTES) == 0);
+}
+
+BOOST_AUTO_TEST_CASE(mldsa_backend_compatibility_kat)
+{
+    std::array<std::array<unsigned char, mldsa::SEED_BYTES>, 4> seeds{};
+    seeds[1].fill(0xff);
+    for (size_t i = 0; i < seeds[2].size(); ++i)
+        seeds[2][i] = static_cast<unsigned char>(i);
+    const std::array<unsigned char, mldsa::SEED_BYTES> walletLikeSeed{{
+        0x0c, 0x7e, 0x4e, 0x8f, 0x2d, 0x85, 0x6a, 0x97,
+        0x41, 0x73, 0x3b, 0x1f, 0x9b, 0x2b, 0x8d, 0x44,
+        0x31, 0xd5, 0x97, 0xee, 0x36, 0xf3, 0x7c, 0x91,
+        0xf6, 0x21, 0x0f, 0x74, 0xd7, 0x90, 0x5a, 0x2c
+    }};
+    seeds[3] = walletLikeSeed;
+
+    static const char* expectedPublicKeyHashes[] = {
+        "eb4e7302842153b0fa19e8620739ad258af4929c26dd89079a7ec7d4282208e1",
+        "62c4f1b3164db7fa896a3343e900eb3e13c9f76de122020feba37ee063d49ef0",
+        "9f107644c1084526af3bc8098680b05499a2325a644e388fb4f970e058d19d46",
+        "0d2697f8bb6693644aa76ed6aab823c3b89ae28ab4241dd25ba147289c9476b4"
+    };
+    static const char* expectedSecretKeyHashes[] = {
+        "0f9086044d77b6d610c7e92418d9f70a398c69febc7e99f8254aaea98dcfbe77",
+        "6433074c5ffc9e0f2b1d68bb3fda84e439da0a2d93f508a101e9b44835f0b22c",
+        "04bf6b9f579166a627961dfc5c3bf9717df868db88863856356c4668c8b56b0b",
+        "9c9754163be250124d49606b6d5fa2c4a633038792149870a08e7e4f4894bdac"
+    };
+
+    std::array<unsigned char, mldsa::PUBLICKEY_BYTES> publicKey{};
+    std::array<unsigned char, mldsa::SECRETKEY_BYTES> secretKey{};
+    std::array<unsigned char, CSHA256::OUTPUT_SIZE> digest{};
+    for (size_t i = 0; i < seeds.size(); ++i) {
+        BOOST_REQUIRE(mldsa::KeyGen(publicKey.data(), secretKey.data(), seeds[i].data()));
+
+        CSHA256().Write(publicKey.data(), publicKey.size()).Finalize(digest.data());
+        BOOST_CHECK_EQUAL(HexStr(digest.begin(), digest.end()), expectedPublicKeyHashes[i]);
+
+        CSHA256().Write(secretKey.data(), secretKey.size()).Finalize(digest.data());
+        BOOST_CHECK_EQUAL(HexStr(digest.begin(), digest.end()), expectedSecretKeyHashes[i]);
+        memory_cleanse(secretKey.data(), secretKey.size());
+    }
 }
 
 BOOST_AUTO_TEST_CASE(secret_public_key_binding)
@@ -242,6 +307,8 @@ BOOST_AUTO_TEST_CASE(import_rejects_mismatched_public_key_and_invalidates_key)
     BOOST_CHECK(!imported.SetKeyData(raw, wrongPub));
     BOOST_CHECK(!imported.IsValid());
     BOOST_CHECK(!imported.GetPubKey().IsValid());
+    BOOST_CHECK(std::all_of(imported.GetKeyData().begin(), imported.GetKeyData().end(),
+                            [](unsigned char byte) { return byte == 0; }));
 
     uint256 hash;
     std::memset(hash.begin(), 0xa5, 32);
@@ -263,6 +330,21 @@ BOOST_AUTO_TEST_CASE(import_rejects_wrong_secret_size)
     BOOST_CHECK(!key.IsValid());
     BOOST_CHECK(!key.SetKeyData(tooLong, pubSource.GetPubKey()));
     BOOST_CHECK(!key.IsValid());
+}
+
+BOOST_AUTO_TEST_CASE(failed_reinitialization_cleanses_prior_secret)
+{
+    CPQKey key;
+    key.MakeNewKey();
+    BOOST_REQUIRE(key.IsValid());
+    BOOST_REQUIRE(std::any_of(key.GetKeyData().begin(), key.GetKeyData().end(),
+                              [](unsigned char byte) { return byte != 0; }));
+
+    BOOST_CHECK(!key.SetSeed(nullptr));
+    BOOST_CHECK(!key.IsValid());
+    BOOST_CHECK(!key.GetPubKey().IsValid());
+    BOOST_CHECK(std::all_of(key.GetKeyData().begin(), key.GetKeyData().end(),
+                            [](unsigned char byte) { return byte == 0; }));
 }
 
 BOOST_AUTO_TEST_CASE(witness_v2_active_rules_accept_valid_and_reject_invalid_mldsa)

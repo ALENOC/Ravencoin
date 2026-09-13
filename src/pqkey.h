@@ -79,6 +79,8 @@ private:
     KeyData keydata;
     CPQPubKey pubkey;
 
+    void Clear();
+
 public:
     CPQKey() : fValid(false), keydata(mldsa::SECRETKEY_BYTES, 0) {}
 

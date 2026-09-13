@@ -209,13 +209,19 @@ AC_ARG_ENABLE([zmq],
 
 AC_ARG_WITH([liboqs],
   [AS_HELP_STRING([--with-liboqs],
-  [RIP-25 requires liboqs >= 0.12.0 (required; disabling is unsupported)])],
+  [RIP-25 requires the pinned liboqs 0.16.0 build (required; disabling is unsupported)])],
   [use_liboqs=$withval],
   [use_liboqs=yes])
 
 if test "x$use_liboqs" != "xyes"; then
-  AC_MSG_ERROR([RIP-25 requires liboqs >= 0.12.0; --without-liboqs is not supported])
+  AC_MSG_ERROR([RIP-25 requires the pinned liboqs 0.16.0 build; --without-liboqs is not supported])
 fi
+
+AC_ARG_ENABLE([system-liboqs],
+  [AS_HELP_STRING([--enable-system-liboqs],
+  [explicitly permit an unproven system liboqs 0.16.0 build (unsupported for release artifacts)])],
+  [allow_system_liboqs=$enableval],
+  [allow_system_liboqs=no])
 
 AC_ARG_WITH([protoc-bindir],[AS_HELP_STRING([--with-protoc-bindir=BIN_DIR],[specify protoc bin path])], [protoc_bin_path=$withval], [])
 
@@ -491,14 +497,49 @@ m4_ifndef([PKG_PROG_PKG_CONFIG], [m4_fatal([PKG_PROG_PKG_CONFIG macro not found.
 m4_ifndef([PKG_CHECK_MODULES], [m4_fatal([PKG_CHECK_MODULES macro not found. Please install pkg-config and re-run autogen.sh.])])
 PKG_PROG_PKG_CONFIG
 if test x"$PKG_CONFIG" = x; then
-  AC_MSG_ERROR([pkg-config is required to prove liboqs >= 0.12.0 compatibility])
+  AC_MSG_ERROR([pkg-config is required to prove pinned liboqs 0.16.0 compatibility])
 fi
 
 dnl RIP-25 consensus signatures require final FIPS-204 ML-DSA-44 semantics.
-dnl Refuse unversioned probes: the pre-final interface can be size-compatible.
-PKG_CHECK_MODULES([LIBOQS], [liboqs >= 0.12.0],
+dnl Refuse version ranges and unversioned probes: backend changes can be
+dnl byte-size compatible while changing wallet or consensus behavior.
+PKG_CHECK_MODULES([LIBOQS], [liboqs = 0.16.0],
   [AC_DEFINE([HAVE_LIBOQS], [1], [Define to 1 if liboqs is available])],
-  [AC_MSG_ERROR([RIP-25 requires liboqs >= 0.12.0 discoverable via pkg-config; refusing an unversioned system-library fallback])])
+  [AC_MSG_ERROR([RIP-25 requires exactly liboqs 0.16.0 discoverable via pkg-config; refusing an unversioned system-library fallback])])
+
+LIBOQS_RIP25_SOURCE_SHA256=`$PKG_CONFIG --variable=rip25_source_sha256 liboqs 2>/dev/null`
+if test "x$LIBOQS_RIP25_SOURCE_SHA256" != "x162d5b510518ee5f285f82fa1f16402a885176e818bf1b1a4c3c91c9a2f01eae"; then
+  if test "x$allow_system_liboqs" != "xyes"; then
+    AC_MSG_ERROR([liboqs provenance is not the pinned RIP-25 source archive; build depends or explicitly pass --enable-system-liboqs for unsupported local development])
+  fi
+  AC_MSG_WARN([using explicitly requested unproven system liboqs; this build is not eligible for release artifacts])
+fi
+
+save_CPPFLAGS="$CPPFLAGS"
+save_LIBS="$LIBS"
+CPPFLAGS="$CPPFLAGS $LIBOQS_CFLAGS"
+LIBS="$LIBOQS_LIBS $LIBS"
+AC_LANG_PUSH([C++])
+AC_LINK_IFELSE([AC_LANG_PROGRAM([[
+#include <cstdint>
+#include <oqs/oqs.h>
+#if !defined(OQS_VERSION_MAJOR) || !defined(OQS_VERSION_MINOR) || !defined(OQS_VERSION_PATCH)
+#error liboqs version macros are required
+#endif
+#if OQS_VERSION_MAJOR != 0 || OQS_VERSION_MINOR != 16 || OQS_VERSION_PATCH != 0
+#error exactly liboqs 0.16.0 is required
+#endif
+extern "C" int PQCP_MLDSA_NATIVE_MLDSA44_C_keypair_internal(
+    std::uint8_t*, std::uint8_t*, const std::uint8_t*);
+]], [[
+std::uint8_t pk[OQS_SIG_ml_dsa_44_length_public_key] = {};
+std::uint8_t sk[OQS_SIG_ml_dsa_44_length_secret_key] = {};
+const std::uint8_t seed[32] = {};
+return PQCP_MLDSA_NATIVE_MLDSA44_C_keypair_internal(pk, sk, seed);
+]])], [], [AC_MSG_ERROR([liboqs 0.16.0 lacks the required mldsa-native ML-DSA-44 deterministic keygen backend])])
+AC_LANG_POP([C++])
+CPPFLAGS="$save_CPPFLAGS"
+LIBS="$save_LIBS"
 AC_SUBST([LIBOQS_LIBS])
 AC_SUBST([LIBOQS_CFLAGS])
 
