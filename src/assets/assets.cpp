@@ -3848,6 +3848,53 @@ std::string EncodeIPFS(std::string decoded){
 };
 
 #ifdef ENABLE_WALLET
+namespace {
+
+bool CheckSupportedAssetAddress(const std::string& address, std::pair<int, std::string>& error)
+{
+    const CTxDestination destination = DecodeDestination(address);
+    if (!IsValidDestination(destination)) {
+        error = std::make_pair(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + address);
+        return false;
+    }
+    if (!IsSupportedAssetDestination(destination)) {
+        error = std::make_pair(
+            RPC_INVALID_ADDRESS_OR_KEY,
+            "Ravencoin asset outputs require a legacy P2PKH address; RIP-25 witness-v2 destinations protect native RVN only");
+        return false;
+    }
+    return true;
+}
+
+bool SelectSupportedAssetChangeAddress(CWallet* pwallet, CCoinControl& coinControl,
+                                       CReserveKey& reservekey, const std::string& nativeChangeAddress,
+                                       std::string& assetChangeAddress, std::pair<int, std::string>& error)
+{
+    if (!boost::get<CNoDestination>(&coinControl.assetDestChange)) {
+        assetChangeAddress = EncodeDestination(coinControl.assetDestChange);
+        return CheckSupportedAssetAddress(assetChangeAddress, error);
+    }
+
+    const CTxDestination nativeChangeDestination = DecodeDestination(nativeChangeAddress);
+    if (IsSupportedAssetDestination(nativeChangeDestination)) {
+        assetChangeAddress = nativeChangeAddress;
+        return true;
+    }
+
+    CKeyID keyID;
+    std::string failReason;
+    if (!pwallet->CreateNewChangeAddress(reservekey, keyID, failReason)) {
+        error = std::make_pair(RPC_WALLET_KEYPOOL_RAN_OUT, failReason);
+        return false;
+    }
+
+    coinControl.assetDestChange = keyID;
+    assetChangeAddress = EncodeDestination(keyID);
+    return true;
+}
+
+} // namespace
+
 bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const CNewAsset& asset, const std::string& address, std::pair<int, std::string>& error, CWalletTx& wtxNew, CReserveKey& reservekey, CAmount& nFeeRequired, std::string* verifier_string)
 {
     std::vector<CNewAsset> assets;
@@ -3867,6 +3914,10 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
             error = std::make_pair(RPC_INVALID_PARAMETER, strError);
             return false;
         }
+    }
+
+    if (!CheckSupportedAssetAddress(address, error)) {
+        return false;
     }
 
     if (!change_address.empty()) {
@@ -3908,6 +3959,15 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
         }
     }
 
+    std::string asset_change_address = change_address;
+    const bool needsAssetChange = assetType == AssetType::SUB || assetType == AssetType::UNIQUE ||
+                                  assetType == AssetType::MSGCHANNEL || assetType == AssetType::SUB_QUALIFIER ||
+                                  assetType == AssetType::RESTRICTED;
+    if (needsAssetChange &&
+        !SelectSupportedAssetChangeAddress(pwallet, coinControl, reservekey, change_address, asset_change_address, error)) {
+        return false;
+    }
+
     // Assign the correct burn amount and the correct burn address depending on the type of asset issuance that is happening
     CAmount burnAmount = GetBurnAmount(assetType) * assets.size();
     CScript scriptPubKey = GetScriptForDestination(DecodeDestination(GetBurnAddress(assetType)));
@@ -3939,7 +3999,7 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
     // If the asset is a subasset or unique asset. We need to send the ownertoken change back to ourselfs
     if (assetType == AssetType::SUB || assetType == AssetType::UNIQUE || assetType == AssetType::MSGCHANNEL) {
         // Get the script for the destination address for the assets
-        CScript scriptTransferOwnerAsset = GetScriptForDestination(DecodeDestination(change_address));
+        CScript scriptTransferOwnerAsset = GetScriptForDestination(DecodeDestination(asset_change_address));
 
         CAssetTransfer assetTransfer(parentName + OWNER_TAG, OWNER_ASSET_AMOUNT);
         assetTransfer.ConstructTransaction(scriptTransferOwnerAsset);
@@ -3950,7 +4010,7 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
     // If the asset is a sub qualifier. We need to send the token parent change back to ourselfs
     if (assetType == AssetType::SUB_QUALIFIER) {
         // Get the script for the destination address for the assets
-        CScript scriptTransferQualifierAsset = GetScriptForDestination(DecodeDestination(change_address));
+        CScript scriptTransferQualifierAsset = GetScriptForDestination(DecodeDestination(asset_change_address));
 
         CAssetTransfer assetTransfer(parentName, OWNER_ASSET_AMOUNT);
         assetTransfer.ConstructTransaction(scriptTransferQualifierAsset);
@@ -3980,7 +4040,7 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
 
     if (assetType == AssetType::RESTRICTED) {
         // Restricted assets require the ROOT! token to be sent with the issuance
-        CScript scriptTransferOwnerAsset = GetScriptForDestination(DecodeDestination(change_address));
+        CScript scriptTransferOwnerAsset = GetScriptForDestination(DecodeDestination(asset_change_address));
 
         // Create a transaction that sends the ROOT owner token (e.g. $TOKEN requires TOKEN!)
         std::string strStripped = parentName.substr(1, parentName.size() - 1);
@@ -4037,8 +4097,7 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
     IsAssetNameValid(asset_name, asset_type);
 
     // Check that validitity of the address
-    if (!IsValidDestinationString(address)) {
-        error = std::make_pair(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + address);
+    if (!CheckSupportedAssetAddress(address, error)) {
         return false;
     }
 
@@ -4059,6 +4118,12 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
 
         change_address = EncodeDestination(keyID);
         coinControl.destChange = DecodeDestination(change_address);
+    }
+
+    std::string asset_change_address;
+    if (!SelectSupportedAssetChangeAddress(
+            pwallet, coinControl, reservekey, change_address, asset_change_address, error)) {
+        return false;
     }
 
     // Check the assets name
@@ -4129,7 +4194,7 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
     }
 
     // Get the script for the destination address for the assets
-    CScript scriptTransferOwnerAsset = GetScriptForDestination(DecodeDestination(change_address));
+    CScript scriptTransferOwnerAsset = GetScriptForDestination(DecodeDestination(asset_change_address));
 
     if (asset_type == AssetType::RESTRICTED) {
         CAssetTransfer assetTransfer(stripped_asset_name + OWNER_TAG, OWNER_ASSET_AMOUNT);
@@ -4214,6 +4279,14 @@ bool CreateTransferAssetTransaction(CWallet* pwallet, const CCoinControl& coinCo
     int nChangePosRet = -1;
     bool fSubtractFeeFromAmount = false;
 
+    if (!boost::get<CNoDestination>(&coinControl.assetDestChange) &&
+        !IsSupportedAssetDestination(coinControl.assetDestChange)) {
+        error = std::make_pair(
+            RPC_INVALID_ADDRESS_OR_KEY,
+            "Ravencoin asset change requires a legacy P2PKH address; RIP-25 witness-v2 destinations protect native RVN only");
+        return false;
+    }
+
     // Check for a balance before processing transfers
     CAmount curBalance = pwallet->GetBalance();
     if (curBalance == 0) {
@@ -4235,8 +4308,7 @@ bool CreateTransferAssetTransaction(CWallet* pwallet, const CCoinControl& coinCo
         CAmount nAmount = transfer.first.nAmount;
         int64_t expireTime = transfer.first.nExpireTime;
 
-        if (!IsValidDestinationString(address)) {
-            error = std::make_pair(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + address);
+        if (!CheckSupportedAssetAddress(address, error)) {
             return false;
         }
         auto currentActiveAssetCache = GetCurrentAssetCache();
@@ -4305,6 +4377,18 @@ bool CreateTransferAssetTransaction(CWallet* pwallet, const CCoinControl& coinCo
         int nAddTagCount = 0;
         for (auto pair : *nullAssetTxData) {
 
+            const CTxDestination nullDestination = DecodeDestination(pair.second);
+            if (!IsValidDestination(nullDestination)) {
+                error = std::make_pair(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + pair.second);
+                return false;
+            }
+            if (!IsSupportedNullAssetDestination(nullDestination)) {
+                error = std::make_pair(
+                    RPC_INVALID_ADDRESS_OR_KEY,
+                    "Ravencoin asset tag and freeze operations do not support RIP-25 witness-v2 destinations");
+                return false;
+            }
+
             if (IsAssetNameAQualifier(pair.first.asset_name)) {
                 if (!VerifyQualifierChange(*passets, pair.first, pair.second, strError)) {
                     error = std::make_pair(RPC_INVALID_REQUEST, strError);
@@ -4319,7 +4403,7 @@ bool CreateTransferAssetTransaction(CWallet* pwallet, const CCoinControl& coinCo
                 }
             }
 
-            CScript dataScript = GetScriptForNullAssetDataDestination(DecodeDestination(pair.second));
+            CScript dataScript = GetScriptForNullAssetDataDestination(nullDestination);
             pair.first.ConstructTransaction(dataScript);
 
             CRecipient recipient = {dataScript, 0, false};

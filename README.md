@@ -7,21 +7,22 @@ https://ravencoin.org
 
 ## RIP-25: Post-Quantum Signatures (This Fork)
 
-This fork implements [RIP-25](doc/RIP-0025-PQ-Signatures.md) ([GitHub Issue #1280](https://github.com/RavenProject/Ravencoin/issues/1280)), a proposal to add **quantum-resistant transaction signing** to Ravencoin using ML-DSA-44 (FIPS 204).
+This fork implements [RIP-25](doc/RIP-0025-PQ-Signatures.md) ([GitHub Issue #1280](https://github.com/RavenProject/Ravencoin/issues/1280)), a proposal to add **quantum-resistant native RVN transaction signing** to Ravencoin using ML-DSA-44 (FIPS 204).
 
 ### What it does
 
-New **witness v2** addresses use ML-DSA-44 (a NIST-standardized post-quantum signature algorithm) exclusively. Existing ECDSA addresses (witness v0) continue working unchanged. Users gradually migrate funds from ECDSA to ML-DSA-44 addresses, making the system quantum-resistant before quantum computers can break ECDSA.
+New **witness v2** addresses use ML-DSA-44 (a NIST-standardized post-quantum signature algorithm) exclusively. Existing ECDSA addresses (witness v0) continue working unchanged. Users can migrate native RVN from ECDSA to ML-DSA-44 addresses before quantum computers can break ECDSA. Ravencoin assets remain on their legacy ownership conditions and are outside the current RIP-25 scope.
 
 - **Old addresses (witness v0):** ECDSA/secp256k1, unchanged
 - **New addresses (witness v2):** ML-DSA-44 only, quantum-resistant
-- **Migration:** Users send funds from old to new addresses at their own pace
+- **Migration:** Users send native RVN from old to new addresses at their own pace
+- **Assets:** Normal, owner, reissuable, unique, restricted, and qualifier assets are not protected by RIP-25
 
 ### Key changes
 
 | Area | Change |
 |------|--------|
-| **Consensus** | BIP9 soft-fork deployment (bit 11, 85% threshold), phased block weight increase (8 → 12 → 16 MWU) |
+| **Consensus** | BIP9 soft-fork deployment (bit 12, 85% threshold), phased block weight increase (8 → 12 → 16 MWU) |
 | **Script** | Witness version 2 validation: 2-element witness stack [mldsa_sig, mldsa_pk], SHA256(pk) == program |
 | **Policy** | `TX_WITNESS_V2_PQ_KEYHASH` standard type, PQ witness discount (8x), PQ-aware dust threshold |
 | **Addresses** | Bech32m encoding for witness v2 (HRP: `rvn` mainnet, `trvn` testnet, `rcrt` regtest) |
@@ -29,13 +30,14 @@ New **witness v2** addresses use ML-DSA-44 (a NIST-standardized post-quantum sig
 | **Crypto** | `src/crypto/mldsa.h/cpp` — ML-DSA-44 via [liboqs](https://github.com/open-quantum-safe/liboqs) (FIPS 204 compliant) |
 | **Keys** | `src/pqkey.h/cpp` — `CPQKey` / `CPQPubKey` for ML-DSA-44 key management |
 | **Wallet** | `getnewpqaddress` RPC, PQ keystore integration, `IsMine` for witness v2 |
+| **Assets** | Existing asset scripts remain legacy P2PKH-only; witness-v2 PQ destinations protect native RVN only |
 | **Signing** | ML-DSA-44 signing in `sign.cpp` via `TransactionSignatureCreator` |
 | **Build** | liboqs added as dependency (`depends/packages/liboqs.mk`, `configure.ac --with-liboqs`) |
 | **Tests** | `src/test/pqkey_tests.cpp` — unit tests for ML-DSA-44 keygen, sign/verify, witness programs |
 
 ### Branch
 
-All work is on [`feature/rip25-pq-hybrid`](https://github.com/ALENOC/Ravencoin/tree/feature/rip25-pq-hybrid).
+Audit and remediation work is on [`fix/rip25-v48-glm-remediation`](https://github.com/ALENOC/Ravencoin/tree/fix/rip25-v48-glm-remediation).
 
 ### Building with liboqs
 
@@ -65,7 +67,7 @@ make -j$(nproc)
 
 ### Status
 
-**Complete implementation** — All consensus rules, script validation, policy, network, wallet, signing, address encoding, and ML-DSA-44 cryptographic integration via liboqs are implemented. The build system detects liboqs automatically via pkg-config or `--with-liboqs`.
+The native-RVN witness-v2 implementation includes consensus rules, script validation, policy, network, wallet, signing, address encoding, and ML-DSA-44 integration. This statement does not cover Ravencoin asset ownership, which remains legacy-only pending a separate protocol extension.
 
 For the full specification see [`doc/RIP-0025-PQ-Signatures.md`](doc/RIP-0025-PQ-Signatures.md).
 
@@ -169,4 +171,3 @@ Bitcoin is and always should be focused on its goals of being a better form of m
 In the new global economy, borders and jurisdictions will be less relevant as more assets are tradable and trade across borders is increasingly frictionless. In an age where people can move significant amounts of wealth instantly using Bitcoin, global consumers will likely demand the same efficiency for their securities and similar asset holdings.
 
 For such a global system to work it will need to be independent of regulatory jurisdictions.  This is not due to ideological belief but practicality: if the rails for blockchain asset transfer are not censorship resistance and jurisdiction agnostic, any given jurisdiction may be in conflict with another.  In legacy systems, wealth was generally confined in the jurisdiction of the holder and therefore easy to control based on the policies of that jurisdiction. Because of the global nature of blockchain technology any protocol level ability to control wealth would potentially place jurisdictions in conflict and will not be able to operate fairly.  
-

@@ -66,6 +66,20 @@ if grep -A30 'STANDARD_SCRIPT_VERIFY_FLAGS' src/policy/policy.h | grep -Fq 'SCRI
   fail 'SCRIPT_VERIFY_PQ_HYBRID must not be unconditional in standard flags'
 fi
 
+# RIP-25 protects native RVN only. Asset-bearing outputs retain the legacy
+# P2PKH envelope until a separately specified and activated extension exists.
+reject_fixed 'All asset operations work with both legacy and PQ addresses' doc/RIP-0025-PQ-Signatures.md 'RIP-25 specification still claims unsupported PQ asset protection'
+require_fixed 'RIP-25 witness-v2 protects native RVN outputs only' doc/RIP-0025-PQ-Signatures.md 'RIP-25 asset scope is not documented'
+require_fixed 'bool IsSupportedAssetDestination' src/script/standard.cpp 'asset construction lacks a central legacy-destination predicate'
+require_fixed 'RIP-25 witness-v2 destinations protect native RVN only' src/assets/assets.cpp 'wallet asset builder does not reject unsupported PQ destinations explicitly'
+require_fixed 'RIP-25 witness-v2 destinations protect native RVN only' src/rpc/rawtransaction.cpp 'raw asset builder does not reject unsupported PQ destinations explicitly'
+require_fixed 'needsAssetChangeScript' src/wallet/wallet.cpp 'wallet does not separate native RVN change from legacy asset change'
+require_fixed '!IsSupportedAssetDestination(destination)' src/wallet/wallet.cpp 'wallet asset entry points accept unsupported destination types'
+require_fixed 'pq_asset_envelope_is_not_witness_v2_test' src/test/assets/asset_tx_tests.cpp 'PQ-plus-asset consensus rejection regression missing'
+require_fixed 'Testing PQ native RVN change with independent legacy asset change' test/functional/rpc_assettransfer.py 'native-PQ plus legacy-asset change regression missing'
+require_fixed "'rpc_assettransfer.py'" test/functional/test_runner.py 'asset destination functional regression is not in the functional suite'
+require_fixed 'RIP-0025-PQ-Assets-Followup.md' doc/RIP-0025-PQ-Signatures.md 'PQ asset follow-up design is not linked from the specification'
+
 # GLM-003: contextual 8 -> 12 -> 16 MWU and UTXO-bound 8x discount.
 require_fixed 'VersionBitsStateSinceHeight' src/validation.cpp 'deterministic RIP-25 phase boundary missing'
 require_fixed 'return MAX_BLOCK_WEIGHT_RIP2;' src/validation.cpp '8 MWU pre-activation branch missing'
@@ -592,6 +606,8 @@ behavioral_tests=(
   sigopcount_tests/rip25_v2_sigops_activation_gated
   rip25_versionbits_tests
   asset_tx_tests/transfer_overflow_checks_follow_explicit_context
+  asset_tx_tests/asset_destination_scope_test
+  asset_tx_tests/pq_asset_envelope_is_not_witness_v2_test
   coins_tests/txundo_large_roundtrip_test
   coins_tests/txundo_deserialization_limit_test
   rip25_miner_tests

@@ -104,6 +104,18 @@ typedef boost::variant<CNoDestination, CKeyID, CScriptID, WitnessV2PQDestination
 /** Check whether a CTxDestination is a CNoDestination. */
 bool IsValidDestination(const CTxDestination& dest);
 
+/**
+ * Asset-bearing outputs currently use the legacy P2PKH asset envelope.
+ * Witness-v2 PQ and P2SH destinations cannot carry spendable assets.
+ */
+bool IsSupportedAssetDestination(const CTxDestination& dest);
+
+/**
+ * Address tag and freeze records support legacy 20-byte key or script IDs,
+ * but not witness-v2 PQ destinations.
+ */
+bool IsSupportedNullAssetDestination(const CTxDestination& dest);
+
 /** Get the name of a txnouttype as a C string, or nullptr if unknown. */
 const char* GetTxnOutputType(txnouttype t);
 
