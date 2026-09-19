@@ -388,6 +388,7 @@ libraven_consensus_a_SOURCES = \
   consensus/merkle.cpp \
   consensus/merkle.h \
   consensus/params.h \
+  consensus/rip25.h \
   consensus/validation.h \
   hash.cpp \
   hash.h \

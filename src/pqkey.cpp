@@ -20,7 +20,8 @@ uint256 CPQPubKey::GetWitnessProgram() const
     return result;
 }
 
-bool CPQPubKey::Verify(const uint256& hash, const std::vector<unsigned char>& sig) const
+bool CPQPubKey::Verify(const uint256& hash, const std::vector<unsigned char>& sig,
+                       const unsigned char* context, size_t contextlen) const
 {
     if (!IsValid())
         return false;
@@ -30,6 +31,7 @@ bool CPQPubKey::Verify(const uint256& hash, const std::vector<unsigned char>& si
 
     return mldsa::Verify(sig.data(), sig.size(),
                          hash.begin(), 32,
+                         context, contextlen,
                          vch.data());
 }
 
@@ -79,7 +81,8 @@ bool CPQKey::SetSeed(const unsigned char* seed)
     return true;
 }
 
-bool CPQKey::Sign(const uint256& hash, std::vector<unsigned char>& sigOut) const
+bool CPQKey::Sign(const uint256& hash, std::vector<unsigned char>& sigOut,
+                  const unsigned char* context, size_t contextlen) const
 {
     if (!fValid)
         return false;
@@ -89,6 +92,7 @@ bool CPQKey::Sign(const uint256& hash, std::vector<unsigned char>& sigOut) const
 
     if (!mldsa::Sign(sigOut.data(), &siglen,
                      hash.begin(), 32,
+                     context, contextlen,
                      keydata.data())) {
         sigOut.clear();
         return false;
@@ -120,6 +124,10 @@ bool CPQKey::SetKeyData(const KeyData& data)
 
 bool CPQKey::MatchesPubKey(const CPQPubKey& pubkeyIn) const
 {
+    static const unsigned char context[] = "RVN/ML-DSA-44/keybind/v1";
+    static_assert(sizeof(context) - 1 <= mldsa::MAX_CONTEXT_BYTES,
+                  "ML-DSA key-binding context is too long");
+
     if (!fValid || !pubkeyIn.IsValid())
         return false;
 
@@ -129,10 +137,10 @@ bool CPQKey::MatchesPubKey(const CPQPubKey& pubkeyIn) const
     std::memset(challenge.begin(), 0x52, 32); // 'R' for Ravencoin
 
     std::vector<unsigned char> sig;
-    if (!Sign(challenge, sig))
+    if (!Sign(challenge, sig, context, sizeof(context) - 1))
         return false;
 
-    return pubkeyIn.Verify(challenge, sig);
+    return pubkeyIn.Verify(challenge, sig, context, sizeof(context) - 1);
 }
 
 bool CPQKey::SetKeyData(const KeyData& data, const CPQPubKey& pubkeyIn)

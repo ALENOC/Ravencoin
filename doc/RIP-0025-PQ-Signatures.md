@@ -143,6 +143,34 @@ Witness stack (2 elements):
 
 The `scriptSig` is empty (as with all SegWit inputs). The `scriptPubKey` is the compact 34-byte witness program.
 
+Witness-v2 PQ supports exactly one signature hash mode: implicit `SIGHASH_ALL`.
+The 2,420-byte ML-DSA signature is serialized without an appended signature
+hash byte. A 2,421-byte value such as `signature || 0x01`, and requests for
+`SIGHASH_NONE`, `SIGHASH_SINGLE`, or `SIGHASH_ANYONECANPAY`, are invalid.
+
+#### 3.2.1 ML-DSA Network Context
+
+RIP-25 uses the FIPS 204 context-string interface. The context is exactly 81
+bytes and is constructed as:
+
+```
+ASCII("RVN/ML-DSA-44/v1/" || lowercase_hex_64(network_genesis_hash))
+```
+
+The prefix, slash separators, case, and 64-character hash encoding are fixed.
+The terminating C string NUL is not part of the context. Locale-dependent or
+display-oriented hash formatting is not used.
+
+```
+mainnet: RVN/ML-DSA-44/v1/0000006b444bc2f2ffe627be9d9e7e7a0730000870ef6eb6da46c8eae389df90
+testnet: RVN/ML-DSA-44/v1/000000ecfc5e6324a079542221d00e10362bdc894d56500c414060eea8a3ad5a
+regtest: RVN/ML-DSA-44/v1/0b2c703dc93bb63a36c4e33b85be4855ddbca2ac951a7a0a29b8de0408200a3c
+```
+
+Signing and verification must use the context belonging to the selected
+network. A signature made under one of these contexts is invalid under either
+of the other two contexts.
+
 #### 3.3 Witness Validation Rules
 
 When a node encounters a witness version 2 program of length 32 bytes:
@@ -152,8 +180,8 @@ When a node encounters a witness version 2 program of length 32 bytes:
 3. Validate: `mldsa_pk` is exactly 1,312 bytes (ML-DSA-44 public key size)
 4. Validate: `mldsa_sig` is exactly 2,420 bytes (ML-DSA-44 signature size)
 5. Verify: `SHA256(mldsa_pk) == witness_program` (public key binding)
-6. Compute `sighash` using BIP143-style hashing with `SIGVERSION_WITNESS_V2_PQ`
-7. Verify: `ML_DSA_44_Verify(mldsa_pk, sighash, mldsa_sig)` (ML-DSA check)
+6. Compute `sighash` using BIP143-style hashing with `SIGVERSION_WITNESS_V2_PQ` and implicit `SIGHASH_ALL`
+7. Verify: `ML_DSA_44_Verify(mldsa_pk, sighash, network_context, mldsa_sig)` (ML-DSA check)
 8. If all checks pass, the input is valid
 
 For unupgraded nodes, witness version 2 outputs are treated as "anyone-can-spend" per BIP141 rules, which is safe as long as a supermajority of miners enforce the new rules.
@@ -248,6 +276,16 @@ The 85% threshold provides additional safety margin for this cryptographically s
 
 #### 6.1 Library Integration
 
+The consensus build pins **liboqs 0.16.0** from the reviewed release archive
+with SHA256
+`162d5b510518ee5f285f82fa1f16402a885176e818bf1b1a4c3c91c9a2f01eae`.
+The archive contains mldsa-native revision
+`9b0ee84f4cf399043eca59eca4e5f8531ca1d61b` (v1.0.0-beta2). The depends
+configuration enables ML-DSA-44 only, disables shared libraries and OpenSSL,
+and records the reviewed source checksum in pkg-config metadata. Production
+configuration requires the exact version and provenance. There is no
+unversioned `-loqs` fallback.
+
 The **liboqs** library (Open Quantum Safe, MIT license) provides the ML-DSA-44 implementation:
 
 - Production-quality, constant-time operations
@@ -263,7 +301,8 @@ class CPQPubKey {
 public:
     bool IsValid() const;  // vch.size() == 1312
     uint256 GetWitnessProgram() const;  // SHA256(vch)
-    bool Verify(const uint256& hash, const std::vector<unsigned char>& sig) const;
+    bool Verify(const uint256& hash, const std::vector<unsigned char>& sig,
+                const unsigned char* context, size_t contextlen) const;
 };
 
 class CPQKey {
@@ -271,7 +310,8 @@ class CPQKey {
 public:
     void MakeNewKey();
     bool SetSeed(const unsigned char* seed);
-    bool Sign(const uint256& hash, std::vector<unsigned char>& sigOut) const;
+    bool Sign(const uint256& hash, std::vector<unsigned char>& sigOut,
+              const unsigned char* context, size_t contextlen) const;
     CPQPubKey GetPubKey() const;
 };
 ```
@@ -366,6 +406,17 @@ This proposal is a **soft fork**. Backwards compatibility is maintained as follo
 - **Asset transactions**: Unchanged and outside this RIP. Spendable asset outputs continue to require legacy P2PKH ownership conditions
 - **Migration**: Voluntary. Users migrate funds at their own pace
 
+The network context was added before mainnet RIP-25 activation. Mainnet has no
+valid pre-context RIP-25 history, so the change does not alter an active
+mainnet rule. Testnet and regtest are configured for immediate PQ testing.
+Experimental databases produced by an earlier empty-context build are not
+silently compatible: an old empty-context PQ signature is invalid under the
+network-bound rules. Regtest operators must discard and recreate such chains.
+Before a shared testnet deployment, operators must revalidate its full history
+and prove that it contains no previously accepted empty-context witness-v2 PQ
+spend. If one exists, a separately reviewed activation boundary is required;
+deploying this rule directly over that history would be unsafe.
+
 ---
 
 ## Security Considerations
@@ -373,6 +424,7 @@ This proposal is a **soft fork**. Backwards compatibility is maintained as follo
 - **Shor's algorithm** breaks ECDSA in polynomial time on a CRQC. ML-DSA-44 is resistant.
 - **ML-DSA-44 security** rests on the Module Learning With Errors (MLWE) problem, studied since 2005 and surviving 8 years of NIST public cryptanalysis
 - **Consensus determinism**: ML-DSA verification must produce identical results across all platforms. liboqs provides constant-time, platform-independent implementations.
+- **Network replay separation**: FIPS 204 signing and verification use the exact network-genesis context defined above. The full script cache key includes the same context.
 - **DoS resistance**: Larger transactions increase bandwidth. The PQ witness discount and block weight limits provide economic protection.
 - **Side-channel**: ML-DSA signing uses rejection sampling. Constant-time liboqs implementations mitigate timing attacks.
 - **Asset owner-token exposure**: RIP-25 does not protect `ASSET!` or other asset UTXOs. A future activated asset extension is required before asset ownership and administration can be considered quantum-resistant.

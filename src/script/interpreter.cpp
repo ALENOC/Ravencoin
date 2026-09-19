@@ -1385,6 +1385,8 @@ bool TransactionSignatureChecker::CheckSig(const std::vector<unsigned char> &vch
             return false;
         if (vchPubKey.size() != mldsa::PUBLICKEY_BYTES)
             return false;
+        if (!Consensus::IsValidPQSignatureContext(pqSignatureContext))
+            return false;
 
         // Compute sighash using SIGHASH_ALL and witness v2 PQ hashing
         uint256 sighash = SignatureHash(scriptCode, *txTo, nIn, SIGHASH_ALL, amount, SIGVERSION_WITNESS_V2_PQ, this->txdata);
@@ -1392,6 +1394,7 @@ bool TransactionSignatureChecker::CheckSig(const std::vector<unsigned char> &vch
         // Verify ML-DSA-44 signature
         return mldsa::Verify(vchSigIn.data(), vchSigIn.size(),
                              sighash.begin(), 32,
+                             pqSignatureContext.data(), pqSignatureContext.size(),
                              vchPubKey.data());
     }
 

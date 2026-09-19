@@ -19,6 +19,7 @@ static const size_t PUBLICKEY_BYTES  = 1312;
 static const size_t SECRETKEY_BYTES  = 2560;
 static const size_t SIGNATURE_BYTES  = 2420;
 static const size_t SEED_BYTES       = 32;
+static const size_t MAX_CONTEXT_BYTES = 255;
 
 /**
  * Generate an ML-DSA-44 keypair from a 32-byte seed.
@@ -45,17 +46,20 @@ bool KeyGenRandom(unsigned char* pk, unsigned char* sk);
 
 /**
  * Sign a message using ML-DSA-44.
- * Uses OQS_SIG_sign() internally.
+ * Uses the FIPS 204 context-string API. Empty contexts are rejected.
  *
  * @param[out] sig     Signature buffer (must be SIGNATURE_BYTES)
  * @param[out] siglen  Actual signature length (always SIGNATURE_BYTES for ML-DSA-44)
  * @param[in]  msg     Message to sign
  * @param[in]  msglen  Message length
+ * @param[in]  context Domain-separation context, without a trailing NUL
+ * @param[in]  contextlen Context length from 1 through MAX_CONTEXT_BYTES
  * @param[in]  sk      Secret key (SECRETKEY_BYTES)
  * @return true on success
  */
 bool Sign(unsigned char* sig, size_t* siglen,
           const unsigned char* msg, size_t msglen,
+          const unsigned char* context, size_t contextlen,
           const unsigned char* sk);
 
 /**
@@ -66,11 +70,14 @@ bool Sign(unsigned char* sig, size_t* siglen,
  * @param[in] siglen  Signature length
  * @param[in] msg     Message
  * @param[in] msglen  Message length
+ * @param[in] context Domain-separation context, without a trailing NUL
+ * @param[in] contextlen Context length from 1 through MAX_CONTEXT_BYTES
  * @param[in] pk      Public key (PUBLICKEY_BYTES)
  * @return true if signature is valid
  */
 bool Verify(const unsigned char* sig, size_t siglen,
             const unsigned char* msg, size_t msglen,
+            const unsigned char* context, size_t contextlen,
             const unsigned char* pk);
 
 /**

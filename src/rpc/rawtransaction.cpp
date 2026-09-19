@@ -1813,7 +1813,12 @@ UniValue combinerawtransaction(const JSONRPCRequest& request)
         // ... and merge in other signatures:
         for (const CMutableTransaction& txv : txVariants) {
             if (txv.vin.size() > i) {
-                sigdata = CombineSignatures(prevPubKey, TransactionSignatureChecker(&txConst, i, amount), sigdata, DataFromTransaction(txv, i));
+                sigdata = CombineSignatures(
+                    prevPubKey,
+                    TransactionSignatureChecker(
+                        &txConst, i, amount,
+                        GetParams().GetConsensus().pqSignatureContext),
+                    sigdata, DataFromTransaction(txv, i));
             }
         }
 
@@ -2049,13 +2054,27 @@ UniValue signrawtransaction(const JSONRPCRequest& request)
         SignatureData sigdata;
         // Only sign SIGHASH_SINGLE if there's a corresponding output:
         if (!fHashSingle || (i < mtx.vout.size()))
-            ProduceSignature(MutableTransactionSignatureCreator(&keystore, &mtx, i, amount, nHashType), prevPubKey, sigdata);
-        sigdata = CombineSignatures(prevPubKey, TransactionSignatureChecker(&txConst, i, amount), sigdata, DataFromTransaction(mtx, i));
+            ProduceSignature(MutableTransactionSignatureCreator(
+                                 &keystore, &mtx, i, amount, nHashType,
+                                 GetParams().GetConsensus().pqSignatureContext),
+                             prevPubKey, sigdata);
+        sigdata = CombineSignatures(
+            prevPubKey,
+            TransactionSignatureChecker(
+                &txConst, i, amount,
+                GetParams().GetConsensus().pqSignatureContext),
+            sigdata, DataFromTransaction(mtx, i));
 
         UpdateTransaction(mtx, i, sigdata);
 
         ScriptError serror = SCRIPT_ERR_OK;
-        if (!VerifyScript(txin.scriptSig, prevPubKey, &txin.scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS, TransactionSignatureChecker(&txConst, i, amount), &serror)) {
+        if (!VerifyScript(
+                txin.scriptSig, prevPubKey, &txin.scriptWitness,
+                STANDARD_SCRIPT_VERIFY_FLAGS,
+                TransactionSignatureChecker(
+                    &txConst, i, amount,
+                    GetParams().GetConsensus().pqSignatureContext),
+                &serror)) {
             if (serror == SCRIPT_ERR_INVALID_STACK_OPERATION) {
                 // Unable to sign input and verification failed (possible attempt to partially sign).
                 TxInErrorToJSON(txin, vErrors, "Unable to sign input, invalid stack size (possibly missing key)");

@@ -7,6 +7,7 @@
 #include "chain.h"
 #include "chainparams.h"
 #include "consensus/consensus.h"
+#include "consensus/rip25.h"
 #include "consensus/validation.h"
 #include "crypto/mldsa.h"
 #include "crypto/sha256.h"
@@ -32,6 +33,25 @@
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(pqkey_hardening_tests, BasicTestingSetup)
+
+namespace {
+
+static const unsigned char TEST_CONTEXT[] = "RVN/ML-DSA-44/unit-test/v1";
+
+const Consensus::PQSignatureContext& NetworkContext(const char* network)
+{
+    static const std::unique_ptr<CChainParams> mainParams = CreateChainParams("main");
+    static const std::unique_ptr<CChainParams> testParams = CreateChainParams("test");
+    static const std::unique_ptr<CChainParams> regtestParams = CreateChainParams("regtest");
+
+    if (std::strcmp(network, "main") == 0)
+        return mainParams->GetConsensus().pqSignatureContext;
+    if (std::strcmp(network, "test") == 0)
+        return testParams->GetConsensus().pqSignatureContext;
+    return regtestParams->GetConsensus().pqSignatureContext;
+}
+
+} // namespace
 
 BOOST_AUTO_TEST_CASE(pq_secret_material_uses_secure_allocator_and_legacy_encoding)
 {
@@ -83,6 +103,27 @@ BOOST_AUTO_TEST_CASE(rip25_v48_consensus_constants_and_deployment_bits)
     BOOST_CHECK_EQUAL(MAX_BLOCK_WEIGHT_RIP25_PHASE1, 12000000u);
     BOOST_CHECK_EQUAL(MAX_BLOCK_WEIGHT_RIP25_PHASE2, 16000000u);
     BOOST_CHECK_EQUAL(PQ_WITNESS_SCALE_FACTOR, 8);
+}
+
+BOOST_AUTO_TEST_CASE(rip25_network_signature_contexts_are_canonical)
+{
+    const Consensus::PQSignatureContext& mainContext = NetworkContext("main");
+    const Consensus::PQSignatureContext& testContext = NetworkContext("test");
+    const Consensus::PQSignatureContext& regtestContext = NetworkContext("regtest");
+
+    BOOST_REQUIRE(Consensus::IsValidPQSignatureContext(mainContext));
+    BOOST_REQUIRE(Consensus::IsValidPQSignatureContext(testContext));
+    BOOST_REQUIRE(Consensus::IsValidPQSignatureContext(regtestContext));
+    BOOST_CHECK(mainContext != testContext);
+    BOOST_CHECK(mainContext != regtestContext);
+    BOOST_CHECK(testContext != regtestContext);
+
+    BOOST_CHECK_EQUAL(std::string(mainContext.begin(), mainContext.end()),
+        "RVN/ML-DSA-44/v1/0000006b444bc2f2ffe627be9d9e7e7a0730000870ef6eb6da46c8eae389df90");
+    BOOST_CHECK_EQUAL(std::string(testContext.begin(), testContext.end()),
+        "RVN/ML-DSA-44/v1/000000ecfc5e6324a079542221d00e10362bdc894d56500c414060eea8a3ad5a");
+    BOOST_CHECK_EQUAL(std::string(regtestContext.begin(), regtestContext.end()),
+        "RVN/ML-DSA-44/v1/0b2c703dc93bb63a36c4e33b85be4855ddbca2ac951a7a0a29b8de0408200a3c");
 }
 
 BOOST_AUTO_TEST_CASE(rip25_block_weight_phase_boundaries)
@@ -186,14 +227,33 @@ BOOST_AUTO_TEST_CASE(mldsa_rejects_null_inputs)
 
     BOOST_REQUIRE(mldsa::KeyGen(pk, sk, seed));
     siglen = 123;
-    BOOST_CHECK(!mldsa::Sign(nullptr, &siglen, msg, sizeof(msg) - 1, sk));
+    BOOST_CHECK(!mldsa::Sign(nullptr, &siglen, msg, sizeof(msg) - 1,
+                             TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, sk));
     BOOST_CHECK_EQUAL(siglen, 0U);
-    BOOST_CHECK(!mldsa::Sign(sig, nullptr, msg, sizeof(msg) - 1, sk));
-    BOOST_CHECK(!mldsa::Sign(sig, &siglen, nullptr, sizeof(msg) - 1, sk));
-    BOOST_CHECK(!mldsa::Sign(sig, &siglen, msg, sizeof(msg) - 1, nullptr));
-    BOOST_CHECK(!mldsa::Verify(nullptr, mldsa::SIGNATURE_BYTES, msg, sizeof(msg) - 1, pk));
-    BOOST_CHECK(!mldsa::Verify(sig, mldsa::SIGNATURE_BYTES, nullptr, sizeof(msg) - 1, pk));
-    BOOST_CHECK(!mldsa::Verify(sig, mldsa::SIGNATURE_BYTES, msg, sizeof(msg) - 1, nullptr));
+    BOOST_CHECK(!mldsa::Sign(sig, nullptr, msg, sizeof(msg) - 1,
+                             TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, sk));
+    BOOST_CHECK(!mldsa::Sign(sig, &siglen, nullptr, sizeof(msg) - 1,
+                             TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, sk));
+    BOOST_CHECK(!mldsa::Sign(sig, &siglen, msg, sizeof(msg) - 1,
+                             nullptr, sizeof(TEST_CONTEXT) - 1, sk));
+    BOOST_CHECK(!mldsa::Sign(sig, &siglen, msg, sizeof(msg) - 1,
+                             TEST_CONTEXT, 0, sk));
+    BOOST_CHECK(!mldsa::Sign(sig, &siglen, msg, sizeof(msg) - 1,
+                             TEST_CONTEXT, mldsa::MAX_CONTEXT_BYTES + 1, sk));
+    BOOST_CHECK(!mldsa::Sign(sig, &siglen, msg, sizeof(msg) - 1,
+                             TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, nullptr));
+    BOOST_CHECK(!mldsa::Verify(nullptr, mldsa::SIGNATURE_BYTES, msg, sizeof(msg) - 1,
+                               TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, pk));
+    BOOST_CHECK(!mldsa::Verify(sig, mldsa::SIGNATURE_BYTES, nullptr, sizeof(msg) - 1,
+                               TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, pk));
+    BOOST_CHECK(!mldsa::Verify(sig, mldsa::SIGNATURE_BYTES, msg, sizeof(msg) - 1,
+                               nullptr, sizeof(TEST_CONTEXT) - 1, pk));
+    BOOST_CHECK(!mldsa::Verify(sig, mldsa::SIGNATURE_BYTES, msg, sizeof(msg) - 1,
+                               TEST_CONTEXT, 0, pk));
+    BOOST_CHECK(!mldsa::Verify(sig, mldsa::SIGNATURE_BYTES, msg, sizeof(msg) - 1,
+                               TEST_CONTEXT, mldsa::MAX_CONTEXT_BYTES + 1, pk));
+    BOOST_CHECK(!mldsa::Verify(sig, mldsa::SIGNATURE_BYTES, msg, sizeof(msg) - 1,
+                               TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, nullptr));
 }
 
 BOOST_AUTO_TEST_CASE(deterministic_keygen_does_not_depend_on_global_rng)
@@ -313,7 +373,8 @@ BOOST_AUTO_TEST_CASE(import_rejects_mismatched_public_key_and_invalidates_key)
     uint256 hash;
     std::memset(hash.begin(), 0xa5, 32);
     std::vector<unsigned char> signature;
-    BOOST_CHECK(!imported.Sign(hash, signature));
+    BOOST_CHECK(!imported.Sign(hash, signature,
+                               TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1));
 }
 
 BOOST_AUTO_TEST_CASE(import_rejects_wrong_secret_size)
@@ -349,6 +410,7 @@ BOOST_AUTO_TEST_CASE(failed_reinitialization_cleanses_prior_secret)
 
 BOOST_AUTO_TEST_CASE(witness_v2_active_rules_accept_valid_and_reject_invalid_mldsa)
 {
+    const Consensus::PQSignatureContext& context = NetworkContext("main");
     CPQKey key;
     key.MakeNewKey();
     BOOST_REQUIRE(key.IsValid());
@@ -366,20 +428,35 @@ BOOST_AUTO_TEST_CASE(witness_v2_active_rules_accept_valid_and_reject_invalid_mld
     CMutableTransaction spend;
     spend.vin.emplace_back(COutPoint(fundingTx.GetHash(), 0));
     spend.vout.emplace_back(amount - 1000, CScript() << OP_TRUE);
-    BOOST_REQUIRE(SignSignature(keystore, fundingTx, spend, 0, SIGHASH_ALL));
+    BOOST_REQUIRE(SignSignature(keystore, fundingTx, spend, 0, SIGHASH_ALL, context));
     BOOST_REQUIRE_EQUAL(spend.vin[0].scriptWitness.stack.size(), 2U);
     BOOST_REQUIRE_EQUAL(spend.vin[0].scriptWitness.stack[0].size(), mldsa::SIGNATURE_BYTES);
     BOOST_REQUIRE_EQUAL(spend.vin[0].scriptWitness.stack[1].size(), mldsa::PUBLICKEY_BYTES);
 
+    const int unsupportedHashTypes[] = {
+        SIGHASH_NONE,
+        SIGHASH_SINGLE,
+        SIGHASH_ALL | SIGHASH_ANYONECANPAY
+    };
+    for (int hashType : unsupportedHashTypes) {
+        CMutableTransaction unsupportedSpend;
+        unsupportedSpend.vin.emplace_back(COutPoint(fundingTx.GetHash(), 0));
+        unsupportedSpend.vout.emplace_back(amount - 1000, CScript() << OP_TRUE);
+        BOOST_CHECK(!SignSignature(keystore, fundingTx, unsupportedSpend, 0,
+                                   hashType, context));
+        BOOST_CHECK(unsupportedSpend.vin[0].scriptWitness.IsNull());
+    }
+
     auto verifySpend = [&](const CMutableTransaction& candidate,
                            unsigned int flags,
+                           const Consensus::PQSignatureContext& verifyContext,
                            ScriptError& error) {
         const CTransaction tx(candidate);
         return VerifyScript(tx.vin[0].scriptSig,
                             fundingTx.vout[0].scriptPubKey,
                             &tx.vin[0].scriptWitness,
                             flags,
-                            TransactionSignatureChecker(&tx, 0, amount),
+                            TransactionSignatureChecker(&tx, 0, amount, verifyContext),
                             &error);
     };
 
@@ -387,24 +464,77 @@ BOOST_AUTO_TEST_CASE(witness_v2_active_rules_accept_valid_and_reject_invalid_mld
     const unsigned int activeFlags = preActivationFlags | SCRIPT_VERIFY_PQ_HYBRID;
     ScriptError error = SCRIPT_ERR_UNKNOWN_ERROR;
 
-    BOOST_CHECK(verifySpend(spend, activeFlags, error));
+    BOOST_CHECK(verifySpend(spend, activeFlags, context, error));
     BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
+
+    BOOST_CHECK(!verifySpend(spend, activeFlags,
+                             Consensus::NullPQSignatureContext(), error));
+    BOOST_CHECK_EQUAL(error, SCRIPT_ERR_PQ_SIGNATURE_VERIFY_FAILED);
 
     CMutableTransaction emptyWitness = spend;
     emptyWitness.vin[0].scriptWitness.stack.clear();
 
     // Before activation, witness-v2 retains normal future-witness consensus
     // semantics. Relay separately rejects newly-created v2 outputs.
-    BOOST_CHECK(verifySpend(emptyWitness, preActivationFlags, error));
+    BOOST_CHECK(verifySpend(emptyWitness, preActivationFlags,
+                            Consensus::NullPQSignatureContext(), error));
     BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
 
-    BOOST_CHECK(!verifySpend(emptyWitness, activeFlags, error));
+    BOOST_CHECK(!verifySpend(emptyWitness, activeFlags, context, error));
     BOOST_CHECK_EQUAL(error, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
 
     CMutableTransaction malformedSignature = spend;
     malformedSignature.vin[0].scriptWitness.stack[0][0] ^= 0x01;
-    BOOST_CHECK(!verifySpend(malformedSignature, activeFlags, error));
+    BOOST_CHECK(!verifySpend(malformedSignature, activeFlags, context, error));
     BOOST_CHECK_EQUAL(error, SCRIPT_ERR_PQ_SIGNATURE_VERIFY_FAILED);
+}
+
+BOOST_AUTO_TEST_CASE(witness_v2_signatures_are_bound_to_network_context)
+{
+    const Consensus::PQSignatureContext& mainContext = NetworkContext("main");
+    const Consensus::PQSignatureContext& testContext = NetworkContext("test");
+    const Consensus::PQSignatureContext& regtestContext = NetworkContext("regtest");
+    const Consensus::PQSignatureContext* contexts[] = {
+        &mainContext, &testContext, &regtestContext
+    };
+
+    CPQKey key;
+    key.MakeNewKey();
+    BOOST_REQUIRE(key.IsValid());
+    const CPQPubKey pubkey = key.GetPubKey();
+
+    CBasicKeyStore keystore;
+    BOOST_REQUIRE(keystore.AddPQKeyPubKey(key, pubkey));
+
+    const CAmount amount = 10 * COIN;
+    CMutableTransaction funding;
+    funding.vout.emplace_back(amount,
+        GetScriptForWitnessV2PQ(pubkey.GetWitnessProgram()));
+    const CTransaction fundingTx(funding);
+    const unsigned int flags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS |
+                               SCRIPT_VERIFY_PQ_HYBRID;
+
+    for (size_t signingNetwork = 0; signingNetwork < 3; ++signingNetwork) {
+        CMutableTransaction spend;
+        spend.vin.emplace_back(COutPoint(fundingTx.GetHash(), 0));
+        spend.vout.emplace_back(amount - 1000, CScript() << OP_TRUE);
+        BOOST_REQUIRE(SignSignature(keystore, fundingTx, spend, 0, SIGHASH_ALL,
+                                    *contexts[signingNetwork]));
+
+        const CTransaction tx(spend);
+        for (size_t verifyingNetwork = 0; verifyingNetwork < 3; ++verifyingNetwork) {
+            ScriptError error = SCRIPT_ERR_UNKNOWN_ERROR;
+            const bool accepted = VerifyScript(
+                tx.vin[0].scriptSig, fundingTx.vout[0].scriptPubKey,
+                &tx.vin[0].scriptWitness, flags,
+                TransactionSignatureChecker(&tx, 0, amount,
+                                            *contexts[verifyingNetwork]),
+                &error);
+            BOOST_CHECK_EQUAL(accepted, signingNetwork == verifyingNetwork);
+            BOOST_CHECK_EQUAL(error, signingNetwork == verifyingNetwork
+                ? SCRIPT_ERR_OK : SCRIPT_ERR_PQ_SIGNATURE_VERIFY_FAILED);
+        }
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
