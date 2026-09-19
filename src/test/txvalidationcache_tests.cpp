@@ -18,12 +18,13 @@
 #include "core_io.h"
 #include "keystore.h"
 #include "policy/policy.h"
+#include "pqkey.h"
 
 #include <boost/test/unit_test.hpp>
 
 #include "util.h"
 
-bool CheckInputs(const CTransaction &tx, CValidationState &state, const CCoinsViewCache &inputs, bool fScriptChecks, unsigned int flags, bool cacheSigStore, bool cacheFullScriptStore, PrecomputedTransactionData &txdata, std::vector<CScriptCheck> *pvChecks);
+bool CheckInputs(const CTransaction &tx, CValidationState &state, const CCoinsViewCache &inputs, bool fScriptChecks, unsigned int flags, bool cacheSigStore, bool cacheFullScriptStore, PrecomputedTransactionData &txdata, std::vector<CScriptCheck> *pvChecks, const Consensus::PQSignatureContext& pqSignatureContext = Consensus::NullPQSignatureContext());
 
 BOOST_AUTO_TEST_SUITE(tx_validationcache_tests)
 
@@ -392,6 +393,70 @@ BOOST_AUTO_TEST_SUITE(tx_validationcache_tests)
             // Should get 2 script checks back -- caching is on a whole-transaction basis.
             BOOST_CHECK_EQUAL(scriptchecks.size(), (uint64_t)2);
         }
+    }
+
+    BOOST_FIXTURE_TEST_CASE(pq_script_cache_separates_network_context, TestChain100Setup)
+    {
+        LOCK(cs_main);
+        InitScriptExecutionCache();
+
+        const std::unique_ptr<CChainParams> mainParams = CreateChainParams("main");
+        const std::unique_ptr<CChainParams> testParams = CreateChainParams("test");
+        BOOST_REQUIRE(mainParams);
+        BOOST_REQUIRE(testParams);
+        const Consensus::PQSignatureContext& mainContext =
+            mainParams->GetConsensus().pqSignatureContext;
+        const Consensus::PQSignatureContext& testContext =
+            testParams->GetConsensus().pqSignatureContext;
+
+        CPQKey key;
+        key.MakeNewKey();
+        BOOST_REQUIRE(key.IsValid());
+        const CPQPubKey pubkey = key.GetPubKey();
+
+        CBasicKeyStore keystore;
+        BOOST_REQUIRE(keystore.AddPQKeyPubKey(key, pubkey));
+
+        const CAmount amount = 10 * COIN;
+        CMutableTransaction funding;
+        funding.vout.emplace_back(amount,
+            GetScriptForWitnessV2PQ(pubkey.GetWitnessProgram()));
+        const CTransaction fundingTx(funding);
+        const COutPoint prevout(fundingTx.GetHash(), 0);
+        pcoinsTip->AddCoin(prevout,
+            Coin(fundingTx.vout[0], chainActive.Height(), false), false);
+
+        CMutableTransaction spend;
+        spend.vin.emplace_back(prevout);
+        spend.vout.emplace_back(amount - 1000, CScript() << OP_TRUE);
+        BOOST_REQUIRE(SignSignature(keystore, fundingTx, spend, 0, SIGHASH_ALL,
+                                    mainContext));
+        const CTransaction tx(spend);
+        PrecomputedTransactionData txdata(tx);
+        const unsigned int flags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS |
+                                   SCRIPT_VERIFY_PQ_HYBRID;
+
+        CValidationState mainState;
+        BOOST_REQUIRE(CheckInputs(tx, mainState, *pcoinsTip, true, flags,
+                                  true, true, txdata, nullptr, mainContext));
+
+        // Identical tx, wtxid, and flags must not reuse a success cached for a
+        // different network context.
+        CValidationState testState;
+        BOOST_CHECK(!CheckInputs(tx, testState, *pcoinsTip, true, flags,
+                                 true, true, txdata, nullptr, testContext));
+
+        std::vector<CScriptCheck> checks;
+        CValidationState cachedMainState;
+        BOOST_CHECK(CheckInputs(tx, cachedMainState, *pcoinsTip, true, flags,
+                                true, true, txdata, &checks, mainContext));
+        BOOST_CHECK(checks.empty());
+
+        CValidationState missingContextState;
+        BOOST_CHECK(!CheckInputs(tx, missingContextState, *pcoinsTip, true,
+                                 flags, true, true, txdata, nullptr,
+                                 Consensus::NullPQSignatureContext()));
+        BOOST_CHECK(missingContextState.IsError());
     }
 
 BOOST_AUTO_TEST_SUITE_END()

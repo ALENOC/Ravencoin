@@ -7,6 +7,7 @@
 #ifndef RAVEN_CONSENSUS_PARAMS_H
 #define RAVEN_CONSENSUS_PARAMS_H
 
+#include "consensus/rip25.h"
 #include "uint256.h"
 #include <map>
 #include <string>
@@ -81,6 +82,7 @@ struct Params {
     bool nSegwitEnabled;
     bool nCSVEnabled;
     bool nPQHybridEnabled; // RIP-25: Post-Quantum Hybrid Signatures
+    PQSignatureContext pqSignatureContext{};
     int nHeightHeaderCheckActivation;
 };
 } // namespace Consensus

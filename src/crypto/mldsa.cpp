@@ -59,7 +59,9 @@ OQS_SIG* NewMLDSA44()
 
     if (sig->length_public_key != mldsa::PUBLICKEY_BYTES ||
         sig->length_secret_key != mldsa::SECRETKEY_BYTES ||
-        sig->length_signature != mldsa::SIGNATURE_BYTES) {
+        sig->length_signature != mldsa::SIGNATURE_BYTES ||
+        !sig->sig_with_ctx_support || !sig->sign_with_ctx_str ||
+        !sig->verify_with_ctx_str) {
         OQS_SIG_free(sig);
         return nullptr;
     }
@@ -120,9 +122,11 @@ bool KeyGenRandom(unsigned char* pk, unsigned char* sk)
 
 bool Sign(unsigned char* sig, size_t* siglen,
           const unsigned char* msg, size_t msglen,
+          const unsigned char* context, size_t contextlen,
           const unsigned char* sk)
 {
-    if (!sig || !siglen || !msg || !sk) {
+    if (!sig || !siglen || !msg || !context || contextlen == 0 ||
+        contextlen > MAX_CONTEXT_BYTES || !sk) {
         if (siglen)
             *siglen = 0;
         return false;
@@ -135,7 +139,8 @@ bool Sign(unsigned char* sig, size_t* siglen,
         return false;
     }
 
-    const OQS_STATUS rc = OQS_SIG_sign(signer, sig, siglen, msg, msglen, sk);
+    const OQS_STATUS rc = OQS_SIG_sign_with_ctx_str(
+        signer, sig, siglen, msg, msglen, context, contextlen, sk);
     OQS_SIG_free(signer);
 
     if (rc != OQS_SUCCESS || *siglen != SIGNATURE_BYTES) {
@@ -148,9 +153,11 @@ bool Sign(unsigned char* sig, size_t* siglen,
 
 bool Verify(const unsigned char* sig, size_t siglen,
             const unsigned char* msg, size_t msglen,
+            const unsigned char* context, size_t contextlen,
             const unsigned char* pk)
 {
-    if (!sig || !msg || !pk)
+    if (!sig || !msg || !context || contextlen == 0 ||
+        contextlen > MAX_CONTEXT_BYTES || !pk)
         return false;
 
     if (siglen != SIGNATURE_BYTES)
@@ -160,7 +167,8 @@ bool Verify(const unsigned char* sig, size_t siglen,
     if (!verifier)
         return false;
 
-    const OQS_STATUS rc = OQS_SIG_verify(verifier, msg, msglen, sig, siglen, pk);
+    const OQS_STATUS rc = OQS_SIG_verify_with_ctx_str(
+        verifier, msg, msglen, sig, siglen, context, contextlen, pk);
     OQS_SIG_free(verifier);
 
     return rc == OQS_SUCCESS;
@@ -168,6 +176,9 @@ bool Verify(const unsigned char* sig, size_t siglen,
 
 bool SelfTest()
 {
+    static const unsigned char context[] = "RVN/ML-DSA-44/selftest/v1";
+    static_assert(sizeof(context) - 1 <= MAX_CONTEXT_BYTES,
+                  "ML-DSA self-test context is too long");
     static const std::array<unsigned char, 32> expectedPublicKeyHash{{
         0xeb, 0x4e, 0x73, 0x02, 0x84, 0x21, 0x53, 0xb0,
         0xfa, 0x19, 0xe8, 0x62, 0x07, 0x39, 0xad, 0x25,
@@ -196,14 +207,17 @@ bool SelfTest()
         ok = publicKeyHash == expectedPublicKeyHash;
     }
     ok = ok && Sign(signature.data(), &signatureLength,
-                    message.data(), message.size(), sk.data());
+                    message.data(), message.size(),
+                    context, sizeof(context) - 1, sk.data());
     ok = ok && signatureLength == SIGNATURE_BYTES;
     ok = ok && Verify(signature.data(), signatureLength,
-                      message.data(), message.size(), pk.data());
+                      message.data(), message.size(),
+                      context, sizeof(context) - 1, pk.data());
     if (ok) {
         signature[0] ^= 1;
         ok = !Verify(signature.data(), signatureLength,
-                     message.data(), message.size(), pk.data());
+                     message.data(), message.size(),
+                     context, sizeof(context) - 1, pk.data());
         signature[0] ^= 1;
     }
 

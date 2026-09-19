@@ -45,8 +45,9 @@ public:
     /** Compute witness v2 program: SHA256(mldsa_pubkey) */
     uint256 GetWitnessProgram() const;
 
-    /** Verify an ML-DSA-44 signature over a 32-byte hash */
-    bool Verify(const uint256& hash, const std::vector<unsigned char>& sig) const;
+    /** Verify an ML-DSA-44 signature over a 32-byte hash and explicit context. */
+    bool Verify(const uint256& hash, const std::vector<unsigned char>& sig,
+                const unsigned char* context, size_t contextlen) const;
 
     std::vector<unsigned char> GetVch() const { return vch; }
 
@@ -100,8 +101,9 @@ public:
 
     CPQPubKey GetPubKey() const { return pubkey; }
 
-    /** Sign a 32-byte hash with ML-DSA-44 */
-    bool Sign(const uint256& hash, std::vector<unsigned char>& sigOut) const;
+    /** Sign a 32-byte hash with ML-DSA-44 and an explicit context. */
+    bool Sign(const uint256& hash, std::vector<unsigned char>& sigOut,
+              const unsigned char* context, size_t contextlen) const;
 
     /** Get raw secret key data (for wallet serialization) */
     const KeyData& GetKeyData() const { return keydata; }

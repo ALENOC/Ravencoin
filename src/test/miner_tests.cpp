@@ -705,7 +705,8 @@ CTransactionRef AddPQSpendToMempool(bool p2shWrapped, size_t inputCount, uint32_
     spend.vout.emplace_back(inputAmount * inputCount - fee, fundingScript);
 
     for (size_t i = 0; i < inputCount; ++i) {
-        if (!SignSignature(keystore, fundingTx, spend, i, SIGHASH_ALL))
+        if (!SignSignature(keystore, fundingTx, spend, i, SIGHASH_ALL,
+                           GetParams().GetConsensus().pqSignatureContext))
             throw std::runtime_error("failed to sign PQ spend");
     }
 

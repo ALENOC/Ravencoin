@@ -515,6 +515,16 @@ reject_fixed 'OQS_randombytes_custom_algorithm' src/crypto/mldsa.cpp 'determinis
 reject_fixed 'OQS_randombytes_switch_algorithm' src/crypto/mldsa.cpp 'deterministic keygen still changes process-global RNG state'
 require_fixed 'mldsa::SelfTest()' src/init.cpp 'node startup does not fail closed on ML-DSA backend self-test failure'
 require_fixed 'mldsa_backend_compatibility_kat' src/test/pqkey_hardening_tests.cpp 'multi-seed backend compatibility KAT is missing'
+require_fixed 'OQS_SIG_sign_with_ctx_str' src/crypto/mldsa.cpp 'ML-DSA signing does not use the FIPS 204 context API'
+require_fixed 'OQS_SIG_verify_with_ctx_str' src/crypto/mldsa.cpp 'ML-DSA verification does not use the FIPS 204 context API'
+require_fixed 'RVN/ML-DSA-44/v1/0000006b444bc2f2ffe627be9d9e7e7a0730000870ef6eb6da46c8eae389df90' src/chainparams.cpp 'mainnet ML-DSA context changed'
+require_fixed 'RVN/ML-DSA-44/v1/000000ecfc5e6324a079542221d00e10362bdc894d56500c414060eea8a3ad5a' src/chainparams.cpp 'testnet ML-DSA context changed'
+require_fixed 'RVN/ML-DSA-44/v1/0b2c703dc93bb63a36c4e33b85be4855ddbca2ac951a7a0a29b8de0408200a3c' src/chainparams.cpp 'regtest ML-DSA context changed'
+require_fixed 'pqSignatureContext.data(), pqSignatureContext.size()' src/script/interpreter.cpp 'witness-v2 verification does not use the selected network context'
+require_fixed 'cacheHasher.Write(pqSignatureContext.data(), pqSignatureContext.size())' src/validation.cpp 'script execution cache is not separated by ML-DSA network context'
+require_fixed 'txCreator->GetHashType() == SIGHASH_ALL' src/script/sign.cpp 'PQ producer does not reject unsupported sighash modes'
+require_fixed 'witness_v2_signatures_are_bound_to_network_context' src/test/pqkey_hardening_tests.cpp 'cross-network replay regression is missing'
+require_fixed 'pq_script_cache_separates_network_context' src/test/txvalidationcache_tests.cpp 'script-cache context separation regression is missing'
 require_fixed 'failed_reinitialization_cleanses_prior_secret' src/test/pqkey_hardening_tests.cpp 'PQ key failure-path cleanse regression is missing'
 if ! grep -A4 'libravenconsensus_la_LIBADD' src/Makefile.am | grep -Fq '$(LIBOQS_LIBS)'; then
   fail 'libravenconsensus must link LIBOQS_LIBS'
@@ -644,6 +654,7 @@ behavioral_tests=(
   rpc_tests/rip25_gbt_reports_contextual_resource_limits
   mempool_tests/rip25_reorg_purges_preactivation_policy_transactions
   pqkey_hardening_tests
+  tx_validationcache_tests/pq_script_cache_separates_network_context
   kawpow_v48_hardening_tests
   bip39_tests
   wallet_crypto/lock_cleanses_and_releases_plaintext_secret_storage
