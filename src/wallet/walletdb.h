@@ -132,6 +132,73 @@ public:
     bool SetMnemonic(const SecureString& ssMnemonic, const SecureString& ssMnemonicPassphrase, SecureVector& vchSeed);
 };
 
+/** Versioned allocation state for the dedicated deterministic PQ branch. */
+class CPQHDChain
+{
+public:
+    static constexpr uint32_t VERSION_1 = 1;
+    static constexpr uint32_t CURRENT_VERSION = VERSION_1;
+    static constexpr uint32_t MAX_COUNTER = 0x80000000U;
+    static constexpr uint8_t SEED_SOURCE_NONE = 0;
+    static constexpr uint8_t SEED_SOURCE_LEGACY_HD = 1;
+    static constexpr uint8_t SEED_SOURCE_BIP39 = 2;
+
+    uint32_t nVersion;
+    uint32_t nExternalChainCounter;
+    uint8_t nSeedSource;
+    uint32_t nCoinType;
+    uint256 lineage_id;
+
+    CPQHDChain() { SetNull(); }
+
+    ADD_SERIALIZE_METHODS;
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream& s, Operation ser_action)
+    {
+        READWRITE(nVersion);
+        READWRITE(nExternalChainCounter);
+        READWRITE(nSeedSource);
+        READWRITE(nCoinType);
+        READWRITE(lineage_id);
+    }
+
+    void SetNull()
+    {
+        nVersion = CURRENT_VERSION;
+        nExternalChainCounter = 0;
+        nSeedSource = SEED_SOURCE_NONE;
+        nCoinType = 0;
+        lineage_id.SetNull();
+    }
+
+    bool IsValid() const
+    {
+        if (nVersion != CURRENT_VERSION ||
+            nExternalChainCounter > MAX_COUNTER)
+            return false;
+        if (nSeedSource == SEED_SOURCE_NONE)
+            return nExternalChainCounter == 0 && nCoinType == 0 &&
+                   lineage_id.IsNull();
+        return (nSeedSource == SEED_SOURCE_LEGACY_HD ||
+                nSeedSource == SEED_SOURCE_BIP39) &&
+               nCoinType < MAX_COUNTER && !lineage_id.IsNull();
+    }
+
+    bool IsInitialized() const
+    {
+        return IsValid() && nSeedSource != SEED_SOURCE_NONE;
+    }
+
+    void SetLineage(uint8_t seedSource, uint32_t coinType,
+                    const uint256& lineageId)
+    {
+        SetNull();
+        nSeedSource = seedSource;
+        nCoinType = coinType;
+        lineage_id = lineageId;
+    }
+};
+
 class CKeyMetadata
 {
 public:
@@ -284,6 +351,9 @@ public:
 
     //! write the hdchain model (external chain child index counter)
     bool WriteHDChain(const CHDChain& chain);
+
+    //! Write the deterministic PQ branch allocation state.
+    bool WritePQHDChain(const CPQHDChain& chain);
 
     //! Begin a new transaction
     bool TxnBegin(int flags = DB_TXN_WRITE_NOSYNC);

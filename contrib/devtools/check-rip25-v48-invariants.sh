@@ -163,18 +163,25 @@ fi
 
 # Encrypted PQ wallet persistence: ciphertext path must return before plaintext.
 wallet_pq_function="$(sed -n '/^bool CWallet::AddPQKeyPubKey(/,/^}/p' src/wallet/wallet.cpp)"
-require_text "$wallet_pq_function" 'CCryptoKeyStore::AddPQKeyPubKey' 'wallet PQ insertion bypasses the crypto keystore'
-require_text "$wallet_pq_function" 'if (IsCrypted())' 'encrypted PQ wallet path lacks an early return'
-require_text "$wallet_pq_function" 'WritePQKey' 'unencrypted PQ wallet persistence missing'
-if ! grep -A1 -F 'if (IsCrypted())' <<<"$wallet_pq_function" | grep -Fq 'return true;'; then
+wallet_pq_with_db_function="$(sed -n '/^bool CWallet::AddPQKeyPubKeyWithDB(/,/^}/p' src/wallet/wallet.cpp)"
+require_text "$wallet_pq_function" 'AddPQKeyPubKeyWithDB' 'wallet PQ insertion bypasses its transactional helper'
+require_text "$wallet_pq_with_db_function" 'CCryptoKeyStore::AddPQKeyPubKey' 'wallet PQ insertion bypasses the crypto keystore'
+require_text "$wallet_pq_with_db_function" 'if (IsCrypted())' 'encrypted PQ wallet path lacks an early return'
+require_text "$wallet_pq_with_db_function" 'WritePQKey' 'unencrypted PQ wallet persistence missing'
+if ! grep -A1 -F 'if (IsCrypted())' <<<"$wallet_pq_with_db_function" | grep -Fq 'return true;'; then
   fail 'encrypted PQ wallet path can fall through instead of returning'
 fi
-encrypted_line="$(grep -nF 'if (IsCrypted())' <<<"$wallet_pq_function" | head -n1 | cut -d: -f1 || true)"
-plaintext_line="$(grep -nF 'WritePQKey' <<<"$wallet_pq_function" | head -n1 | cut -d: -f1 || true)"
+encrypted_line="$(grep -nF 'if (IsCrypted())' <<<"$wallet_pq_with_db_function" | head -n1 | cut -d: -f1 || true)"
+plaintext_line="$(grep -nF 'WritePQKey' <<<"$wallet_pq_with_db_function" | head -n1 | cut -d: -f1 || true)"
 [[ -n "$encrypted_line" && -n "$plaintext_line" ]] || fail 'cannot locate wallet PQ persistence branches'
 (( encrypted_line < plaintext_line )) || fail 'encrypted-wallet return must precede plaintext PQ persistence'
 require_fixed 'wallet/test/pq_wallet_tests.cpp' src/Makefile.test.include 'PQ wallet persistence regressions are not wired into make check'
 require_fixed 'encrypted_pq_keys_are_ciphertext_only_after_reload_and_backup' src/wallet/test/pq_wallet_tests.cpp 'encrypted PQ wallet reload/backup regression missing'
+require_fixed 'pq_hd_derivation_kats_are_byte_exact' src/wallet/test/pq_wallet_tests.cpp 'deterministic PQ derivation KAT is missing'
+require_fixed 'deterministic_pq_wallet_derivation_recovers_and_advances' src/wallet/test/pq_wallet_tests.cpp 'deterministic PQ wallet recovery regression is missing'
+require_fixed 'deterministic_pq_coin_type_change_uses_own_branch' src/wallet/test/pq_wallet_tests.cpp 'PQ network derivation separation regression is missing'
+require_fixed 'deterministic_pq_counter_and_key_commit_atomically' src/wallet/test/pq_wallet_tests.cpp 'PQ key and counter atomicity regression is missing'
+require_fixed 'bip44_key_only_recovery_preserves_derivation_lineage' src/wallet/test/pq_wallet_tests.cpp 'key-only recovery does not prove PQ derivation state retention'
 require_fixed 'std::string("pqkey")' src/wallet/test/pq_wallet_tests.cpp 'PQ wallet regression does not inspect plaintext DB records'
 require_fixed 'std::string("cpqkey")' src/wallet/test/pq_wallet_tests.cpp 'PQ wallet regression does not inspect ciphertext DB records'
 require_fixed 'if (!EraseIC(std::make_pair(std::string("pqkey")' src/wallet/walletdb.cpp 'encrypted PQ persistence ignores plaintext erase failure'

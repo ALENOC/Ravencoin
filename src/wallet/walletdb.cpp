@@ -422,6 +422,8 @@ public:
     bool fHasCryptedBip39Words;
     bool fHasCryptedBip39Passphrase;
     bool fHasCryptedBip39Seed;
+    bool fHasHDChain;
+    bool fHasPQHDChain;
     bool fEncryptionRewritePending;
     int nEncryptionRewritePreviousMinVersion;
     bool fAnyUnordered;
@@ -440,6 +442,8 @@ public:
         fHasCryptedBip39Words = false;
         fHasCryptedBip39Passphrase = false;
         fHasCryptedBip39Seed = false;
+        fHasHDChain = false;
+        fHasPQHDChain = false;
         fEncryptionRewritePending = false;
         nEncryptionRewritePreviousMinVersion = 0;
         fAnyUnordered = false;
@@ -796,6 +800,23 @@ bool ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
                 strErr = "Error reading wallet database: SetHDChain failed";
                 return false;
             }
+            wss.fHasHDChain = true;
+        }
+        else if (strType == "pqhdchain")
+        {
+            CPQHDChain chain;
+            ssValue >> chain;
+            if (!ssKey.empty() || !ssValue.empty() || !chain.IsInitialized())
+            {
+                strErr = "Error reading wallet database: PQ HD chain corrupt";
+                return false;
+            }
+            if (!pwallet->LoadPQHDChain(chain))
+            {
+                strErr = "Error reading wallet database: LoadPQHDChain failed";
+                return false;
+            }
+            wss.fHasPQHDChain = true;
         }
         else if (strType == "cbip39words")
         {
@@ -942,7 +963,7 @@ bool CWalletDB::IsKeyType(const std::string& strType)
     return (strType== "key" || strType == "wkey" ||
             strType == "mkey" || strType == "ckey" ||
             strType == "pqkey" || strType == "cpqkey" ||
-            strType == "hdchain" ||
+            strType == "hdchain" || strType == "pqhdchain" ||
             strType == "bip39words" || strType == "bip39passphrase" ||
             strType == "bip39vchseed" || strType == "cbip39words" ||
             strType == "cbip39passphrase" || strType == "cbip39vchseed" ||
@@ -1032,6 +1053,12 @@ DBErrors CWalletDB::LoadWallet(CWallet* pwallet)
         wss.fHasCryptedBip39Passphrase || wss.fHasCryptedBip39Seed;
     const bool hasEncryptionEvidence = wss.fHasCryptedPQKeys || wss.fIsEncrypted ||
         hasCryptedBip39 || !pwallet->mapMasterKeys.empty();
+
+    if (wss.fHasPQHDChain &&
+        (!wss.fHasHDChain || !pwallet->IsHDEnabled())) {
+        LogPrintf("Error reading wallet database: PQ HD chain has no wallet HD chain\n");
+        result = DB_CORRUPT;
+    }
 
     if (wss.fEncryptionRewritePending) {
         pwallet->SetEncryptionRewritePending(true);
@@ -1412,6 +1439,13 @@ bool CWalletDB::EraseDestData(const std::string &address, const std::string &key
 bool CWalletDB::WriteHDChain(const CHDChain& chain)
 {
     return WriteIC(std::string("hdchain"), chain);
+}
+
+bool CWalletDB::WritePQHDChain(const CPQHDChain& chain)
+{
+    if (!chain.IsInitialized())
+        return false;
+    return WriteIC(std::string("pqhdchain"), chain);
 }
 
 bool CWalletDB::TxnBegin(int flags)

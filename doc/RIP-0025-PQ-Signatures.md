@@ -131,6 +131,85 @@ address:      rvn1z...  (mainnet, bech32m encoded)
 
 The 32-byte SHA256 hash provides 128-bit collision resistance classically and ~85-bit quantum collision resistance.
 
+#### 3.1.1 Deterministic Wallet Key Derivation
+
+The wallet derivation below is a versioned recovery contract. It does not
+change witness-v2 consensus validation.
+
+The root source is selected by the wallet type:
+
+- source `0x01`: the exact 32-byte legacy HD private seed selected by
+  `CHDChain::seed_id`;
+- source `0x02`: the exact 64-byte BIP39 seed output, after applying the
+  mnemonic passphrase.
+
+The wallet derives every child as hardened using this exact path:
+
+```
+m/25'/coin_type'/0'/0'/index'
+```
+
+`coin_type` is 175 on mainnet and 1 on testnet and regtest. `index` is an
+unsigned 31-bit value. The BIP32 leaf is the canonical 32-byte big-endian
+private scalar returned by `CKey`, with no object dump, host-endian field, or
+text formatting. The final ML-DSA seed is:
+
+```
+pq_seed = SHA256(ASCII("RVN/ML-DSA-44/keygen/v1") || pq_bip32_leaf)
+```
+
+The ASCII domain has no trailing NUL. `pq_seed` is passed to the single
+deterministic ML-DSA-44 key-generation wrapper. Wallet derivation does not
+replace or otherwise modify a process-global random provider.
+
+The wallet stores the next allocation index in the key-critical
+`pqhdchain` record. Version 1 has this exact 45-byte value layout:
+
+```
+uint32_le version
+uint32_le next_external_index
+uint8     seed_source
+uint32_le coin_type
+byte[32]  lineage_id
+```
+
+`lineage_id` contains the raw SHA-256 digest bytes from:
+
+```
+SHA256(ASCII("RVN/ML-DSA-44/lineage/v1") ||
+       seed_source || BE32(coin_type) || exact_wallet_seed)
+```
+
+The domain has no trailing NUL. A persisted record must use version 1, a
+known source, `coin_type < 0x80000000`, a nonzero lineage identifier, and
+`next_external_index <= 0x80000000`. The terminal value `0x80000000` marks
+the branch exhausted. A source, network, or root-seed change starts allocation
+at index zero for the new lineage. Existing PQ key records remain unchanged.
+
+The new private-key record and advanced counter are committed in one
+synchronous wallet-database transaction. For an encrypted wallet the new key
+is persisted only as `cpqkey`; for an unencrypted wallet it is persisted as
+`pqkey`. Failure to write either record leaves neither a published key nor an
+advanced in-memory counter.
+
+Compatibility and recovery rules are explicit:
+
+- PQ keys created before this derivation contract remain valid individual
+  `pqkey` or `cpqkey` records. They cannot be reconstructed from a mnemonic.
+- A wallet-file backup preserves those old records and the new `pqhdchain`
+  state. The text `dumpwallet` and `importwallet` formats do not carry PQ keys
+  and are not PQ backup formats.
+- A clean mnemonic restoration reproduces a deterministic PQ key only after
+  regenerating the same network and index. This implementation has no
+  automatic PQ lookahead or used-index discovery. Recovery therefore requires
+  regenerating enough sequential PQ addresses and rescanning the chain.
+- Encrypting a legacy non-BIP39 HD wallet rotates its classical HD seed.
+  Pre-rotation PQ keys remain recoverable only through their stored wallet
+  records or a wallet-file backup. Later PQ keys begin at index zero under the
+  new lineage.
+- A historical non-HD wallet has no deterministic root for this contract and
+  `getnewpqaddress` fails instead of silently creating another random key.
+
 #### 3.2 Transaction Structure
 
 PQ transactions use the existing SegWit serialization format. The witness stack for a PQ input contains:
@@ -320,7 +399,7 @@ public:
 
 | Category | Files | Changes |
 |----------|-------|---------|
-| **Crypto** | `crypto/mldsa.h/cpp` | ML-DSA-44 wrapper around liboqs |
+| **Crypto** | `crypto/mldsa.h/cpp` | ML-DSA-44 wrapper around the pinned liboqs mldsa-native backend |
 | **Keys** | `pqkey.h/cpp` | `CPQKey`/`CPQPubKey` classes |
 | **Script** | `script/interpreter.h` | `SCRIPT_VERIFY_PQ_HYBRID` flag, `SIGVERSION_WITNESS_V2_PQ` |
 | **Script** | `script/interpreter.cpp` | Witness v2 validation (2-element stack), `WitnessSigOps` for v2 |
@@ -334,8 +413,9 @@ public:
 | **Validation** | `validation.cpp/h` | `GetBlockScriptFlags()`, `IsPQHybridDeployed()` |
 | **Validation** | `versionbits.cpp` | `pq_hybrid` deployment info registration |
 | **Wallet** | `wallet/rpcwallet.cpp` | `getnewpqaddress` RPC command |
-| **Wallet** | `wallet/walletdb.h/cpp` | PQ key persistence: `WritePQKey`, `WriteCryptedPQKey`, `ReadKeyValue` handlers for `"pqkey"`/`"cpqkey"` |
-| **Wallet** | `wallet/wallet.h/cpp` | `AddPQKeyPubKey` (disk persist), `AddCryptedPQKey`, `LoadPQKey`/`LoadCryptedPQKey` |
+| **Wallet** | `wallet/pqderivation.h/cpp` | Versioned hardened PQ BIP32 derivation and lineage identification |
+| **Wallet** | `wallet/walletdb.h/cpp` | PQ key persistence and versioned `pqhdchain` allocation state |
+| **Wallet** | `wallet/wallet.h/cpp` | Atomic deterministic generation, encrypted/plain persistence, and legacy record loading |
 | **Wallet** | `wallet/crypter.h/cpp` | PQ key encryption: `mapCryptedPQKeys`, `AddCryptedPQKey`, `EncryptKeys`/`Unlock` for PQ keys |
 | **Keystore** | `keystore.h` | PQ key maps (`PQKeyMap`, `PQPubKeyMap`, `CryptedPQKeyMap`) |
 | **Address** | `bech32.h/cpp` (new) | Bech32m encoding/decoding (BIP350) |
