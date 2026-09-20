@@ -726,6 +726,9 @@ private:
                               CWalletDB* pwalletdb = nullptr);
     bool SetHDChain(const CHDChain& chain, bool memonly, CWalletDB* pwalletdb);
     CPubKey GenerateNewSeed(CWalletDB* pwalletdb);
+    bool AddPQKeyPubKeyWithDB(CWalletDB& walletdb, const CPQKey& key,
+                              const CPQPubKey& pubkey);
+    void ErasePQKeyFromMemory(const uint256& witnessProgram);
 
     /* Used by TransactionAddedToMemorypool/BlockConnected/Disconnected.
      * Should be called with pindexBlock and posInBlock if this is for a transaction that is included in a block. */
@@ -733,6 +736,9 @@ private:
 
     /* the HD chain data model (external chain counters) */
     CHDChain hdChain;
+
+    /* Versioned allocation state for the deterministic PQ branch. */
+    CPQHDChain pqHDChain;
 
     /* HD derive new child key (on internal or external chain) */
     void DeriveNewChildKey(CWalletDB &walletdb, CKeyMetadata& metadata, CKey& secret, bool internal = false);
@@ -828,6 +834,7 @@ public:
         fAbortRescan = false;
         fScanningWallet = false;
         fEncryptionRewritePending = false;
+        pqHDChain.SetNull();
     }
 
     std::map<uint256, CWalletTx> mapWallet;
@@ -934,6 +941,8 @@ public:
     bool LoadKey(const CKey& key, const CPubKey &pubkey) { return CCryptoKeyStore::AddKeyPubKey(key, pubkey); }
     //! Adds a PQ key to the store, and saves it to disk.
     bool AddPQKeyPubKey(const CPQKey &key, const CPQPubKey &pubkey) override;
+    //! Derives and atomically persists the next deterministic PQ key.
+    bool GenerateNewPQKey(CPQPubKey& pubkeyOut, uint32_t* indexOut = nullptr);
     //! Adds a PQ key to the store, without saving it to disk (used by LoadWallet)
     bool LoadPQKey(const CPQKey& key, const CPQPubKey &pubkey) { return CCryptoKeyStore::AddPQKeyPubKey(key, pubkey); }
     //! Load metadata (used by LoadWallet)
@@ -1207,6 +1216,8 @@ public:
     /* Set the HD chain model (chain child index counters) */
     bool SetHDChain(const CHDChain& chain, bool memonly);
     const CHDChain& GetHDChain() const { return hdChain; }
+    bool LoadPQHDChain(const CPQHDChain& chain);
+    const CPQHDChain& GetPQHDChain() const { return pqHDChain; }
 
     void UseBip44( bool b = true)    { hdChain.UseBip44(b);}
 

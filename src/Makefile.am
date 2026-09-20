@@ -225,6 +225,7 @@ RAVEN_CORE_H = \
   wallet/feebumper.h \
   wallet/fees.h \
   wallet/init.h \
+  wallet/pqderivation.h \
   wallet/rpcwallet.h \
   wallet/wallet.h \
   wallet/walletdb.h \
@@ -320,6 +321,7 @@ libraven_wallet_a_SOURCES = \
   wallet/feebumper.cpp \
   wallet/fees.cpp \
   wallet/init.cpp \
+  wallet/pqderivation.cpp \
   wallet/rpcdump.cpp \
   wallet/rpcwallet.cpp \
   wallet/wallet.cpp \

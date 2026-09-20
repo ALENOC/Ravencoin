@@ -2,6 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include "base58.h"
+#include "chainparams.h"
 #include "chainparamsbase.h"
 #include "consensus/validation.h"
 #include "fs.h"
@@ -11,12 +13,15 @@
 #include "ui_interface.h"
 #include "util.h"
 #include "utilstrencodings.h"
+#include "wallet/bip39.h"
 #include "wallet/db.h"
+#include "wallet/pqderivation.h"
 #include "wallet/wallet.h"
 #include "wallet/walletdb.h"
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -149,6 +154,28 @@ std::vector<unsigned char> Bip39TestSeed()
         "1f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04");
 }
 
+template <typename Container>
+uint256 PQLineageId(const Container& seed, uint8_t seedSource,
+                    uint32_t coinType)
+{
+    uint256 lineageId;
+    if (!pqderivation::GetLineageId(seed.data(), seed.size(), seedSource,
+                                    coinType, lineageId)) {
+        throw std::runtime_error("failed to derive PQ test lineage");
+    }
+    return lineageId;
+}
+
+class ChainParamsRestorer
+{
+private:
+    const std::string original;
+
+public:
+    ChainParamsRestorer() : original(GetParams().NetworkIDString()) {}
+    ~ChainParamsRestorer() { SelectParams(original); }
+};
+
 CHDChain Bip44TestChain(CWallet* wallet)
 {
     CKey marker;
@@ -157,6 +184,56 @@ CHDChain Bip44TestChain(CWallet* wallet)
     chain.UseBip44(true);
     chain.seed_id = marker.GetPubKey().GetID();
     return chain;
+}
+
+bool InitializeBip39Wallet(CWallet& wallet)
+{
+    const std::vector<unsigned char> words = Bip39TestWords();
+    const std::vector<unsigned char> passphrase = Bip39TestPassphrase();
+    const SecureString secureWords(words.begin(), words.end());
+    const SecureString securePassphrase(passphrase.begin(), passphrase.end());
+    SecureVector derivedSeed;
+    if (!CMnemonic::ToSeed(secureWords, securePassphrase, derivedSeed))
+        return false;
+    const std::vector<unsigned char> expectedSeed = Bip39TestSeed();
+    if (derivedSeed.size() != expectedSeed.size() ||
+        !std::equal(derivedSeed.begin(), derivedSeed.end(), expectedSeed.begin())) {
+        return false;
+    }
+    const std::vector<unsigned char> seed(derivedSeed.begin(), derivedSeed.end());
+    const uint256 wordHash = Hash(words.begin(), words.end());
+    CHDChain chain(&wallet);
+    chain.UseBip44(true);
+    chain.seed_id = CPubKey(seed.begin(), seed.end()).GetID();
+    if (!wallet.SetHDChain(chain, false) ||
+        !wallet.LoadWords(wordHash, words) ||
+        !wallet.LoadPassphrase(passphrase) ||
+        !wallet.LoadVchSeed(seed)) {
+        return false;
+    }
+
+    CWalletDB walletdb(wallet.GetDBHandle());
+    return walletdb.WriteBip39Words(wordHash, words, false) &&
+           walletdb.WriteBip39Passphrase(passphrase, false) &&
+           walletdb.WriteBip39VchSeed(seed, false);
+}
+
+bool InitializeLegacyHDWallet(CWallet& wallet,
+                              const std::vector<unsigned char>& seedBytes)
+{
+    CKey seed;
+    seed.Set(seedBytes.begin(), seedBytes.end(), true);
+    if (!seed.IsValid())
+        return false;
+    {
+        LOCK(wallet.cs_wallet);
+        if (!wallet.AddKeyPubKey(seed, seed.GetPubKey()))
+            return false;
+    }
+    CHDChain chain(&wallet);
+    chain.UseBip44(false);
+    chain.seed_id = seed.GetPubKey().GetID();
+    return wallet.SetHDChain(chain, false);
 }
 
 std::vector<unsigned char> RawSecret(const CPQKey& key)
@@ -498,10 +575,679 @@ struct PQWalletDatabaseTestingSetup : public TestingSetup
 
 BOOST_FIXTURE_TEST_SUITE(pq_wallet_tests, PQWalletDatabaseTestingSetup)
 
+BOOST_AUTO_TEST_CASE(deterministic_pq_generation_requires_hd_root)
+{
+    const std::string filename = "pq-hd-root-required-wallet.dat";
+    std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+    CPQPubKey rejected;
+    uint32_t index = 99;
+    BOOST_CHECK(!wallet->GenerateNewPQKey(rejected, &index));
+    BOOST_CHECK(!rejected.IsValid());
+    BOOST_CHECK_EQUAL(index, 99U);
+    CWalletDBWrapper rawDbw(&bitdb, filename);
+    CDB rawDb(rawDbw, "r");
+    BOOST_CHECK(!rawDb.Exists(std::string("pqhdchain")));
+}
+
+BOOST_AUTO_TEST_CASE(pq_hd_derivation_kats_are_byte_exact)
+{
+    const std::vector<unsigned char> bip39Seed = Bip39TestSeed();
+    struct Vector {
+        uint32_t coinType;
+        uint32_t index;
+        const char* expected;
+    };
+    const Vector bip39Vectors[] = {
+        {175, 0, "5312ca47967e38c2c45a56837491a4b4a627bc697c4f247a7a090a854d798222"},
+        {175, 1, "65e9c6a22716d7e17d016662c4e86a7002962f3f2813fbdd78e6effda879bebc"},
+        {1, 0, "e0f3d1cfb06da142ccdbdc54aed4e131c9ab16403d97a33964bad3dc99f45e2d"},
+        {1, 1, "14269645b7522fdc5274d7ae574302a30745fc9614f7308cae54f12856141db4"},
+    };
+    for (const Vector& vector : bip39Vectors) {
+        SecureVector derived;
+        BOOST_REQUIRE(pqderivation::DeriveSeed(
+            bip39Seed.data(), bip39Seed.size(), vector.coinType,
+            vector.index, derived));
+        BOOST_CHECK_EQUAL(HexStr(derived.begin(), derived.end()), vector.expected);
+    }
+
+    const std::vector<unsigned char> legacySeed = ParseHex(
+        "000102030405060708090a0b0c0d0e0f"
+        "101112131415161718191a1b1c1d1e1f");
+    const Vector legacyVectors[] = {
+        {175, 0, "60ace9551ccdc2f6b3872df764898bfee33689b6fe5bb02215e0bb93ed1639ee"},
+        {175, 1, "693092e2a91919547ac036129a2f9bdd3025da51fa73f78edc12f54f851f0275"},
+        {1, 0, "59537f793a61662cc2ec3d577583e75383b89d0e45c4b16e161845e056a21016"},
+        {1, 1, "f5c4e8b65088739f73599932b3ec9fd11d6fcb69a6d07438653de7474c79cde9"},
+    };
+    for (const Vector& vector : legacyVectors) {
+        SecureVector derived;
+        BOOST_REQUIRE(pqderivation::DeriveSeed(
+            legacySeed.data(), legacySeed.size(), vector.coinType,
+            vector.index, derived));
+        BOOST_CHECK_EQUAL(HexStr(derived.begin(), derived.end()), vector.expected);
+    }
+
+    uint256 lineageId;
+    BOOST_REQUIRE(pqderivation::GetLineageId(
+        bip39Seed.data(), bip39Seed.size(), pqderivation::SEED_SOURCE_BIP39,
+        175, lineageId));
+    BOOST_CHECK_EQUAL(
+        HexStr(lineageId.begin(), lineageId.end()),
+        "ea1634102982fea3e1b48a882a0ae86f124efdf1bf87276045ae7054e55d0443");
+    BOOST_REQUIRE(pqderivation::GetLineageId(
+        legacySeed.data(), legacySeed.size(),
+        pqderivation::SEED_SOURCE_LEGACY_HD, 1, lineageId));
+    BOOST_CHECK_EQUAL(
+        HexStr(lineageId.begin(), lineageId.end()),
+        "59243d9ad7de94feee944dd1a1a17b0f93d645a1fa2b28f35a2b0e6440b17553");
+    BOOST_CHECK(!pqderivation::GetLineageId(
+        bip39Seed.data(), bip39Seed.size(),
+        pqderivation::SEED_SOURCE_LEGACY_HD, 1, lineageId));
+    BOOST_CHECK(lineageId.IsNull());
+    BOOST_CHECK(!pqderivation::GetLineageId(
+        bip39Seed.data(), bip39Seed.size(), pqderivation::SEED_SOURCE_BIP39,
+        pqderivation::HARDENED_LIMIT, lineageId));
+
+    SecureVector output(32, 0x7f);
+    BOOST_CHECK(!pqderivation::DeriveSeed(nullptr, 64, 1, 0, output));
+    BOOST_CHECK(output.empty());
+    BOOST_CHECK(!pqderivation::DeriveSeed(
+        legacySeed.data(), legacySeed.size() - 1, 1, 0, output));
+    BOOST_CHECK(!pqderivation::DeriveSeed(
+        legacySeed.data(), legacySeed.size(), pqderivation::HARDENED_LIMIT, 0,
+        output));
+    BOOST_CHECK(!pqderivation::DeriveSeed(
+        legacySeed.data(), legacySeed.size(), 1,
+        pqderivation::HARDENED_LIMIT, output));
+    BOOST_CHECK_EQUAL(pqderivation::GetKeypath(175, 7), "m/25'/175'/0'/0'/7'");
+    BOOST_CHECK(pqderivation::GetKeypath(1, pqderivation::HARDENED_LIMIT).empty());
+}
+
+BOOST_AUTO_TEST_CASE(pq_hd_chain_record_is_key_critical_and_strict)
+{
+    BOOST_CHECK(CWalletDB::IsKeyType("pqhdchain"));
+
+    CPQHDChain fieldChecks;
+    BOOST_CHECK(fieldChecks.IsValid());
+    BOOST_CHECK(!fieldChecks.IsInitialized());
+    fieldChecks.SetLineage(CPQHDChain::SEED_SOURCE_BIP39, 1,
+                           uint256S("01"));
+    BOOST_CHECK(fieldChecks.IsInitialized());
+    fieldChecks.nSeedSource = 3;
+    BOOST_CHECK(!fieldChecks.IsValid());
+    fieldChecks.SetLineage(CPQHDChain::SEED_SOURCE_BIP39,
+                           CPQHDChain::MAX_COUNTER, uint256S("01"));
+    BOOST_CHECK(!fieldChecks.IsValid());
+    fieldChecks.SetLineage(CPQHDChain::SEED_SOURCE_BIP39, 1, uint256());
+    BOOST_CHECK(!fieldChecks.IsValid());
+    fieldChecks.SetLineage(CPQHDChain::SEED_SOURCE_BIP39, 1,
+                           uint256S("01"));
+    fieldChecks.nExternalChainCounter = CPQHDChain::MAX_COUNTER;
+    BOOST_CHECK(fieldChecks.IsValid());
+    fieldChecks.nExternalChainCounter = UINT32_MAX;
+    BOOST_CHECK(!fieldChecks.IsValid());
+
+    CPQHDChain layout;
+    layout.SetLineage(CPQHDChain::SEED_SOURCE_BIP39, 0x01020304U,
+                      uint256S("01"));
+    layout.nExternalChainCounter = 0x11223344U;
+    CDataStream serializedLayout(SER_DISK, CLIENT_VERSION);
+    serializedLayout << layout;
+    BOOST_CHECK_EQUAL(serializedLayout.size(), 45U);
+    BOOST_CHECK_EQUAL(
+        HexStr(serializedLayout.begin(), serializedLayout.end()),
+        "010000004433221102040302010100000000000000000000000000000000000000"
+        "000000000000000000000000");
+
+    const std::string validFilename = "pq-hd-chain-valid-wallet.dat";
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(validFilename);
+        CHDChain hd(wallet.get());
+        CKey marker;
+        marker.MakeNewKey(true);
+        hd.seed_id = marker.GetPubKey().GetID();
+        BOOST_REQUIRE(wallet->SetHDChain(hd, false));
+        CPQHDChain pq;
+        pq.SetLineage(CPQHDChain::SEED_SOURCE_LEGACY_HD, 175,
+                      uint256S("01"));
+        pq.nExternalChainCounter = 7;
+        CWalletDB walletdb(wallet->GetDBHandle());
+        BOOST_REQUIRE(walletdb.WritePQHDChain(pq));
+    }
+    bitdb.Flush(false);
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(validFilename);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nVersion, CPQHDChain::CURRENT_VERSION);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 7U);
+    }
+
+    const std::string standaloneFilename = "pq-hd-chain-standalone-wallet.dat";
+    {
+        CWalletDBWrapper dbw(&bitdb, standaloneFilename);
+        CWalletDB walletdb(dbw, "c+");
+        CKey marker;
+        marker.MakeNewKey(true);
+        CPQHDChain pq;
+        pq.SetLineage(CPQHDChain::SEED_SOURCE_LEGACY_HD, 175,
+                      uint256S("02"));
+        BOOST_REQUIRE(walletdb.WritePQHDChain(pq));
+    }
+    bitdb.Flush(false);
+    {
+        std::unique_ptr<CWalletDBWrapper> dbw(
+            new CWalletDBWrapper(&bitdb, standaloneFilename));
+        CWallet wallet(std::move(dbw));
+        bool firstRun = true;
+        BOOST_CHECK_EQUAL(wallet.LoadWallet(firstRun), DB_CORRUPT);
+    }
+
+    const std::string malformedFilename = "pq-hd-chain-malformed-wallet.dat";
+    {
+        CWalletDBWrapper dbw(&bitdb, malformedFilename);
+        CWalletDB walletdb(dbw, "c+");
+        CKey marker;
+        marker.MakeNewKey(true);
+        CHDChain hd(nullptr);
+        hd.seed_id = marker.GetPubKey().GetID();
+        BOOST_REQUIRE(walletdb.WriteHDChain(hd));
+        CDB raw(dbw, "r+");
+        CPQHDChain malformed;
+        malformed.SetLineage(CPQHDChain::SEED_SOURCE_LEGACY_HD, 175,
+                             uint256S("03"));
+        malformed.nVersion = CPQHDChain::CURRENT_VERSION + 1;
+        BOOST_REQUIRE(raw.Write(std::string("pqhdchain"), malformed));
+    }
+    bitdb.Flush(false);
+    {
+        std::unique_ptr<CWalletDBWrapper> dbw(
+            new CWalletDBWrapper(&bitdb, malformedFilename));
+        CWallet wallet(std::move(dbw));
+        bool firstRun = false;
+        BOOST_CHECK_EQUAL(wallet.LoadWallet(firstRun), DB_CORRUPT);
+    }
+
+    const std::string trailingFilename = "pq-hd-chain-trailing-wallet.dat";
+    {
+        CWalletDBWrapper dbw(&bitdb, trailingFilename);
+        CWalletDB walletdb(dbw, "c+");
+        CKey marker;
+        marker.MakeNewKey(true);
+        CHDChain hd(nullptr);
+        hd.seed_id = marker.GetPubKey().GetID();
+        BOOST_REQUIRE(walletdb.WriteHDChain(hd));
+    }
+    CDataStream rawKey(SER_DISK, CLIENT_VERSION);
+    CDataStream rawValue(SER_DISK, CLIENT_VERSION);
+    rawKey << std::string("pqhdchain");
+    CPQHDChain trailingChain;
+    trailingChain.SetLineage(CPQHDChain::SEED_SOURCE_LEGACY_HD, 175,
+                             uint256S("04"));
+    rawValue << trailingChain;
+    rawValue << uint8_t{0x42};
+    BOOST_REQUIRE(wallet_db::RecoveryTestAccess::WriteRaw(
+        trailingFilename,
+        std::vector<unsigned char>(rawKey.begin(), rawKey.end()),
+        std::vector<unsigned char>(rawValue.begin(), rawValue.end())));
+    bitdb.Flush(false);
+    {
+        std::unique_ptr<CWalletDBWrapper> dbw(
+            new CWalletDBWrapper(&bitdb, trailingFilename));
+        CWallet wallet(std::move(dbw));
+        bool firstRun = false;
+        BOOST_CHECK_EQUAL(wallet.LoadWallet(firstRun), DB_CORRUPT);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(deterministic_pq_wallet_derivation_recovers_and_advances)
+{
+    const std::string firstFilename = "pq-hd-first-wallet.dat";
+    const std::string backupFilename = "pq-hd-first-wallet-backup.dat";
+    const std::string restoredFilename = "pq-hd-restored-wallet.dat";
+    CPQPubKey firstIndex0;
+    CPQPubKey firstIndex1;
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(firstFilename);
+        BOOST_REQUIRE(InitializeBip39Wallet(*wallet));
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(firstIndex0, &index));
+        BOOST_CHECK_EQUAL(index, 0U);
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(firstIndex1, &index));
+        BOOST_CHECK_EQUAL(index, 1U);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 2U);
+        BOOST_CHECK_EQUAL(
+            firstIndex0.GetWitnessProgram().GetHex(),
+            "3b2b571eb1bf9f935a19f2acbe99ce27fb7d3519a54e4b2f6017f5f3a876c9ad");
+        BOOST_CHECK_EQUAL(
+            EncodeDestination(WitnessV2PQDestination(
+                firstIndex0.GetWitnessProgram())),
+            "rcrt1z4hyhd28n75tkqt6tf6j3jdtalvnuaxd74nepjk5nn7lmz8jh9vasg4ztx8");
+        BOOST_REQUIRE(wallet->BackupWallet(
+            (GetDataDir() / backupFilename).string()));
+    }
+    bitdb.Flush(false);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(backupFilename);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 2U);
+        CPQKey loaded;
+        BOOST_REQUIRE(wallet->GetPQKey(firstIndex0.GetWitnessProgram(), loaded));
+        BOOST_CHECK(loaded.MatchesPubKey(firstIndex0));
+        BOOST_REQUIRE(wallet->GetPQKey(firstIndex1.GetWitnessProgram(), loaded));
+        BOOST_CHECK(loaded.MatchesPubKey(firstIndex1));
+    }
+    bitdb.Flush(false);
+
+    CPQPubKey restoredIndex0;
+    CPQPubKey restoredIndex1;
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(restoredFilename);
+        BOOST_REQUIRE(InitializeBip39Wallet(*wallet));
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(restoredIndex0, &index));
+        BOOST_CHECK_EQUAL(index, 0U);
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(restoredIndex1, &index));
+        BOOST_CHECK_EQUAL(index, 1U);
+    }
+
+    BOOST_CHECK(restoredIndex0 == firstIndex0);
+    BOOST_CHECK(restoredIndex1 == firstIndex1);
+
+    for (uint32_t index = 0; index < 2; ++index) {
+        SecureVector seed;
+        const std::vector<unsigned char> bip39Seed = Bip39TestSeed();
+        BOOST_REQUIRE(pqderivation::DeriveSeed(
+            bip39Seed.data(), bip39Seed.size(), 1, index, seed));
+        CPQKey expected;
+        BOOST_REQUIRE(expected.SetSeed(seed.data()));
+        BOOST_CHECK(expected.GetPubKey() == (index == 0 ? firstIndex0 : firstIndex1));
+    }
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(firstFilename);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 2U);
+        CPQKey loaded;
+        BOOST_REQUIRE(wallet->GetPQKey(firstIndex0.GetWitnessProgram(), loaded));
+        BOOST_CHECK(loaded.MatchesPubKey(firstIndex0));
+        BOOST_REQUIRE(wallet->GetPQKey(firstIndex1.GetWitnessProgram(), loaded));
+        BOOST_CHECK(loaded.MatchesPubKey(firstIndex1));
+
+        CPQPubKey index2PubKey;
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(index2PubKey, &index));
+        BOOST_CHECK_EQUAL(index, 2U);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 3U);
+
+        SecureVector seed;
+        const std::vector<unsigned char> bip39Seed = Bip39TestSeed();
+        BOOST_REQUIRE(pqderivation::DeriveSeed(
+            bip39Seed.data(), bip39Seed.size(), 1, 2, seed));
+        CPQKey expected;
+        BOOST_REQUIRE(expected.SetSeed(seed.data()));
+        BOOST_CHECK(expected.GetPubKey() == index2PubKey);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(encrypted_deterministic_pq_generation_is_ciphertext_only)
+{
+    const std::string filename = "pq-hd-encrypted-wallet.dat";
+    const SecureString passphrase("pq-hd-encrypted-passphrase");
+    CPQPubKey generated;
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_REQUIRE(InitializeBip39Wallet(*wallet));
+        CKey classicalKey;
+        classicalKey.MakeNewKey(true);
+        {
+            LOCK(wallet->cs_wallet);
+            BOOST_REQUIRE(wallet->AddKeyPubKey(
+                classicalKey, classicalKey.GetPubKey()));
+        }
+        BOOST_REQUIRE(wallet->EncryptWallet(passphrase));
+        CPQPubKey lockedAttempt;
+        uint32_t lockedIndex = 99;
+        BOOST_CHECK(!wallet->GenerateNewPQKey(lockedAttempt, &lockedIndex));
+        BOOST_CHECK(!lockedAttempt.IsValid());
+        BOOST_CHECK_EQUAL(lockedIndex, 99U);
+        BOOST_REQUIRE(wallet->Unlock(passphrase));
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(generated, &index));
+        BOOST_CHECK_EQUAL(index, 0U);
+
+        CWalletDBWrapper rawDbw(&bitdb, filename);
+        CDB rawDb(rawDbw, "r");
+        const uint256 witnessProgram = generated.GetWitnessProgram();
+        BOOST_CHECK(rawDb.Exists(
+            std::make_pair(std::string("cpqkey"), witnessProgram)));
+        BOOST_CHECK(!rawDb.Exists(
+            std::make_pair(std::string("pqkey"), witnessProgram)));
+        CPQHDChain stored;
+        BOOST_REQUIRE(rawDb.Read(std::string("pqhdchain"), stored));
+        BOOST_CHECK_EQUAL(stored.nExternalChainCounter, 1U);
+    }
+    bitdb.Flush(false);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_CHECK(wallet->IsCrypted());
+        BOOST_CHECK(wallet->IsLocked());
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 1U);
+        CPQKey loaded;
+        BOOST_CHECK(!wallet->GetPQKey(generated.GetWitnessProgram(), loaded));
+        BOOST_REQUIRE(wallet->Unlock(passphrase));
+        BOOST_REQUIRE(wallet->GetPQKey(generated.GetWitnessProgram(), loaded));
+        BOOST_CHECK(loaded.MatchesPubKey(generated));
+
+        CPQPubKey second;
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(second, &index));
+        BOOST_CHECK_EQUAL(index, 1U);
+        BOOST_CHECK(second != generated);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(encrypted_legacy_hd_pq_derivation_recovers_and_advances)
+{
+    const std::string filename = "pq-hd-encrypted-legacy-wallet.dat";
+    const SecureString passphrase("pq-hd-encrypted-legacy-passphrase");
+    const std::vector<unsigned char> legacySeed = ParseHex(
+        "000102030405060708090a0b0c0d0e0f"
+        "101112131415161718191a1b1c1d1e1f");
+    CPQPubKey beforeRotation;
+    CPQPubKey firstAfterRotation;
+    SecureVector rotatedSeed;
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_REQUIRE(InitializeLegacyHDWallet(*wallet, legacySeed));
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(beforeRotation, &index));
+        BOOST_CHECK_EQUAL(index, 0U);
+        const uint256 originalLineage = wallet->GetPQHDChain().lineage_id;
+
+        BOOST_REQUIRE(wallet->EncryptWallet(passphrase));
+        BOOST_REQUIRE(wallet->Unlock(passphrase));
+        CKey currentHDSeed;
+        BOOST_REQUIRE(wallet->GetKey(
+            wallet->GetHDChain().seed_id, currentHDSeed));
+        rotatedSeed.assign(currentHDSeed.begin(), currentHDSeed.end());
+        BOOST_REQUIRE_EQUAL(rotatedSeed.size(), pqderivation::LEGACY_SEED_BYTES);
+
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(firstAfterRotation, &index));
+        BOOST_CHECK_EQUAL(index, 0U);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nSeedSource,
+                          CPQHDChain::SEED_SOURCE_LEGACY_HD);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nCoinType, 1U);
+        BOOST_CHECK(wallet->GetPQHDChain().lineage_id == PQLineageId(
+            rotatedSeed, pqderivation::SEED_SOURCE_LEGACY_HD, 1));
+        BOOST_CHECK(wallet->GetPQHDChain().lineage_id != originalLineage);
+
+        SecureVector expectedSeed;
+        BOOST_REQUIRE(pqderivation::DeriveSeed(
+            rotatedSeed.data(), rotatedSeed.size(), 1, 0, expectedSeed));
+        CPQKey expectedKey;
+        BOOST_REQUIRE(expectedKey.SetSeed(expectedSeed.data()));
+        BOOST_CHECK(expectedKey.GetPubKey() == firstAfterRotation);
+
+        CWalletDBWrapper rawDbw(&bitdb, filename);
+        CDB rawDb(rawDbw, "r");
+        BOOST_CHECK(rawDb.Exists(std::make_pair(
+            std::string("cpqkey"), beforeRotation.GetWitnessProgram())));
+        BOOST_CHECK(!rawDb.Exists(std::make_pair(
+            std::string("pqkey"), beforeRotation.GetWitnessProgram())));
+        BOOST_CHECK(rawDb.Exists(std::make_pair(
+            std::string("cpqkey"), firstAfterRotation.GetWitnessProgram())));
+        BOOST_CHECK(!rawDb.Exists(std::make_pair(
+            std::string("pqkey"), firstAfterRotation.GetWitnessProgram())));
+    }
+    bitdb.Flush(false);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_CHECK(wallet->IsLocked());
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 1U);
+        BOOST_REQUIRE(wallet->Unlock(passphrase));
+        CPQPubKey second;
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(second, &index));
+        BOOST_CHECK_EQUAL(index, 1U);
+        BOOST_CHECK(second != firstAfterRotation);
+
+        SecureVector expectedSeed;
+        BOOST_REQUIRE(pqderivation::DeriveSeed(
+            rotatedSeed.data(), rotatedSeed.size(), 1, 1, expectedSeed));
+        CPQKey expectedKey;
+        BOOST_REQUIRE(expectedKey.SetSeed(expectedSeed.data()));
+        BOOST_CHECK(expectedKey.GetPubKey() == second);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(deterministic_pq_hd_lineage_change_resets_counter)
+{
+    const std::string filename = "pq-hd-lineage-reset-wallet.dat";
+    CPQPubKey replacementIndex0;
+    const std::vector<unsigned char> replacementPassphrase = {
+        'r', 'e', 'p', 'l', 'a', 'c', 'e', 'm', 'e', 'n', 't'};
+    const std::vector<unsigned char> replacementSeed = ParseHex(
+        "d4338fb97a1582023d772880df61e318575000f71d50f687e9da8335891f282b"
+        "300fa3c37afdeabe3d388377c71f0d748f97bb7007570c97c100442e129db174");
+    const uint256 replacementLineage = PQLineageId(
+        replacementSeed, pqderivation::SEED_SOURCE_BIP39, 1);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_REQUIRE(InitializeBip39Wallet(*wallet));
+        CPQPubKey ignored;
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(ignored, &index));
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(ignored, &index));
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 2U);
+
+        CHDChain replacement(wallet.get());
+        replacement.UseBip44(true);
+        replacement.seed_id = CPubKey(
+            replacementSeed.begin(), replacementSeed.end()).GetID();
+        BOOST_REQUIRE(wallet->SetHDChain(replacement, false));
+        BOOST_REQUIRE(wallet->LoadPassphrase(replacementPassphrase));
+        BOOST_REQUIRE(wallet->LoadVchSeed(replacementSeed));
+        CWalletDB walletdb(wallet->GetDBHandle());
+        BOOST_REQUIRE(walletdb.WriteBip39Passphrase(
+            replacementPassphrase, false));
+        BOOST_REQUIRE(walletdb.WriteBip39VchSeed(replacementSeed, false));
+
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(replacementIndex0, &index));
+        BOOST_CHECK_EQUAL(index, 0U);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 1U);
+        BOOST_CHECK(wallet->GetPQHDChain().lineage_id == replacementLineage);
+
+        SecureVector expectedSeed;
+        BOOST_REQUIRE(pqderivation::DeriveSeed(
+            replacementSeed.data(), replacementSeed.size(), 1, 0,
+            expectedSeed));
+        CPQKey expectedKey;
+        BOOST_REQUIRE(expectedKey.SetSeed(expectedSeed.data()));
+        BOOST_CHECK(expectedKey.GetPubKey() == replacementIndex0);
+    }
+    bitdb.Flush(false);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 1U);
+        BOOST_CHECK(wallet->GetPQHDChain().lineage_id == replacementLineage);
+        CPQKey loaded;
+        BOOST_REQUIRE(wallet->GetPQKey(
+            replacementIndex0.GetWitnessProgram(), loaded));
+        BOOST_CHECK(loaded.MatchesPubKey(replacementIndex0));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(deterministic_pq_coin_type_change_uses_own_branch)
+{
+    ChainParamsRestorer restoreParams;
+    const std::string filename = "pq-hd-network-lineage-wallet.dat";
+    CPQPubKey regtestIndex0;
+    CPQPubKey regtestIndex1;
+    CPQPubKey mainIndex0;
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_REQUIRE(InitializeBip39Wallet(*wallet));
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(regtestIndex0, &index));
+        BOOST_CHECK_EQUAL(index, 0U);
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(regtestIndex1, &index));
+        BOOST_CHECK_EQUAL(index, 1U);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nCoinType, 1U);
+
+        SelectParams(CBaseChainParams::MAIN);
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(mainIndex0, &index));
+        BOOST_CHECK_EQUAL(index, 0U);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nCoinType, 175U);
+        BOOST_CHECK(mainIndex0 != regtestIndex0);
+
+        SecureVector expectedSeed;
+        const std::vector<unsigned char> bip39Seed = Bip39TestSeed();
+        BOOST_REQUIRE(pqderivation::DeriveSeed(
+            bip39Seed.data(), bip39Seed.size(), 175, 0, expectedSeed));
+        CPQKey expectedKey;
+        BOOST_REQUIRE(expectedKey.SetSeed(expectedSeed.data()));
+        BOOST_CHECK(expectedKey.GetPubKey() == mainIndex0);
+    }
+    bitdb.Flush(false);
+
+    SelectParams(CBaseChainParams::REGTEST);
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nCoinType, 175U);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 1U);
+
+        CPQPubKey regtestIndex2;
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(regtestIndex2, &index));
+        BOOST_CHECK_EQUAL(index, 2U);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nCoinType, 1U);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 3U);
+        BOOST_CHECK(regtestIndex2 != regtestIndex0);
+        BOOST_CHECK(regtestIndex2 != regtestIndex1);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(deterministic_pq_counter_exhaustion_is_persistent)
+{
+    const std::string filename = "pq-hd-counter-exhaustion-wallet.dat";
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_REQUIRE(InitializeBip39Wallet(*wallet));
+        const std::vector<unsigned char> bip39Seed = Bip39TestSeed();
+        CPQHDChain nearExhaustion;
+        nearExhaustion.SetLineage(
+            CPQHDChain::SEED_SOURCE_BIP39, 1,
+            PQLineageId(bip39Seed, pqderivation::SEED_SOURCE_BIP39, 1));
+        nearExhaustion.nExternalChainCounter =
+            pqderivation::HARDENED_LIMIT - 1;
+        CWalletDB walletdb(wallet->GetDBHandle());
+        BOOST_REQUIRE(walletdb.WritePQHDChain(nearExhaustion));
+        BOOST_REQUIRE(wallet->LoadPQHDChain(nearExhaustion));
+
+        CPQPubKey finalKey;
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(finalKey, &index));
+        BOOST_CHECK_EQUAL(index, pqderivation::HARDENED_LIMIT - 1);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter,
+                          pqderivation::HARDENED_LIMIT);
+
+        CPQPubKey rejected;
+        index = 99;
+        BOOST_CHECK(!wallet->GenerateNewPQKey(rejected, &index));
+        BOOST_CHECK(!rejected.IsValid());
+        BOOST_CHECK_EQUAL(index, 99U);
+    }
+    bitdb.Flush(false);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter,
+                          pqderivation::HARDENED_LIMIT);
+        CPQPubKey rejected;
+        uint32_t index = 99;
+        BOOST_CHECK(!wallet->GenerateNewPQKey(rejected, &index));
+        BOOST_CHECK_EQUAL(index, 99U);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(deterministic_pq_counter_and_key_commit_atomically)
+{
+    const std::string filename = "pq-hd-atomic-wallet.dat";
+    std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+    BOOST_REQUIRE(InitializeBip39Wallet(*wallet));
+
+    SecureVector expectedSeed;
+    const std::vector<unsigned char> bip39Seed = Bip39TestSeed();
+    BOOST_REQUIRE(pqderivation::DeriveSeed(
+        bip39Seed.data(), bip39Seed.size(), 1, 0, expectedSeed));
+    CPQKey expectedKey;
+    BOOST_REQUIRE(expectedKey.SetSeed(expectedSeed.data()));
+    const uint256 expectedProgram = expectedKey.GetPubKey().GetWitnessProgram();
+
+    ScopedDBExpiredLockTimeout timeout(bitdb.dbenv, 100000);
+    CWalletDB blocker(wallet->GetDBHandle());
+    BOOST_REQUIRE(blocker.TxnBegin());
+    CPQHDChain blockedChain;
+    blockedChain.SetLineage(CPQHDChain::SEED_SOURCE_BIP39, 1,
+                            PQLineageId(
+                                bip39Seed,
+                                pqderivation::SEED_SOURCE_BIP39, 1));
+    blockedChain.nExternalChainCounter = 77;
+    BOOST_REQUIRE(blocker.WritePQHDChain(blockedChain));
+
+    std::atomic<bool> generationComplete{false};
+    std::atomic<bool> detectorFailed{false};
+    std::atomic<bool> timeoutObserved{false};
+    std::thread detector([&] {
+        for (int attempt = 0; attempt < 1000 && !generationComplete; ++attempt) {
+            int rejected = 0;
+            if (bitdb.dbenv->lock_detect(0, DB_LOCK_EXPIRE, &rejected) != 0) {
+                detectorFailed = true;
+                return;
+            }
+            if (rejected > 0) {
+                timeoutObserved = true;
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    });
+
+    CPQPubKey generated;
+    uint32_t index = 99;
+    const bool generatedSuccessfully = wallet->GenerateNewPQKey(generated, &index);
+    generationComplete = true;
+    detector.join();
+    BOOST_REQUIRE(blocker.TxnAbort());
+
+    BOOST_CHECK(!detectorFailed);
+    BOOST_CHECK(timeoutObserved);
+    BOOST_CHECK(!generatedSuccessfully);
+    BOOST_CHECK(!generated.IsValid());
+    BOOST_CHECK_EQUAL(index, 99U);
+    BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 0U);
+    BOOST_CHECK(!wallet->HavePQKey(expectedProgram));
+
+    CWalletDBWrapper rawDbw(&bitdb, filename);
+    CDB rawDb(rawDbw, "r");
+    BOOST_CHECK(!rawDb.Exists(std::string("pqhdchain")));
+    BOOST_CHECK(!rawDb.Exists(
+        std::make_pair(std::string("pqkey"), expectedProgram)));
+    BOOST_CHECK(!rawDb.Exists(
+        std::make_pair(std::string("cpqkey"), expectedProgram)));
+}
+
 BOOST_AUTO_TEST_CASE(bip39_records_are_key_critical)
 {
     for (const std::string& type : {
-             "hdchain",
+             "hdchain", "pqhdchain",
              "bip39words", "bip39passphrase", "bip39vchseed",
              "cbip39words", "cbip39passphrase", "cbip39vchseed"}) {
         BOOST_CHECK_MESSAGE(CWalletDB::IsKeyType(type), type);
@@ -684,14 +1430,14 @@ BOOST_AUTO_TEST_CASE(bip44_key_only_recovery_preserves_derivation_lineage)
     const std::vector<unsigned char> passphrase = Bip39TestPassphrase();
     const std::vector<unsigned char> seed = Bip39TestSeed();
     const uint256 wordHash = Hash(words.begin(), words.end());
+    CPQPubKey recoveredPQIndex0;
 
     {
         std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
-        BOOST_REQUIRE(wallet->SetHDChain(Bip44TestChain(wallet.get()), false));
-        CWalletDB walletdb(wallet->GetDBHandle());
-        BOOST_REQUIRE(walletdb.WriteBip39Words(wordHash, words, false));
-        BOOST_REQUIRE(walletdb.WriteBip39Passphrase(passphrase, false));
-        BOOST_REQUIRE(walletdb.WriteBip39VchSeed(seed, false));
+        BOOST_REQUIRE(InitializeBip39Wallet(*wallet));
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(recoveredPQIndex0, &index));
+        BOOST_CHECK_EQUAL(index, 0U);
     }
     bitdb.Flush(false);
 
@@ -716,6 +1462,22 @@ BOOST_AUTO_TEST_CASE(bip44_key_only_recovery_preserves_derivation_lineage)
     BOOST_CHECK(recoveredWords == words);
     BOOST_CHECK(recoveredPassphrase == passphrase);
     BOOST_CHECK(recoveredSeed == seed);
+    BOOST_CHECK_EQUAL(recovered->GetPQHDChain().nExternalChainCounter, 1U);
+    CPQKey recoveredPQKey;
+    BOOST_REQUIRE(recovered->GetPQKey(
+        recoveredPQIndex0.GetWitnessProgram(), recoveredPQKey));
+    BOOST_CHECK(recoveredPQKey.MatchesPubKey(recoveredPQIndex0));
+
+    CPQPubKey recoveredPQIndex1;
+    uint32_t pqIndex = 99;
+    BOOST_REQUIRE(recovered->GenerateNewPQKey(recoveredPQIndex1, &pqIndex));
+    BOOST_CHECK_EQUAL(pqIndex, 1U);
+    SecureVector expectedPQSeed;
+    BOOST_REQUIRE(pqderivation::DeriveSeed(
+        seed.data(), seed.size(), 1, 1, expectedPQSeed));
+    CPQKey expectedPQKey;
+    BOOST_REQUIRE(expectedPQKey.SetSeed(expectedPQSeed.data()));
+    BOOST_CHECK(expectedPQKey.GetPubKey() == recoveredPQIndex1);
 
     // Independent expected value for regtest path m/44'/1'/0'/0/0.
     const std::vector<unsigned char> expectedBytes = ParseHex(

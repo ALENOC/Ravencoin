@@ -246,14 +246,14 @@ UniValue getnewpqaddress(const JSONRPCRequest& request)
     if (!IsPQHybridDeployed())
         throw JSONRPCError(RPC_WALLET_ERROR, "RIP-25 is not active on this network; refusing to generate an unprotected witness-v2 address");
 
+    EnsureWalletIsUnlocked(pwallet);
+
     std::string strAccount;
     if (!request.params[0].isNull()) strAccount = AccountFromValue(request.params[0]);
-    CPQKey pqKey;
-    pqKey.MakeNewKey();
-    if (!pqKey.IsValid()) throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to generate ML-DSA-44 keypair");
-    CPQPubKey pqPubKey = pqKey.GetPubKey();
+    CPQPubKey pqPubKey;
+    if (!pwallet->GenerateNewPQKey(pqPubKey))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to derive and persist ML-DSA-44 keypair");
     uint256 witnessProgram = pqPubKey.GetWitnessProgram();
-    if (!pwallet->AddPQKeyPubKey(pqKey, pqPubKey)) throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to add PQ key to wallet");
     WitnessV2PQDestination dest(witnessProgram);
     pwallet->SetAddressBook(dest, strAccount, "receive");
     return EncodeDestination(dest);
