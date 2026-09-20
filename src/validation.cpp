@@ -1622,19 +1622,25 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
 {
     if (!tx.IsCoinBase())
     {
-        if (pvChecks)
-            pvChecks->reserve(tx.vin.size());
-
         // The first loop above does all the inexpensive checks.
         // Only if ALL inputs pass do we perform expensive ECDSA signature checks.
         // Helps prevent CPU exhaustion attacks.
 
-        // Skip script verification when connecting blocks under the
-        // assumevalid block. Assuming the assumevalid block is valid this
-        // is safe because block merkle hashes are still computed and checked,
-        // Of course, if an assumed valid block is invalid due to false scriptSigs
-        // this optimization would allow an invalid chain to be accepted.
-        if (fScriptChecks) {
+        // Under assumevalid, retain the exact RIP-25 predicate for native
+        // witness-v2 inputs and every P2SH input, since P2SH can hide the PQ
+        // redeem program. Classical non-P2SH scripts retain Core's historical
+        // optimization. A selective result is never cached as a full-script
+        // validation result.
+        const bool fRIP25SelectiveChecks =
+            !fScriptChecks && (flags & SCRIPT_VERIFY_PQ_HYBRID);
+        // Selective assumevalid checks must execute inline. Otherwise callers
+        // with a disabled check queue could silently discard deferred PQ work.
+        std::vector<CScriptCheck>* pDeferredChecks =
+            fRIP25SelectiveChecks ? nullptr : pvChecks;
+        if (pDeferredChecks)
+            pDeferredChecks->reserve(tx.vin.size());
+
+        if (fScriptChecks || fRIP25SelectiveChecks) {
             if ((flags & SCRIPT_VERIFY_PQ_HYBRID) &&
                 !Consensus::IsValidPQSignatureContext(pqSignatureContext)) {
                 return state.Error("CheckInputs: missing or invalid RIP-25 ML-DSA network context");
@@ -1665,6 +1671,17 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                 const Coin& coin = inputs.AccessCoin(prevout);
                 assert(!coin.IsSpent());
 
+                if (fRIP25SelectiveChecks) {
+                    int witnessVersion = -1;
+                    std::vector<unsigned char> witnessProgram;
+                    const bool fNativeWitnessV2 =
+                        coin.out.scriptPubKey.IsWitnessProgram(witnessVersion, witnessProgram) &&
+                        witnessVersion == 2;
+                    if (!fNativeWitnessV2 && !coin.out.scriptPubKey.IsPayToScriptHash()) {
+                        continue;
+                    }
+                }
+
                 // We very carefully only pass in things to CScriptCheck which
                 // are clearly committed to by tx' witness hash. This provides
                 // a sanity check that our caching is not introducing consensus
@@ -1674,9 +1691,9 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                 // Verify signature
                 CScriptCheck check(coin.out, tx, i, flags, cacheSigStore, &txdata,
                                    pqSignatureContext);
-                if (pvChecks) {
-                    pvChecks->push_back(CScriptCheck());
-                    check.swap(pvChecks->back());
+                if (pDeferredChecks) {
+                    pDeferredChecks->push_back(CScriptCheck());
+                    check.swap(pDeferredChecks->back());
                 } else if (!check()) {
                     if (flags & STANDARD_NOT_MANDATORY_VERIFY_FLAGS) {
                         // Check whether the failure was caused by a
@@ -1703,7 +1720,7 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                 }
             }
 
-            if (cacheFullScriptStore && !pvChecks) {
+            if (fScriptChecks && cacheFullScriptStore && !pDeferredChecks) {
                 // We executed all of the provided scripts, and were told to
                 // cache the result. Do so now.
                 scriptExecutionCache.insert(hashCacheEntry);
@@ -2647,7 +2664,8 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     CBlockUndo blockundo;
     std::vector<std::pair<std::string, CBlockAssetUndo> > vUndoAssetData;
 
-    CCheckQueueControl<CScriptCheck> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : nullptr);
+    const bool fQueueScriptChecks = fScriptChecks && nScriptCheckThreads;
+    CCheckQueueControl<CScriptCheck> control(fQueueScriptChecks ? &scriptcheckqueue : nullptr);
 
     std::vector<int> prevheights;
     CAmount nFees = 0;
@@ -2810,7 +2828,7 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
             bool fCacheResults = fJustCheck; /* Don't cache results if we're actually connecting blocks (still consult the cache, though) */
             if (!CheckInputs(tx, state, view, fScriptChecks, flags, fCacheResults,
                              fCacheResults, txdata[i],
-                             nScriptCheckThreads ? &vChecks : nullptr,
+                             fQueueScriptChecks ? &vChecks : nullptr,
                              chainparams.GetConsensus().pqSignatureContext))
                 return error("ConnectBlock(): CheckInputs on %s failed with %s",
                     tx.GetHash().ToString(), FormatStateMessage(state));
