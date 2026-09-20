@@ -1708,6 +1708,61 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
                     break;
                 }
 
+                // A retained or crash-interrupted chainstate that contains an
+                // active RIP-25 block must prove that its signature context
+                // was enforced. Check before ReplayBlocks, which reconstructs
+                // the UTXO effects without rerunning script validation.
+                const uint256 chainstateBestBlock = pcoinsdbview->GetBestBlock();
+                const std::vector<uint256> chainstateHeadBlocks = pcoinsdbview->GetHeadBlocks();
+                uint256 chainstateCandidate = chainstateBestBlock;
+                if (chainstateCandidate.IsNull() && chainstateHeadBlocks.size() == 2) {
+                    chainstateCandidate = chainstateHeadBlocks[0];
+                }
+
+                bool fRIP25ActiveInChainstate = false;
+                bool fChainstateTipsResolved = true;
+                const bool fCompleteChainstate =
+                    !chainstateBestBlock.IsNull() && chainstateHeadBlocks.empty();
+                const bool fInterruptedChainstate =
+                    chainstateBestBlock.IsNull() && chainstateHeadBlocks.size() == 2 &&
+                    !chainstateHeadBlocks[0].IsNull();
+                const bool fEmptyChainstate =
+                    chainstateBestBlock.IsNull() && chainstateHeadBlocks.empty();
+
+                if (!fCompleteChainstate && !fInterruptedChainstate && !fEmptyChainstate) {
+                    fChainstateTipsResolved = false;
+                } else if (!fEmptyChainstate) {
+                    LOCK(cs_main);
+                    std::vector<uint256> chainstateTips{chainstateCandidate};
+                    if (fInterruptedChainstate && !chainstateHeadBlocks[1].IsNull()) {
+                        chainstateTips.push_back(chainstateHeadBlocks[1]);
+                    }
+                    for (const uint256& hashTip : chainstateTips) {
+                        const auto tip = mapBlockIndex.find(hashTip);
+                        if (tip == mapBlockIndex.end()) {
+                            fChainstateTipsResolved = false;
+                            break;
+                        }
+                        fRIP25ActiveInChainstate |= IsPQWitnessDiscountActive(
+                                tip->second->pprev, chainparams.GetConsensus());
+                    }
+                }
+
+                if (!fChainstateTipsResolved ||
+                    RIP25ContextChainstateRequiresRebuild(
+                            fRIP25ActiveInChainstate,
+                            chainstateCandidate,
+                            chainstateBestBlock,
+                            chainstateHeadBlocks,
+                            pcoinsdbview->GetRIP25ContextValidatedTip(),
+                            pcoinsdbview->GetRIP25ContextPendingTip())) {
+                    LogPrintf("RIP-25 chainstate proof is missing, stale, or references an unknown tip %s, rebuilding chainstate\n",
+                              chainstateCandidate.IsNull() ? "(none)" : chainstateCandidate.ToString());
+                    fRetryWithChainStateRebuild = true;
+                    strLoadError = _("RIP-25 chainstate requires context-aware revalidation");
+                    break;
+                }
+
                 // ReplayBlocks is a no-op if we cleared the coinsviewdb with -reindex or -reindex-chainstate
                 if (!ReplayBlocks(chainparams, pcoinsdbview)) {
                     strLoadError = _("Unable to replay blocks. You will need to rebuild the database using -reindex-chainstate.");

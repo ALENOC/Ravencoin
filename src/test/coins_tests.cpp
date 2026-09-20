@@ -20,6 +20,34 @@
 
 int ApplyTxInUndo(Coin &&undo, CCoinsViewCache &view, const COutPoint &out, CAssetsCache *assetsCache = nullptr);
 
+namespace txdb_tests
+{
+class CCoinsViewDBTestAccess
+{
+public:
+    static void SetBestBlock(CCoinsViewDB& view, const uint256& hash)
+    {
+        BOOST_REQUIRE(view.db.Write('B', hash));
+    }
+
+    static void SetInterruptedState(CCoinsViewDB& view,
+                                    const uint256& newTip,
+                                    const uint256& oldTip,
+                                    uint8_t version)
+    {
+        BOOST_REQUIRE(view.db.Erase('B'));
+        BOOST_REQUIRE(view.db.Write('H', std::vector<uint256>{newTip, oldTip}));
+        BOOST_REQUIRE(view.db.Write('Q', std::make_pair(version, oldTip)));
+        BOOST_REQUIRE(view.db.Write('q', std::make_pair(version, newTip)));
+    }
+
+    static void SetValidatedMarker(CCoinsViewDB& view, uint8_t version, const uint256& tip)
+    {
+        BOOST_REQUIRE(view.db.Write('Q', std::make_pair(version, tip)));
+    }
+};
+} // namespace txdb_tests
+
 namespace
 {
 //! equality test
@@ -109,6 +137,73 @@ namespace
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(coins_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(rip25_context_chainstate_markers)
+{
+    CCoinsViewDB view(1 << 20, true, true);
+    const uint256 first = uint256S("01");
+    const uint256 second = uint256S("02");
+    const uint256 third = uint256S("03");
+    const uint256 absent;
+
+    BOOST_CHECK(view.GetRIP25ContextValidatedTip().IsNull());
+    BOOST_CHECK(view.GetRIP25ContextPendingTip().IsNull());
+    BOOST_CHECK(!IsRIP25ContextChainstateCurrent(absent, {}, absent, absent));
+    BOOST_CHECK(!RIP25ContextChainstateRequiresRebuild(
+            false, first, first, {}, absent, absent));
+
+    CCoinsMap changes;
+    BOOST_REQUIRE(view.BatchWrite(changes, first));
+    BOOST_CHECK(view.GetBestBlock() == first);
+    BOOST_CHECK(view.GetRIP25ContextValidatedTip() == first);
+    BOOST_CHECK(view.GetRIP25ContextPendingTip().IsNull());
+    BOOST_CHECK(IsRIP25ContextChainstateCurrent(first, {}, first, absent));
+
+    BOOST_REQUIRE(view.BatchWrite(changes, second));
+    BOOST_CHECK(view.GetBestBlock() == second);
+    BOOST_CHECK(view.GetRIP25ContextValidatedTip() == second);
+    BOOST_CHECK(view.GetRIP25ContextPendingTip().IsNull());
+    BOOST_CHECK(IsRIP25ContextChainstateCurrent(second, {}, second, absent));
+
+    // A legacy writer can advance DB_BEST_BLOCK without advancing the marker.
+    txdb_tests::CCoinsViewDBTestAccess::SetBestBlock(view, third);
+    BOOST_CHECK(view.GetBestBlock() == third);
+    BOOST_CHECK(view.GetRIP25ContextValidatedTip() == second);
+    BOOST_CHECK(RIP25ContextChainstateRequiresRebuild(
+            true, third, view.GetBestBlock(), view.GetHeadBlocks(),
+            view.GetRIP25ContextValidatedTip(), view.GetRIP25ContextPendingTip()));
+    BOOST_CHECK(!RIP25ContextChainstateRequiresRebuild(
+            false, third, view.GetBestBlock(), view.GetHeadBlocks(),
+            view.GetRIP25ContextValidatedTip(), view.GetRIP25ContextPendingTip()));
+
+    // A current interrupted flush proves both its old stable tip and target.
+    const std::vector<uint256> interrupted{third, second};
+    BOOST_CHECK(IsRIP25ContextChainstateCurrent(absent, interrupted, second, third));
+    BOOST_CHECK(!IsRIP25ContextChainstateCurrent(absent, interrupted, second, absent));
+    BOOST_CHECK(!IsRIP25ContextChainstateCurrent(absent, interrupted, first, third));
+
+    // The first interrupted flush has no old stable tip, but must prove target.
+    const std::vector<uint256> firstFlush{first, absent};
+    BOOST_CHECK(IsRIP25ContextChainstateCurrent(absent, firstFlush, absent, first));
+    BOOST_CHECK(!IsRIP25ContextChainstateCurrent(absent, firstFlush, absent, absent));
+
+    // Persisted interrupted markers are exact and unsupported versions fail closed.
+    txdb_tests::CCoinsViewDBTestAccess::SetInterruptedState(view, third, second, 1);
+    BOOST_CHECK(view.GetBestBlock().IsNull());
+    BOOST_CHECK(view.GetHeadBlocks() == interrupted);
+    BOOST_CHECK(view.GetRIP25ContextValidatedTip() == second);
+    BOOST_CHECK(view.GetRIP25ContextPendingTip() == third);
+    BOOST_CHECK(!RIP25ContextChainstateRequiresRebuild(
+            true, third, view.GetBestBlock(), view.GetHeadBlocks(),
+            view.GetRIP25ContextValidatedTip(), view.GetRIP25ContextPendingTip()));
+
+    txdb_tests::CCoinsViewDBTestAccess::SetValidatedMarker(view, 2, second);
+    BOOST_CHECK(view.GetRIP25ContextValidatedTip().IsNull());
+    BOOST_CHECK(RIP25ContextChainstateRequiresRebuild(
+            true, third, view.GetBestBlock(), view.GetHeadBlocks(),
+            view.GetRIP25ContextValidatedTip(), view.GetRIP25ContextPendingTip()));
+    BOOST_CHECK(!IsRIP25ContextChainstateCurrent(second, {third, second}, second, third));
+}
 
     static const unsigned int NUM_SIMULATION_ITERATIONS = 40000;
 

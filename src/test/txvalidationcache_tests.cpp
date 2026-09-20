@@ -457,6 +457,90 @@ BOOST_AUTO_TEST_SUITE(tx_validationcache_tests)
                                  flags, true, true, txdata, nullptr,
                                  Consensus::NullPQSignatureContext()));
         BOOST_CHECK(missingContextState.IsError());
+
+        // Assumevalid may skip classical scripts, but never an active native
+        // witness-v2 signature. This call returned true before FINDING-069.
+        CValidationState assumedWrongContextState;
+        BOOST_CHECK(!CheckInputs(tx, assumedWrongContextState, *pcoinsTip,
+                                 false, flags, false, false, txdata, nullptr,
+                                 testContext));
+
+        // Even if a caller supplies a deferred-check vector, selective
+        // assumevalid validation executes PQ checks inline and cannot be lost
+        // through a disabled worker queue.
+        std::vector<CScriptCheck> assumedDeferredChecks;
+        CValidationState assumedDeferredState;
+        BOOST_CHECK(!CheckInputs(tx, assumedDeferredState, *pcoinsTip,
+                                 false, flags, false, false, txdata,
+                                 &assumedDeferredChecks, testContext));
+        BOOST_CHECK(assumedDeferredChecks.empty());
+
+        // P2SH is checked conservatively because it can hide witness-v2.
+        const CScript pqScript =
+            GetScriptForWitnessV2PQ(pubkey.GetWitnessProgram());
+        BOOST_REQUIRE(keystore.AddCScript(pqScript));
+        CMutableTransaction wrappedFunding;
+        wrappedFunding.vout.emplace_back(amount,
+            GetScriptForDestination(CScriptID(pqScript)));
+        const CTransaction wrappedFundingTx(wrappedFunding);
+        const COutPoint wrappedPrevout(wrappedFundingTx.GetHash(), 0);
+        pcoinsTip->AddCoin(wrappedPrevout,
+            Coin(wrappedFundingTx.vout[0], chainActive.Height(), false), false);
+
+        CMutableTransaction wrappedSpend;
+        wrappedSpend.vin.emplace_back(wrappedPrevout);
+        wrappedSpend.vout.emplace_back(amount - 1000, CScript() << OP_TRUE);
+        BOOST_REQUIRE(SignSignature(keystore, wrappedFundingTx, wrappedSpend,
+                                    0, SIGHASH_ALL, mainContext));
+        const CTransaction wrappedTx(wrappedSpend);
+        PrecomputedTransactionData wrappedTxData(wrappedTx);
+        CValidationState assumedWrappedMainContextState;
+        BOOST_CHECK(CheckInputs(wrappedTx,
+                                assumedWrappedMainContextState,
+                                *pcoinsTip, false, flags, false, false,
+                                wrappedTxData, nullptr, mainContext));
+        CValidationState assumedWrappedWrongContextState;
+        BOOST_CHECK(!CheckInputs(wrappedTx,
+                                 assumedWrappedWrongContextState,
+                                 *pcoinsTip, false, flags, false, false,
+                                 wrappedTxData, nullptr, testContext));
+
+        // Active witness-v2 includes malformed program lengths. Assumevalid
+        // must not classify those prevouts as classical and skip rejection.
+        CMutableTransaction malformedV2Funding;
+        malformedV2Funding.vout.emplace_back(
+            amount, CScript() << OP_2 << std::vector<unsigned char>(31, 0x01));
+        const CTransaction malformedV2FundingTx(malformedV2Funding);
+        const COutPoint malformedV2Prevout(malformedV2FundingTx.GetHash(), 0);
+        pcoinsTip->AddCoin(malformedV2Prevout,
+            Coin(malformedV2FundingTx.vout[0], chainActive.Height(), false), false);
+        CMutableTransaction malformedV2Spend;
+        malformedV2Spend.vin.emplace_back(malformedV2Prevout);
+        malformedV2Spend.vout.emplace_back(amount - 1000, CScript() << OP_TRUE);
+        const CTransaction malformedV2Tx(malformedV2Spend);
+        PrecomputedTransactionData malformedV2TxData(malformedV2Tx);
+        CValidationState assumedMalformedV2State;
+        BOOST_CHECK(!CheckInputs(malformedV2Tx, assumedMalformedV2State,
+                                 *pcoinsTip, false, flags, false, false,
+                                 malformedV2TxData, nullptr, mainContext));
+
+        // The Core assumevalid optimization remains available to classical
+        // non-P2SH inputs even while the RIP-25 flag is active.
+        CMutableTransaction classicalFunding;
+        classicalFunding.vout.emplace_back(amount, CScript() << OP_FALSE);
+        const CTransaction classicalFundingTx(classicalFunding);
+        const COutPoint classicalPrevout(classicalFundingTx.GetHash(), 0);
+        pcoinsTip->AddCoin(classicalPrevout,
+            Coin(classicalFundingTx.vout[0], chainActive.Height(), false), false);
+        CMutableTransaction classicalSpend;
+        classicalSpend.vin.emplace_back(classicalPrevout);
+        classicalSpend.vout.emplace_back(amount - 1000, CScript() << OP_TRUE);
+        const CTransaction classicalTx(classicalSpend);
+        PrecomputedTransactionData classicalTxData(classicalTx);
+        CValidationState assumedClassicalState;
+        BOOST_CHECK(CheckInputs(classicalTx, assumedClassicalState,
+                                *pcoinsTip, false, flags, false, false,
+                                classicalTxData, nullptr, mainContext));
     }
 
 BOOST_AUTO_TEST_SUITE_END()
