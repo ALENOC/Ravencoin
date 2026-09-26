@@ -5,6 +5,10 @@ on:
     branches:
       - integration/rip25-v4.8.0
       - fix/rip25-v48-glm-remediation
+  pull_request:
+    branches:
+      - integration/rip25-v4.8.0
+      - fix/rip25-v48-glm-remediation
   workflow_dispatch:
 
 permissions:
@@ -83,6 +87,22 @@ jobs:
         name: Verify behavioral security invariants
         shell: bash
         run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests
+
+      - id: required_functional
+        name: Run required functional security tests
+        shell: bash
+        run: |
+          python3 contrib/devtools/test-required-functional-gate.py
+          python3 test/functional/test_runner.py --require-tests --jobs=2 \
+            wallet_encryption_rewrite.py rpc_assettransfer.py
+
+      - id: posttest_integrity
+        name: Verify tested source still matches checkout
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
 
   build:
     name: build (${{ matrix.name }})
@@ -185,3 +205,11 @@ jobs:
         if: matrix.run_tests
         shell: bash
         run: make check
+
+      - id: postbuild_integrity
+        name: Verify built source still matches checkout
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code

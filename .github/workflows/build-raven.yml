@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - fix/rip25-v48-glm-remediation
+  pull_request:
+    branches:
+      - integration/rip25-v4.8.0
+      - fix/rip25-v48-glm-remediation
   workflow_dispatch:
 
 permissions:
@@ -153,6 +157,14 @@ jobs:
 
     - name: Package Up the Build
       run: bash -Eeuo pipefail "${SCRIPTS}/06-package.sh" "${{ matrix.OS }}" "$GITHUB_WORKSPACE" "${{ github.base_ref || github.ref_name }}"
+
+    - name: Verify Packaged Source and Artifacts
+      shell: bash
+      run: |
+        test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+        git diff --exit-code
+        git diff --cached --exit-code
+        test -n "$(find release -type f -size +0c -print -quit)"
     
     - name: Upload Artifacts to Job
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
