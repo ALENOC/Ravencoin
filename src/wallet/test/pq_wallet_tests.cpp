@@ -634,6 +634,25 @@ BOOST_AUTO_TEST_CASE(mnemonic_arguments_are_consumed_on_success_and_failure)
     BOOST_CHECK(gArgs.GetArgs("-mnemonicpassphrase").empty());
 }
 
+BOOST_AUTO_TEST_CASE(invalid_mnemonic_error_never_discloses_phrase)
+{
+    CHDChain chain(nullptr);
+    chain.UseBip44(true);
+    const SecureString invalid("sentinel-private-recovery-words");
+    const SecureString passphrase;
+    SecureVector seed;
+
+    try {
+        chain.SetMnemonic(invalid, passphrase, seed);
+        BOOST_FAIL("invalid mnemonic was accepted");
+    } catch (const std::runtime_error& error) {
+        const std::string message(error.what());
+        BOOST_CHECK(message.find("sentinel-private-recovery-words") ==
+                    std::string::npos);
+        BOOST_CHECK(message.find("invalid mnemonic") != std::string::npos);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(cancelled_mnemonic_prompt_cleans_pending_secrets)
 {
     ScopedArgState mnemonicArg("-mnemonic");
