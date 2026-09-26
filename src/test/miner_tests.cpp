@@ -24,12 +24,16 @@
 
 #include "test/test_raven.h"
 
+#include <univalue.h>
+
 #include <memory>
 #include <stdexcept>
 
 #include <boost/test/unit_test.hpp>
 
 #include "util.h"
+
+UniValue CallRPC(std::string args);
 
 BOOST_FIXTURE_TEST_SUITE(miner_tests, TestingSetup)
 
@@ -930,6 +934,83 @@ BOOST_AUTO_TEST_CASE(p2sh_wrapped_v2_uses_undiscounted_weight)
     BOOST_REQUIRE_NO_THROW(blockTemplate = BlockAssembler(GetParams(), options).CreateNewBlock(CScript() << OP_TRUE));
     BOOST_REQUIRE(blockTemplate);
     BOOST_CHECK_EQUAL(blockTemplate->block.vtx.size(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(gbt_entries_report_contextual_pq_weight)
+{
+    LOCK(cs_main);
+    mempool.clear();
+    const CTransactionRef native = AddPQSpendToMempool(false, 1, 41, 100000, true);
+    const CTransactionRef wrapped = AddPQSpendToMempool(true, 1, 42, 100000, true);
+
+    CCoinsViewMemPool viewMemPool(pcoinsTip, mempool);
+    CCoinsViewCache view(&viewMemPool);
+    const uint64_t expectedNative =
+        GetContextualTransactionWeight(*native, view, true);
+    const uint64_t expectedWrapped =
+        GetContextualTransactionWeight(*wrapped, view, true);
+    BOOST_REQUIRE_EQUAL(expectedNative, GetTransactionWeight(*native));
+    BOOST_REQUIRE_LT(GetTransactionWeight(*wrapped), expectedWrapped);
+
+    BlockAssembler::Options options;
+    options.blockMinFeeRate = CFeeRate(0);
+    const std::unique_ptr<CBlockTemplate> blockTemplate =
+        BlockAssembler(GetParams(), options).CreateNewBlock(CScript() << OP_TRUE);
+    BOOST_REQUIRE(blockTemplate);
+    BOOST_REQUIRE_EQUAL(blockTemplate->vTxWeights.size(),
+                        blockTemplate->block.vtx.size());
+    BOOST_REQUIRE_EQUAL(blockTemplate->block.vtx.size(), 3U);
+    size_t reportedTransactions = 0;
+    for (size_t i = 1; i < blockTemplate->block.vtx.size(); ++i) {
+        const uint256 txid = blockTemplate->block.vtx[i]->GetHash();
+        if (txid == native->GetHash()) {
+            BOOST_CHECK_EQUAL(blockTemplate->vTxWeights[i], expectedNative);
+            ++reportedTransactions;
+        } else if (txid == wrapped->GetHash()) {
+            BOOST_CHECK_EQUAL(blockTemplate->vTxWeights[i], expectedWrapped);
+            ++reportedTransactions;
+        }
+    }
+    BOOST_CHECK_EQUAL(reportedTransactions, 2U);
+
+    const bool hadBypassArg = gArgs.IsArgSet("-bypassdownload");
+    const std::string oldBypassArg = gArgs.GetArg("-bypassdownload", "");
+    const int64_t oldMockTime = GetMockTime();
+    gArgs.ForceSetArg("-bypassdownload", "1");
+    SetMockTime(GetTime() + 10);
+    UniValue result;
+    try {
+        result = CallRPC("getblocktemplate");
+    } catch (...) {
+        SetMockTime(oldMockTime);
+        if (hadBypassArg)
+            gArgs.ForceSetArg("-bypassdownload", oldBypassArg);
+        else
+            gArgs.ClearArg("-bypassdownload");
+        throw;
+    }
+    SetMockTime(oldMockTime);
+    if (hadBypassArg)
+        gArgs.ForceSetArg("-bypassdownload", oldBypassArg);
+    else
+        gArgs.ClearArg("-bypassdownload");
+
+    bool foundNative = false;
+    bool foundWrapped = false;
+    const UniValue& transactions = find_value(result.get_obj(), "transactions");
+    for (const UniValue& entry : transactions.get_array().getValues()) {
+        const uint256 txid = uint256S(find_value(entry.get_obj(), "txid").get_str());
+        const uint64_t weight = find_value(entry.get_obj(), "weight").get_int64();
+        if (txid == native->GetHash()) {
+            foundNative = true;
+            BOOST_CHECK_EQUAL(weight, expectedNative);
+        } else if (txid == wrapped->GetHash()) {
+            foundWrapped = true;
+            BOOST_CHECK_EQUAL(weight, expectedWrapped);
+        }
+    }
+    BOOST_CHECK(foundNative);
+    BOOST_CHECK(foundWrapped);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

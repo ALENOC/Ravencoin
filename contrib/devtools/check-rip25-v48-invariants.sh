@@ -94,10 +94,13 @@ require_fixed 'const size_t activeMaxWeight = GetMaxBlockWeightForPrev(pindexPre
 require_fixed 'std::min<size_t>(nBlockMaxWeight, activeMaxWeight - 4000)' src/miner.cpp 'miner is not clamped below the active contextual limit'
 require_fixed 'GetMaxBlockSerializedSizeForPrev(pindexPrev, chainparams.GetConsensus())' src/miner.cpp 'miner does not query the contextual serialized-size limit'
 require_fixed 'GetContextualTransactionWeight(tx, view, fApplyPQDiscount)' src/miner.cpp 'miner weight is not bound to the UTXO context'
+require_fixed 'pblocktemplate->vTxWeights.push_back(resources.weight)' src/miner.cpp 'miner does not retain selected contextual transaction weights'
 require_fixed 'nBlockSerializedSize + resources.serializedSize' src/miner.cpp 'miner does not enforce serialized bytes while selecting packages'
 gbt_function="$(sed -n '/^UniValue getblocktemplate(/,/^class submitblock_StateCatcher/p' src/rpc/mining.cpp)"
 require_text "$gbt_function" 'GetMaxBlockSerializedSizeForPrev(pindexPrev, consensusParams)' 'GBT size limit is not derived from the template parent'
 require_text "$gbt_function" 'GetMaxBlockWeightForPrev(pindexPrev, consensusParams)' 'GBT weight limit is not derived from the template parent'
+require_text "$gbt_function" 'pblocktemplate->vTxWeights.at(index_in_template)' 'GBT transaction entries do not report selected contextual weight'
+require_fixed 'gbt_entries_report_contextual_pq_weight' src/test/miner_tests.cpp 'GBT per-entry contextual weight regression is missing'
 if grep -Fq 'nSizeLimit = GetMaxBlockSerializedSize()' <<<"$gbt_function" ||
    grep -Fq '"weightlimit", (int64_t)GetMaxBlockWeight()' <<<"$gbt_function"; then
   fail 'GBT advertises structural ceilings instead of contextual next-block limits'
