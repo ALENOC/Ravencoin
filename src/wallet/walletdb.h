@@ -367,8 +367,11 @@ public:
     bool WriteVersion(int nVersion);
 
     bool WriteBip39Words(const uint256& hash, const std::vector<unsigned char>& vchWords, bool fEncrypted);
+    bool WriteBip39Words(const uint256& hash, const SecureVector& vchWords, bool fEncrypted);
     bool WriteBip39Passphrase(const std::vector<unsigned char>& vchPassphrase, bool fEncrypted);
+    bool WriteBip39Passphrase(const SecureVector& vchPassphrase, bool fEncrypted);
     bool WriteBip39VchSeed(const std::vector<unsigned char>& vchSeed,  bool fEncrypted);
+    bool WriteBip39VchSeed(const SecureVector& vchSeed, bool fEncrypted);
     bool ReadBip39Words(uint256& hash, std::vector<unsigned char>& vchWords, bool fEncrypted);
     bool ReadBip39Passphrase(std::vector<unsigned char>& vchPassphrase, bool fEncrypted);
     bool ReadBip39VchSeed(std::vector<unsigned char>& vchSeed,  bool fEncrypted);

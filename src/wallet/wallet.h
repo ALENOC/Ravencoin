@@ -43,8 +43,17 @@ extern unsigned int nTxConfirmTarget;
 extern bool bSpendZeroConfChange;
 extern bool fWalletRbf;
 
-extern std::string my_words;
-extern std::string my_passphrase;
+/** Store GUI mnemonic input in locked memory until wallet creation consumes it. */
+void SetPendingMnemonicInput(SecureString words, SecureString passphrase);
+
+/** Consume GUI mnemonic input once and release the shared secure buffers. */
+bool TakePendingMnemonicInput(SecureString& wordsOut, SecureString& passphraseOut);
+
+/** Cleanse any unconsumed GUI mnemonic input. */
+void ClearPendingMnemonicInput();
+
+/** Return whether unconsumed GUI mnemonic input exists. */
+bool HasPendingMnemonicInput();
 
 static const unsigned int DEFAULT_KEYPOOL_SIZE = 1000;
 //! -paytxfee default
@@ -963,9 +972,12 @@ public:
     bool LoadCryptedPassphrase(const std::vector<unsigned char> &vchCryptedPassphrase);
     bool LoadCryptedVchSeed(const std::vector<unsigned char> &vchCryptedVchSeed);
     bool LoadWords(const uint256& hash, const std::vector<unsigned char> &vchWords);
+    bool LoadWords(const uint256& hash, SecureVector vchWords);
     void GetBip39Data(uint256& hash, std::vector<unsigned char> &vchWords, std::vector<unsigned char> &vchPassphrase, std::vector<unsigned char>& vchSeed);
     bool LoadPassphrase(const std::vector<unsigned char> &vchPassphrase);
+    bool LoadPassphrase(SecureVector vchPassphrase);
     bool LoadVchSeed(const std::vector<unsigned char> &vchSeed);
+    bool LoadVchSeed(SecureVector vchSeed);
     bool AddCScript(const CScript& redeemScript) override;
     bool LoadCScript(const CScript& redeemScript);
 

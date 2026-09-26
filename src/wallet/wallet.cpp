@@ -62,8 +62,70 @@ static_assert(CPQHDChain::SEED_SOURCE_BIP39 ==
                   pqderivation::SEED_SOURCE_BIP39,
               "PQ HD BIP39 seed source mismatch");
 
-std::string my_words;
-std::string my_passphrase;
+static CCriticalSection cs_pending_mnemonic;
+static SecureString pending_mnemonic_words;
+static SecureString pending_mnemonic_passphrase;
+
+class ScopedSecureStringCleanser
+{
+private:
+    SecureString& value;
+
+public:
+    explicit ScopedSecureStringCleanser(SecureString& valueIn) : value(valueIn) {}
+    ~ScopedSecureStringCleanser() { ClearSecureString(value); }
+};
+
+void SetPendingMnemonicInput(SecureString words, SecureString passphrase)
+{
+    ScopedSecureStringCleanser cleanseWords(words);
+    ScopedSecureStringCleanser cleansePassphrase(passphrase);
+    SecureString lockedWords;
+    SecureString lockedPassphrase;
+    ScopedSecureStringCleanser cleanseLockedWords(lockedWords);
+    ScopedSecureStringCleanser cleanseLockedPassphrase(lockedPassphrase);
+    lockedWords.reserve(words.size() > 64 ? words.size() : 64);
+    lockedPassphrase.reserve(passphrase.size() > 64 ? passphrase.size() : 64);
+    lockedWords.assign(words.begin(), words.end());
+    lockedPassphrase.assign(passphrase.begin(), passphrase.end());
+    ClearSecureString(words);
+    ClearSecureString(passphrase);
+
+    LOCK(cs_pending_mnemonic);
+    ClearSecureString(pending_mnemonic_words);
+    ClearSecureString(pending_mnemonic_passphrase);
+    pending_mnemonic_words.swap(lockedWords);
+    pending_mnemonic_passphrase.swap(lockedPassphrase);
+}
+
+bool TakePendingMnemonicInput(
+    SecureString& wordsOut, SecureString& passphraseOut)
+{
+    LOCK(cs_pending_mnemonic);
+    ClearSecureString(wordsOut);
+    ClearSecureString(passphraseOut);
+    const bool haveInput = !pending_mnemonic_words.empty() ||
+        !pending_mnemonic_passphrase.empty();
+    wordsOut.swap(pending_mnemonic_words);
+    passphraseOut.swap(pending_mnemonic_passphrase);
+    ClearSecureString(pending_mnemonic_words);
+    ClearSecureString(pending_mnemonic_passphrase);
+    return haveInput;
+}
+
+void ClearPendingMnemonicInput()
+{
+    LOCK(cs_pending_mnemonic);
+    ClearSecureString(pending_mnemonic_words);
+    ClearSecureString(pending_mnemonic_passphrase);
+}
+
+bool HasPendingMnemonicInput()
+{
+    LOCK(cs_pending_mnemonic);
+    return !pending_mnemonic_words.empty() ||
+        !pending_mnemonic_passphrase.empty();
+}
 
 /**
  * Fees smaller than this (in satoshi) are considered zero fee (for transaction creation)
@@ -655,14 +717,29 @@ bool CWallet::LoadWords(const uint256& hash, const std::vector<unsigned char> &v
     return CCryptoKeyStore::AddWords(hash, vchWords);
 }
 
+bool CWallet::LoadWords(const uint256& hash, SecureVector vchWords)
+{
+    return CCryptoKeyStore::AddWords(hash, std::move(vchWords));
+}
+
 bool CWallet::LoadPassphrase(const std::vector<unsigned char> &vchPassphrase)
 {
     return CCryptoKeyStore::AddPassphrase(vchPassphrase);
 }
 
+bool CWallet::LoadPassphrase(SecureVector vchPassphrase)
+{
+    return CCryptoKeyStore::AddPassphrase(std::move(vchPassphrase));
+}
+
 bool CWallet::LoadVchSeed(const std::vector<unsigned char> &vchSeed)
 {
     return CCryptoKeyStore::AddVchSeed(vchSeed);
+}
+
+bool CWallet::LoadVchSeed(SecureVector vchSeed)
+{
+    return CCryptoKeyStore::AddVchSeed(std::move(vchSeed));
 }
 
 void CWallet::GetBip39Data(uint256& hash, std::vector<unsigned char> &vchWords, std::vector<unsigned char> &vchPassphrase, std::vector<unsigned char>& vchSeed)
@@ -1981,21 +2058,25 @@ CPubKey CWallet::GenerateNewSeed(CWalletDB* pwalletdb)
     CHDChain newHdChain(this);
 	newHdChain.UseBip44(hdChain.IsBip44());
 
-	// NOTE: empty mnemonic means "generate a new one for me"
-	std::string strMnemonic = gArgs.GetArg("-mnemonic", "");
-	// NOTE: default mnemonic passphrase is an empty string
-	std::string strMnemonicPassphrase = gArgs.GetArg("-mnemonicpassphrase", "");
+	// Empty mnemonic means "generate a new one for me". Consuming these
+	// arguments also removes every application-owned ordinary-string copy.
+	SecureString vchMnemonic;
+	SecureString vchMnemonicPassphrase;
+	ScopedSecureStringCleanser cleanseMnemonic(vchMnemonic);
+	ScopedSecureStringCleanser cleanseMnemonicPassphrase(vchMnemonicPassphrase);
+	gArgs.TakeArgSecure("-mnemonic", vchMnemonic);
+	gArgs.TakeArgSecure("-mnemonicpassphrase", vchMnemonicPassphrase);
 
-    if (!my_words.empty()) {
-        strMnemonic = my_words;
+    SecureString pendingWords;
+    SecureString pendingPassphrase;
+    ScopedSecureStringCleanser cleansePendingWords(pendingWords);
+    ScopedSecureStringCleanser cleansePendingPassphrase(pendingPassphrase);
+    if (TakePendingMnemonicInput(pendingWords, pendingPassphrase)) {
+        if (!pendingWords.empty())
+            vchMnemonic.swap(pendingWords);
+        if (!pendingPassphrase.empty())
+            vchMnemonicPassphrase.swap(pendingPassphrase);
     }
-
-    if (!my_passphrase.empty()) {
-        strMnemonicPassphrase = my_passphrase;
-    }
-
-	SecureString vchMnemonic(strMnemonic.begin(), strMnemonic.end());
-	SecureString vchMnemonicPassphrase(strMnemonicPassphrase.begin(), strMnemonicPassphrase.end());
 
 	SecureVector& vchSeed = newHdChain.vchSeed;
 	if (!newHdChain.SetMnemonic(vchMnemonic, vchMnemonicPassphrase, vchSeed))
@@ -2008,9 +2089,6 @@ CPubKey CWallet::GenerateNewSeed(CWalletDB* pwalletdb)
 	newHdChain.seed_id = seed.GetID();
 
 	SetHDChain(newHdChain, false, pwalletdb);
-
-	my_passphrase.clear();
-	my_words.clear();
 
 	return seed;
 
@@ -5320,6 +5398,17 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
 
     if (fFirstRun)
     {
+        class ScopedMnemonicIngressCleanup
+        {
+        public:
+            ~ScopedMnemonicIngressCleanup()
+            {
+                gArgs.ClearArg("-mnemonic");
+                gArgs.ClearArg("-mnemonicpassphrase");
+                ClearPendingMnemonicInput();
+            }
+        } mnemonicIngressCleanup;
+
         // ensure this wallet.dat can only be opened by clients supporting HD with chain split and expects no default key
         if (!gArgs.GetBoolArg("-usehd", true)) {
             InitError(strprintf(_("Error creating %s: You can't create non-HD wallets with this version."), walletFile));
@@ -5344,8 +5433,9 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
             }
         } else {
             // Do not hold a database transaction while waiting for the UI.
-            if (gArgs.GetArg("-mnemonic", "").empty() &&
-                gArgs.GetArg("-mnemonicpassphrase", "").empty()) {
+            if (!gArgs.IsArgSetAndNonEmpty("-mnemonic") &&
+                !gArgs.IsArgSetAndNonEmpty("-mnemonicpassphrase") &&
+                !HasPendingMnemonicInput()) {
                 uiInterface.ShowMnemonic(CClientUIInterface::MODAL);
             }
 
@@ -5391,24 +5481,21 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
 
             walletInstance->GenerateNewSeed(&walletdb);
 
-            const std::string strWords(
+            SecureVector vchWords(
                 walletInstance->hdChain.vchMnemonic.begin(),
                 walletInstance->hdChain.vchMnemonic.end());
-            const std::vector<unsigned char> vchWords(
-                walletInstance->hdChain.vchMnemonic.begin(),
-                walletInstance->hdChain.vchMnemonic.end());
-            const uint256 hash = Hash(strWords.begin(), strWords.end());
+            const uint256 hash = Hash(vchWords.begin(), vchWords.end());
             if (!walletdb.WriteBip39Words(hash, vchWords, false) ||
-                !walletInstance->LoadWords(hash, vchWords)) {
+                !walletInstance->LoadWords(hash, std::move(vchWords))) {
                 InitError(_("Error storing bip 39 words"));
                 return nullptr;
             }
 
-            const std::vector<unsigned char> vchSeed(
+            SecureVector vchSeed(
                 walletInstance->hdChain.vchSeed.begin(),
                 walletInstance->hdChain.vchSeed.end());
             if (!walletdb.WriteBip39VchSeed(vchSeed, false) ||
-                !walletInstance->LoadVchSeed(vchSeed)) {
+                !walletInstance->LoadVchSeed(std::move(vchSeed))) {
                 InitError(_("Error storing bip 39 vchseed"));
                 return nullptr;
             }
@@ -5421,11 +5508,11 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
             // Keep one persisted recovery record after key generation so a
             // failure here exercises rollback of the complete initial pool.
             if (!walletInstance->hdChain.vchMnemonicPassphrase.empty()) {
-                const std::vector<unsigned char> vchPassphrase(
+                SecureVector vchPassphrase(
                     walletInstance->hdChain.vchMnemonicPassphrase.begin(),
                     walletInstance->hdChain.vchMnemonicPassphrase.end());
                 if (!walletdb.WriteBip39Passphrase(vchPassphrase, false) ||
-                    !walletInstance->LoadPassphrase(vchPassphrase)) {
+                    !walletInstance->LoadPassphrase(std::move(vchPassphrase))) {
                     InitError(_("Error storing bip 39 passphrase"));
                     return nullptr;
                 }
