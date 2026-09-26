@@ -611,7 +611,8 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
             nTxSigOps /= WITNESS_SCALE_FACTOR;
         }
         entry.push_back(Pair("sigops", nTxSigOps));
-        entry.push_back(Pair("weight", GetTransactionWeight(tx)));
+        entry.push_back(Pair("weight", static_cast<int64_t>(
+            pblocktemplate->vTxWeights.at(index_in_template))));
 
         transactions.push_back(entry);
     }
