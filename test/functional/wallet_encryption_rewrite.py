@@ -7,6 +7,7 @@
 
 import glob
 import os
+import tempfile
 
 from test_framework.test_framework import RavenTestFramework
 from test_framework.util import assert_equal, assert_raises_rpc_error
@@ -69,7 +70,12 @@ class WalletEncryptionRewriteTest(RavenTestFramework):
             self.induce_rewrite_failure(1)
         )
         wallet_dir = os.path.dirname(rewrite_path)
-        self.start_node(1, extra_args=["-salvagewallet=1"])
+        with tempfile.SpooledTemporaryFile(max_size=2 ** 16) as startup_stderr:
+            self.start_node(
+                1, extra_args=["-salvagewallet=1"], stderr=startup_stderr)
+            startup_stderr.seek(0)
+            stderr_text = startup_stderr.read().decode("utf-8")
+        assert "may contain recoverable unencrypted private-key material" in stderr_text
 
         retained_backups = glob.glob(
             os.path.join(wallet_dir, "wallet.dat.*.bak")
