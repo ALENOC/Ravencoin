@@ -38,6 +38,20 @@
 
 #include <openssl/evp.h>
 
+namespace {
+
+class ScopedSecureStringCleanser
+{
+private:
+    SecureString& value;
+
+public:
+    explicit ScopedSecureStringCleanser(SecureString& valueIn) : value(valueIn) {}
+    ~ScopedSecureStringCleanser() { ClearSecureString(value); }
+};
+
+} // namespace
+
 SecureString CMnemonic::Generate(int strength, int languageSelected)
 {
     if (strength % 32 || strength < 128 || strength > 256) {
@@ -89,6 +103,7 @@ SecureString CMnemonic::FromData(const SecureVector& data, int len, int language
 
 bool CMnemonic::Check(SecureString mnemonic, int languageSelected)
 {
+    ScopedSecureStringCleanser cleanseMnemonic(mnemonic);
     if (mnemonic.empty()) {
         return false;
     }
@@ -108,6 +123,7 @@ bool CMnemonic::Check(SecureString mnemonic, int languageSelected)
     }
 
     SecureString ssCurrentWord;
+    ScopedSecureStringCleanser cleanseCurrentWord(ssCurrentWord);
     SecureVector bits(32 + 1);
 
     if (languageSelected == -1) {
@@ -120,7 +136,8 @@ bool CMnemonic::Check(SecureString mnemonic, int languageSelected)
     uint32_t nWordIndex, ki, nBitsCount{};
 
     for (size_t i = 0; i < mnemonic.size(); ++i) {
-        ssCurrentWord = "";
+        ClearSecureString(ssCurrentWord);
+        ssCurrentWord.reserve(64);
         while (i + ssCurrentWord.size() < mnemonic.size() && mnemonic[i + ssCurrentWord.size()] != ' ') {
             ssCurrentWord += mnemonic[i + ssCurrentWord.size()];
         }
@@ -185,7 +202,9 @@ const char* const* CMnemonic::GetLanguageWords(int lang)
 
 int CMnemonic::DetectLanguageSeed(SecureString mnemonic)
 {
+    ScopedSecureStringCleanser cleanseMnemonic(mnemonic);
     SecureString ssCurrentWord;
+    ScopedSecureStringCleanser cleanseCurrentWord(ssCurrentWord);
     uint32_t nWordIndex;
 
     int lang_detected = -1;
@@ -201,7 +220,8 @@ int CMnemonic::DetectLanguageSeed(SecureString mnemonic)
 
         bool searching_is_ok = true;
         for (size_t i = 0; i < mnemonic.size() && words_founds < required_words_to_detect && searching_is_ok; ++i) {
-            ssCurrentWord = "";
+            ClearSecureString(ssCurrentWord);
+            ssCurrentWord.reserve(64);
             while (i + ssCurrentWord.size() < mnemonic.size() && mnemonic[i + ssCurrentWord.size()] != ' ') {
                 ssCurrentWord += mnemonic[i + ssCurrentWord.size()];
             }
@@ -233,7 +253,10 @@ bool CMnemonic::ToSeedWithPbkdf2(const SecureString& mnemonic,
                                  SecureVector& seedRet,
                                  Pbkdf2Function pbkdf2)
 {
-    SecureString ssSalt = SecureString("mnemonic") + passphrase;
+    SecureString ssSalt("mnemonic");
+    ScopedSecureStringCleanser cleanseSalt(ssSalt);
+    ssSalt.reserve(64);
+    ssSalt.append(passphrase);
     SecureVector vchSalt(ssSalt.begin(), ssSalt.end());
     SecureVector derivedSeed(BIP39_SEED_SIZE);
 

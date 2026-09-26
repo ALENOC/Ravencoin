@@ -458,22 +458,24 @@ public:
     }
 };
 
-class ScopedMnemonicGlobals
+class ScopedMnemonicInput
 {
 private:
-    std::string words;
-    std::string passphrase;
+    SecureString words;
+    SecureString passphrase;
+    bool hadInput;
 
 public:
-    ScopedMnemonicGlobals()
-        : words(my_words), passphrase(my_passphrase)
+    ScopedMnemonicInput()
+        : hadInput(TakePendingMnemonicInput(words, passphrase))
     {
     }
 
-    ~ScopedMnemonicGlobals()
+    ~ScopedMnemonicInput()
     {
-        my_words = words;
-        my_passphrase = passphrase;
+        ClearPendingMnemonicInput();
+        if (hadInput)
+            SetPendingMnemonicInput(std::move(words), std::move(passphrase));
     }
 };
 
@@ -574,6 +576,89 @@ struct PQWalletDatabaseTestingSetup : public TestingSetup
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(pq_wallet_tests, PQWalletDatabaseTestingSetup)
+
+BOOST_AUTO_TEST_CASE(pending_mnemonic_input_is_single_consumption)
+{
+    ScopedMnemonicInput restoreInput;
+    ClearPendingMnemonicInput();
+
+    SetPendingMnemonicInput(
+        SecureString(BIP39_TEST_MNEMONIC.begin(), BIP39_TEST_MNEMONIC.end()),
+        SecureString(BIP39_TEST_PASSPHRASE.begin(), BIP39_TEST_PASSPHRASE.end()));
+    BOOST_CHECK(HasPendingMnemonicInput());
+
+    SecureString words;
+    SecureString passphrase;
+    BOOST_REQUIRE(TakePendingMnemonicInput(words, passphrase));
+    BOOST_CHECK_EQUAL(
+        std::string(words.begin(), words.end()), BIP39_TEST_MNEMONIC);
+    BOOST_CHECK_EQUAL(
+        std::string(passphrase.begin(), passphrase.end()), BIP39_TEST_PASSPHRASE);
+    BOOST_CHECK_GE(words.capacity(), 64U);
+    BOOST_CHECK_GE(passphrase.capacity(), 64U);
+    BOOST_CHECK(!HasPendingMnemonicInput());
+
+    words.assign(32, 'w');
+    passphrase.assign(32, 'p');
+    BOOST_CHECK(!TakePendingMnemonicInput(words, passphrase));
+    BOOST_CHECK(words.empty());
+    BOOST_CHECK(passphrase.empty());
+    BOOST_CHECK_EQUAL(words.capacity(), SecureString().capacity());
+    BOOST_CHECK_EQUAL(passphrase.capacity(), SecureString().capacity());
+}
+
+BOOST_AUTO_TEST_CASE(mnemonic_arguments_are_consumed_on_success_and_failure)
+{
+    ScopedArgState mnemonicArg("-mnemonic");
+    ScopedArgState passphraseArg("-mnemonicpassphrase");
+    ScopedMnemonicInput restoreInput;
+    ClearPendingMnemonicInput();
+
+    const std::string filename = "secure-mnemonic-arguments-wallet.dat";
+    std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+    wallet->UseBip44(true);
+    gArgs.ForceSetArg("-mnemonic", BIP39_TEST_MNEMONIC);
+    gArgs.ForceSetArg("-mnemonicpassphrase", BIP39_TEST_PASSPHRASE);
+    BOOST_CHECK_NO_THROW((void)wallet->GenerateNewSeed());
+    BOOST_CHECK(!gArgs.IsArgSet("-mnemonic"));
+    BOOST_CHECK(!gArgs.IsArgSet("-mnemonicpassphrase"));
+    BOOST_CHECK(gArgs.GetArgs("-mnemonic").empty());
+    BOOST_CHECK(gArgs.GetArgs("-mnemonicpassphrase").empty());
+
+    gArgs.ForceSetArg("-mnemonic", "not a valid mnemonic");
+    gArgs.ForceSetArg("-mnemonicpassphrase", "failure-path-secret");
+    BOOST_CHECK_THROW(wallet->GenerateNewSeed(), std::runtime_error);
+    BOOST_CHECK(!gArgs.IsArgSet("-mnemonic"));
+    BOOST_CHECK(!gArgs.IsArgSet("-mnemonicpassphrase"));
+    BOOST_CHECK(gArgs.GetArgs("-mnemonic").empty());
+    BOOST_CHECK(gArgs.GetArgs("-mnemonicpassphrase").empty());
+}
+
+BOOST_AUTO_TEST_CASE(cancelled_mnemonic_prompt_cleans_pending_secrets)
+{
+    ScopedArgState mnemonicArg("-mnemonic");
+    ScopedArgState passphraseArg("-mnemonicpassphrase");
+    ScopedMnemonicInput restoreInput;
+    gArgs.ClearArg("-mnemonic");
+    gArgs.ClearArg("-mnemonicpassphrase");
+    ClearPendingMnemonicInput();
+
+    boost::signals2::scoped_connection mnemonicConnection(
+        uiInterface.ShowMnemonic.connect([&](int) {
+            SetPendingMnemonicInput(
+                SecureString(BIP39_TEST_MNEMONIC.begin(),
+                             BIP39_TEST_MNEMONIC.end()),
+                SecureString(BIP39_TEST_PASSPHRASE.begin(),
+                             BIP39_TEST_PASSPHRASE.end()));
+            throw std::runtime_error("mnemonic prompt cancelled");
+        }));
+
+    BOOST_CHECK_THROW(
+        CWallet::CreateWalletFromFile("cancelled-mnemonic-prompt-wallet.dat"),
+        std::runtime_error);
+    BOOST_CHECK(!HasPendingMnemonicInput());
+    mnemonicConnection.disconnect();
+}
 
 BOOST_AUTO_TEST_CASE(deterministic_pq_generation_requires_hd_root)
 {
@@ -3067,11 +3152,10 @@ BOOST_AUTO_TEST_CASE(bip44_creation_transaction_aborts_lineage_and_keypool)
 
     ScopedArgState mnemonicArg("-mnemonic");
     ScopedArgState passphraseArg("-mnemonicpassphrase");
-    ScopedMnemonicGlobals mnemonicGlobals;
+    ScopedMnemonicInput mnemonicInput;
     gArgs.ClearArg("-mnemonic");
     gArgs.ClearArg("-mnemonicpassphrase");
-    my_words.clear();
-    my_passphrase.clear();
+    ClearPendingMnemonicInput();
 
     {
         CWalletDBWrapper fillerDbw(&bitdb, filename);
@@ -3137,8 +3221,11 @@ BOOST_AUTO_TEST_CASE(bip44_creation_transaction_aborts_lineage_and_keypool)
         uiInterface.ShowMnemonic.connect(
             [&](int) {
                 ++promptCount;
-                my_words = BIP39_TEST_MNEMONIC;
-                my_passphrase = BIP39_TEST_PASSPHRASE;
+                SetPendingMnemonicInput(
+                    SecureString(BIP39_TEST_MNEMONIC.begin(),
+                                 BIP39_TEST_MNEMONIC.end()),
+                    SecureString(BIP39_TEST_PASSPHRASE.begin(),
+                                 BIP39_TEST_PASSPHRASE.end()));
                 if (!blockFirstPrompt)
                     return;
 
@@ -3201,6 +3288,7 @@ BOOST_AUTO_TEST_CASE(bip44_creation_transaction_aborts_lineage_and_keypool)
     BOOST_CHECK(blockerAbortSucceeded);
     BOOST_CHECK_EQUAL(promptCount, 1U);
     BOOST_CHECK_EQUAL(loadNotifications, 0U);
+    BOOST_CHECK(!HasPendingMnemonicInput());
     BOOST_CHECK(!WalletContainsAnyRecordType(
         filename,
         {"hdchain", "bip39words", "bip39passphrase", "bip39vchseed"}));
@@ -3222,6 +3310,7 @@ BOOST_AUTO_TEST_CASE(bip44_creation_transaction_aborts_lineage_and_keypool)
     BOOST_REQUIRE(createdWallet != nullptr);
     BOOST_CHECK_EQUAL(promptCount, 2U);
     BOOST_CHECK_EQUAL(loadNotifications, 1U);
+    BOOST_CHECK(!HasPendingMnemonicInput());
     loadConnection.disconnect();
     mnemonicConnection.disconnect();
     UnregisterValidationInterface(createdWallet);

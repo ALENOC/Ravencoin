@@ -1369,6 +1369,13 @@ bool CWalletDB::WriteBip39Words(const uint256& hash, const std::vector<unsigned 
     return WriteIC(key, std::make_pair(hash,vchWords), true);
 }
 
+bool CWalletDB::WriteBip39Words(const uint256& hash, const SecureVector& vchWords, bool fEncrypted)
+{
+    std::string key = fEncrypted ? "c" : "";
+    key.append("bip39words");
+    return WriteIC(key, std::make_pair(hash, vchWords), true);
+}
+
 bool CWalletDB::WriteBip39Passphrase(const std::vector<unsigned char>& vchPassphrase,  bool fEncrypted)
 {
     std::string key = fEncrypted ? "c" : "";
@@ -1376,7 +1383,21 @@ bool CWalletDB::WriteBip39Passphrase(const std::vector<unsigned char>& vchPassph
     return WriteIC(key, vchPassphrase, true);
 }
 
+bool CWalletDB::WriteBip39Passphrase(const SecureVector& vchPassphrase, bool fEncrypted)
+{
+    std::string key = fEncrypted ? "c" : "";
+    key.append("bip39passphrase");
+    return WriteIC(key, vchPassphrase, true);
+}
+
 bool CWalletDB::WriteBip39VchSeed(const std::vector<unsigned char>& vchSeed,  bool fEncrypted)
+{
+    std::string key = fEncrypted ? "c" : "";
+    key.append("bip39vchseed");
+    return WriteIC(key, vchSeed, true);
+}
+
+bool CWalletDB::WriteBip39VchSeed(const SecureVector& vchSeed, bool fEncrypted)
 {
     std::string key = fEncrypted ? "c" : "";
     key.append("bip39vchseed");
