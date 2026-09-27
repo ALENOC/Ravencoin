@@ -193,7 +193,7 @@ std::array<LanguageDetails, NUM_LANGUAGES_BIP39_SUPPORTED> CMnemonic::GetLanguag
 
 const char* const* CMnemonic::GetLanguageWords(int lang)
 {
-    if (lang >= 0 && lang <= NUM_LANGUAGES_BIP39_SUPPORTED) {
+    if (lang >= 0 && lang < NUM_LANGUAGES_BIP39_SUPPORTED) {
         return CMnemonic::GetLanguagesDetails()[lang].wordlist;
     }
 

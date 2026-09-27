@@ -10,6 +10,8 @@
 #include "test/test_raven.h"
 #include "wallet/bip39.h"
 
+#include <limits>
+
 #include <boost/test/unit_test.hpp>
 
 #include <univalue.h>
@@ -42,6 +44,18 @@ public:
 };
 
 BOOST_FIXTURE_TEST_SUITE(bip39_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(bip39_language_index_boundaries)
+{
+    const char* const* english = CMnemonic::GetLanguageWords(DEFAULT_LANG);
+    const char* const* italian = CMnemonic::GetLanguageWords(NUM_LANGUAGES_BIP39_SUPPORTED - 1);
+    BOOST_REQUIRE(english != nullptr);
+    BOOST_CHECK(italian != nullptr);
+    BOOST_CHECK(italian != english);
+    BOOST_CHECK(CMnemonic::GetLanguageWords(-1) == english);
+    BOOST_CHECK(CMnemonic::GetLanguageWords(NUM_LANGUAGES_BIP39_SUPPORTED) == english);
+    BOOST_CHECK(CMnemonic::GetLanguageWords(std::numeric_limits<int>::max()) == english);
+}
 
 // https://github.com/trezor/python-mnemonic/blob/b502451a33a440783926e04428115e0bed87d01f/vectors.json
 BOOST_AUTO_TEST_CASE(bip39_vectors)
