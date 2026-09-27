@@ -90,6 +90,24 @@ BOOST_FIXTURE_TEST_SUITE(wallet_crypto, BasicTestingSetup)
             mapCryptedKeys.begin()->second.second.pop_back();
         }
 
+        size_t EncryptedBip39BlockCount(int record)
+        {
+            LOCK(cs_KeyStore);
+            const std::vector<unsigned char>& crypted = record == 0
+                ? vchCryptedBip39Words
+                : (record == 1 ? vchCryptedBip39Passphrase : vchCryptedBip39VchSeed);
+            return crypted.size() / WALLET_CRYPTO_IV_SIZE;
+        }
+
+        void CorruptEncryptedBip39Block(int record, size_t block)
+        {
+            LOCK(cs_KeyStore);
+            std::vector<unsigned char>& crypted = record == 0
+                ? vchCryptedBip39Words
+                : (record == 1 ? vchCryptedBip39Passphrase : vchCryptedBip39VchSeed);
+            crypted[block * WALLET_CRYPTO_IV_SIZE] ^= 1;
+        }
+
         bool ReencryptWithWrongSeed(CKeyingMaterial& masterKey)
         {
             LOCK(cs_KeyStore);
@@ -273,6 +291,26 @@ BOOST_FIXTURE_TEST_SUITE(wallet_crypto, BasicTestingSetup)
         BOOST_CHECK(!keystore.UnlockForTest(masterKey));
         BOOST_CHECK(keystore.IsLocked());
         BOOST_CHECK(keystore.PlaintextSecretStorageReleased());
+    }
+
+    BOOST_AUTO_TEST_CASE(bip39_cbc_mutation_in_every_block_rejects)
+    {
+        CKeyingMaterial masterKey(WALLET_CRYPTO_KEY_SIZE, 0x42);
+        for (int record = 0; record < 3; ++record) {
+            TestKeyStore countStore;
+            BOOST_REQUIRE(countStore.PrepareUnlockedSecrets(masterKey));
+            const size_t blockCount = countStore.EncryptedBip39BlockCount(record);
+            BOOST_REQUIRE(blockCount > 0);
+            for (size_t block = 0; block < blockCount; ++block) {
+                TestKeyStore keystore;
+                BOOST_REQUIRE(keystore.PrepareUnlockedSecrets(masterKey));
+                BOOST_REQUIRE(keystore.Lock());
+                keystore.CorruptEncryptedBip39Block(record, block);
+                BOOST_CHECK(!keystore.UnlockForTest(masterKey));
+                BOOST_CHECK(keystore.IsLocked());
+                BOOST_CHECK(keystore.PlaintextSecretStorageReleased());
+            }
+        }
     }
 
 BOOST_AUTO_TEST_SUITE_END()

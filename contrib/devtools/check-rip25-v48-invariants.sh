@@ -716,6 +716,7 @@ behavioral_tests=(
   wallet_crypto/lock_cleanses_and_releases_plaintext_secret_storage
   wallet_crypto/corrupt_bip39_unlock_is_atomic
   wallet_crypto/corrupt_classical_key_cannot_publish_bip39_plaintext
+  wallet_crypto/bip39_cbc_mutation_in_every_block_rejects
   pq_wallet_tests
 )
 
