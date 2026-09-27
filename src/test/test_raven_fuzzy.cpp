@@ -8,8 +8,13 @@
 #endif
 
 #include "consensus/merkle.h"
+#include "chainparams.h"
+#include "crypto/mldsa.h"
 #include "primitives/block.h"
+#include "pqkey.h"
+#include "script/interpreter.h"
 #include "script/script.h"
+#include "script/standard.h"
 #include "addrman.h"
 #include "chain.h"
 #include "coins.h"
@@ -25,7 +30,148 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
 #include <vector>
+
+namespace {
+
+// The newline permits a readable, tracked AFL seed file. Other test IDs keep
+// their historical binary format.
+static const unsigned char PQ_FUZZ_MAGIC[] = "PQFZ\n";
+static const CAmount PQ_FUZZ_AMOUNT = 10000;
+static const unsigned int PQ_FUZZ_FLAGS = SCRIPT_VERIFY_P2SH |
+                                           SCRIPT_VERIFY_WITNESS |
+                                           SCRIPT_VERIFY_PQ_HYBRID;
+static volatile bool pqFuzzResult;
+
+struct PQFuzzFixture {
+    std::array<Consensus::PQSignatureContext, 3> contexts;
+    std::vector<unsigned char> pubkey;
+    std::vector<unsigned char> signature;
+
+    PQFuzzFixture()
+    {
+        const char* networks[] = {"main", "test", "regtest"};
+        for (size_t i = 0; i < contexts.size(); ++i) {
+            const std::unique_ptr<CChainParams> params = CreateChainParams(networks[i]);
+            if (!params)
+                std::abort();
+            contexts[i] = params->GetConsensus().pqSignatureContext;
+        }
+
+        // The test seed is public. CPQKey holds and cleanses the private key;
+        // only a valid public key and randomized signature survive setup.
+        const std::array<unsigned char, mldsa::SEED_BYTES> seed{};
+        CPQKey key;
+        if (!key.SetSeed(seed.data()))
+            std::abort();
+        pubkey = key.GetPubKey().GetVch();
+
+        CMutableTransaction spend;
+        spend.vin.emplace_back(COutPoint(uint256(), 0));
+        spend.vout.emplace_back(PQ_FUZZ_AMOUNT - 1000, CScript() << OP_TRUE);
+        const CTransaction tx(spend);
+        const uint256 sighash = SignatureHash(CScript(), tx, 0, SIGHASH_ALL,
+                                               PQ_FUZZ_AMOUNT,
+                                               SIGVERSION_WITNESS_V2_PQ);
+        if (!key.Sign(sighash, signature, contexts[0].data(), contexts[0].size()))
+            std::abort();
+    }
+};
+
+const PQFuzzFixture& GetPQFuzzFixture()
+{
+    static const PQFuzzFixture fixture;
+    return fixture;
+}
+
+bool FuzzPQWitness(const uint8_t* input, size_t size)
+{
+    const PQFuzzFixture& fixture = GetPQFuzzFixture();
+    const uint8_t mode = size ? input[0] : 0;
+    const uint8_t* payload = size ? input + 1 : input;
+    const size_t payloadSize = size ? size - 1 : 0;
+    const uint8_t first = payloadSize ? payload[0] : 0;
+
+    CMutableTransaction spend;
+    spend.vin.emplace_back(COutPoint(uint256(), 0));
+    spend.vout.emplace_back(PQ_FUZZ_AMOUNT - 1000, CScript() << OP_TRUE);
+    spend.vin[0].scriptWitness.stack.push_back(fixture.signature);
+    spend.vin[0].scriptWitness.stack.push_back(fixture.pubkey);
+    std::vector<unsigned char>& signature = spend.vin[0].scriptWitness.stack[0];
+    std::vector<unsigned char>& pubkey = spend.vin[0].scriptWitness.stack[1];
+
+    // Preserve exact sizes for these byte mutations, so malformed ML-DSA
+    // signatures and public keys reach the actual liboqs verifier.
+    if (mode & 0x01) {
+        if (payloadSize == 0)
+            signature[0] ^= 1;
+        for (size_t i = 0; i < std::min(payloadSize, signature.size()); ++i)
+            signature[(first + i) % signature.size()] ^= payload[i];
+    }
+    if (mode & 0x02) {
+        if (payloadSize == 0)
+            pubkey[0] ^= 1;
+        for (size_t i = 0; i < std::min(payloadSize, pubkey.size()); ++i)
+            pubkey[(first + i) % pubkey.size()] ^= payload[i];
+    }
+
+    // Bind the program to even a mutated key by default. The mismatch mode
+    // then tests the cheap hash check before expensive verification.
+    uint256 program = CPQPubKey(pubkey).GetWitnessProgram();
+    CScript scriptPubKey = GetScriptForWitnessV2PQ(program);
+    if (mode & 0x04) {
+        if ((first % 3) == 1) {
+            std::vector<unsigned char> shortProgram(program.begin(), program.end() - 1);
+            scriptPubKey = CScript() << OP_2 << shortProgram;
+        } else if ((first % 3) == 2) {
+            std::vector<unsigned char> longProgram(program.begin(), program.end());
+            longProgram.push_back(first);
+            scriptPubKey = CScript() << OP_2 << longProgram;
+        } else {
+            program.begin()[0] ^= 1;
+            scriptPubKey = GetScriptForWitnessV2PQ(program);
+        }
+    }
+    if (mode & 0x08) {
+        switch (first % 6) {
+        case 0: spend.vin[0].scriptWitness.stack.resize(1); break;
+        case 1: spend.vin[0].scriptWitness.stack.emplace_back(1, first); break;
+        case 2: signature.pop_back(); break;
+        case 3: signature.push_back(first); break;
+        case 4: pubkey.pop_back(); break;
+        case 5: pubkey.push_back(first); break;
+        }
+    }
+    if (mode & 0x10) {
+        spend.nVersion ^= 1 + first;
+        spend.nLockTime ^= payloadSize > 1 ? payload[1] : 1;
+        spend.vin[0].nSequence ^= payloadSize > 2 ? payload[2] : 1;
+        spend.vout[0].nValue += payloadSize > 3 ? payload[3] : 1;
+    }
+    if (mode & 0x40) {
+        const size_t scriptSize = std::min(payloadSize, size_t(100));
+        spend.vin[0].scriptSig = scriptSize
+            ? CScript(payload, payload + scriptSize) : CScript() << OP_TRUE;
+    }
+    if (mode & 0x80)
+        scriptPubKey = CScript() << OP_1 << std::vector<unsigned char>(program.begin(), program.end());
+
+    const Consensus::PQSignatureContext& context = fixture.contexts[(mode & 0x20)
+        ? 1 + (first % 2) : 0];
+    const CTransaction tx(spend);
+    ScriptError error = SCRIPT_ERR_UNKNOWN_ERROR;
+    return VerifyScript(tx.vin[0].scriptSig, scriptPubKey,
+                        &tx.vin[0].scriptWitness, PQ_FUZZ_FLAGS,
+                        TransactionSignatureChecker(&tx, 0, PQ_FUZZ_AMOUNT, context),
+                        &error);
+}
+
+} // namespace
 
 enum TEST_ID
 {
@@ -65,6 +211,13 @@ bool read_stdin(std::vector<uint8_t> &data)
 
 int test_one_input(std::vector<uint8_t> buffer)
 {
+    if (buffer.size() >= sizeof(PQ_FUZZ_MAGIC) - 1 &&
+        std::memcmp(buffer.data(), PQ_FUZZ_MAGIC, sizeof(PQ_FUZZ_MAGIC) - 1) == 0) {
+        pqFuzzResult = FuzzPQWitness(buffer.data() + sizeof(PQ_FUZZ_MAGIC) - 1,
+                                     buffer.size() - (sizeof(PQ_FUZZ_MAGIC) - 1));
+        return 0;
+    }
+
     if (buffer.size() < sizeof(uint32_t)) return 0;
 
     uint32_t test_id = 0xffffffff;
@@ -288,6 +441,8 @@ void initialize()
 // This function is used by libFuzzer
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
+    if (size > (1 << 20))
+        return 0;
     test_one_input(std::vector<uint8_t>(data, data + size));
     return 0;
 }
@@ -309,6 +464,41 @@ __attribute__((weak))
 int main(int argc, char **argv)
 {
     initialize();
+    if (argc == 2 && std::strcmp(argv[1], "--pq-smoke") == 0) {
+        const uint8_t badSignature[] = {0x01};
+        const uint8_t badPubkey[] = {0x02};
+        const uint8_t badProgram[] = {0x04};
+        const uint8_t badStack[] = {0x08};
+        const uint8_t badTransaction[] = {0x10};
+        const uint8_t wrongNetwork[] = {0x20};
+        const uint8_t badScriptSig[] = {0x40};
+        const bool expectedResults = FuzzPQWitness(nullptr, 0) &&
+            !FuzzPQWitness(badSignature, sizeof(badSignature)) &&
+            !FuzzPQWitness(badPubkey, sizeof(badPubkey)) &&
+            !FuzzPQWitness(badProgram, sizeof(badProgram)) &&
+            !FuzzPQWitness(badStack, sizeof(badStack)) &&
+            !FuzzPQWitness(badTransaction, sizeof(badTransaction)) &&
+            !FuzzPQWitness(wrongNetwork, sizeof(wrongNetwork)) &&
+            !FuzzPQWitness(badScriptSig, sizeof(badScriptSig));
+        if (!expectedResults)
+            return 1;
+
+        // Exercise every mutation mask without relying on an installed AFL
+        // binary. The two long inputs reach every signature/key byte offset.
+        for (unsigned int mode = 0; mode < 256; ++mode) {
+            std::vector<uint8_t> sample(PQ_FUZZ_MAGIC,
+                PQ_FUZZ_MAGIC + sizeof(PQ_FUZZ_MAGIC) - 1);
+            sample.push_back(static_cast<uint8_t>(mode));
+            const size_t payloadSize = mode == 1 ? mldsa::SIGNATURE_BYTES :
+                mode == 2 ? mldsa::PUBLICKEY_BYTES : 16 + (mode % 17);
+            for (size_t i = 0; i < payloadSize; ++i)
+                sample.push_back(static_cast<uint8_t>((mode * 73 + i * 29) & 0xff));
+            if (test_one_input(sample) != 0)
+                return 1;
+        }
+        std::printf("PQ witness fuzz smoke: 1 valid, 7 invalid, 256 mutations\n");
+        return 0;
+    }
 #ifdef __AFL_INIT
     // Enable AFL deferred forkserver mode. Requires compilation using
     // afl-clang-fast++. See fuzzing.md for details.

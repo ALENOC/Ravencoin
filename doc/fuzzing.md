@@ -70,3 +70,37 @@ $AFLPATH/afl-fuzz -i ${AFLIN} -o ${AFLOUT} -m52 -- test/test_raven_fuzzy
 
 You may have to change a few kernel parameters to test optimally - `afl-fuzz`
 will print an error and suggestion if so.
+
+RIP-25 witness-v2 verifier target
+-------------------------------
+
+The tracked seed `src/test/fuzz/pq_witness_v2_seed` contains the readable
+five-byte prefix `PQFZ` followed by a newline. The harness constructs one
+valid ML-DSA-44 witness-v2 spend from a public test seed, signs its RIP-25
+sighash once, and checks it with production `VerifyScript` and liboqs. Bytes
+after the prefix mutate the signature, public key, witness stack, program,
+transaction fields, network context, scriptSig, and witness version. The
+program follows a mutated public key unless a program-mismatch mode is set,
+so malformed keys of the correct length also reach the real verifier.
+
+The first byte after the prefix is a bit mask: `0x01` mutates signature
+bytes, `0x02` mutates public-key bytes, `0x04` changes the program, `0x08`
+changes witness shape or item length, `0x10` changes transaction fields,
+`0x20` changes network context, `0x40` changes scriptSig, and `0x80` changes
+the witness version. Remaining bytes supply mutation data. The input cap is
+1 MiB for both stdin and libFuzzer. The existing binary test IDs continue to
+exercise transaction and other network deserialization separately.
+
+A focused smoke check must succeed before fuzzing:
+
+```
+src/test/test_raven_fuzzy --pq-smoke
+src/test/test_raven_fuzzy < src/test/fuzz/pq_witness_v2_seed
+```
+
+For a short AFL run, use this seed in a dedicated input directory, then run
+the instrumented binary with `afl-fuzz`. Retain the output corpus and rerun
+interesting cases under ASan and UBSan. The smoke check asserts one valid and
+seven invalid outcomes, then runs 256 deterministic mutation inputs,
+including full-length signature and public-key mutations. It does not
+replace long-running fuzzing.
