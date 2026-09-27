@@ -14,6 +14,7 @@
 #include "utilstrencodings.h"
 #include "wallet/bip39.h"
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -77,7 +78,9 @@ bool CCrypter::SetKey(const CKeyingMaterial& chNewKey, const std::vector<unsigne
 
 bool CCrypter::Encrypt(const CKeyingMaterial& vchPlaintext, std::vector<unsigned char> &vchCiphertext) const
 {
-    if (!fKeySet)
+    vchCiphertext.clear();
+    if (!fKeySet || vchPlaintext.empty() ||
+        vchPlaintext.size() > static_cast<size_t>(std::numeric_limits<int>::max() - AES_BLOCKSIZE))
         return false;
 
     // max ciphertext len for a n bytes of plaintext is
@@ -85,9 +88,11 @@ bool CCrypter::Encrypt(const CKeyingMaterial& vchPlaintext, std::vector<unsigned
     vchCiphertext.resize(vchPlaintext.size() + AES_BLOCKSIZE);
 
     AES256CBCEncrypt enc(vchKey.data(), vchIV.data(), true);
-    size_t nLen = enc.Encrypt(&vchPlaintext[0], vchPlaintext.size(), vchCiphertext.data());
-    if(nLen < vchPlaintext.size())
+    int nLen = enc.Encrypt(vchPlaintext.data(), static_cast<int>(vchPlaintext.size()), vchCiphertext.data());
+    if (nLen <= static_cast<int>(vchPlaintext.size())) {
+        vchCiphertext.clear();
         return false;
+    }
     vchCiphertext.resize(nLen);
 
     return true;
@@ -95,18 +100,21 @@ bool CCrypter::Encrypt(const CKeyingMaterial& vchPlaintext, std::vector<unsigned
 
 bool CCrypter::Decrypt(const std::vector<unsigned char>& vchCiphertext, CKeyingMaterial& vchPlaintext) const
 {
-    if (!fKeySet)
+    CKeyingMaterial().swap(vchPlaintext);
+    if (!fKeySet || vchCiphertext.size() < AES_BLOCKSIZE ||
+        vchCiphertext.size() % AES_BLOCKSIZE != 0 ||
+        vchCiphertext.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
         return false;
 
     // plaintext will always be equal to or lesser than length of ciphertext
-    int nLen = vchCiphertext.size();
-
-    vchPlaintext.resize(nLen);
+    vchPlaintext.resize(vchCiphertext.size());
 
     AES256CBCDecrypt dec(vchKey.data(), vchIV.data(), true);
-    nLen = dec.Decrypt(vchCiphertext.data(), vchCiphertext.size(), &vchPlaintext[0]);
-    if(nLen == 0)
+    int nLen = dec.Decrypt(vchCiphertext.data(), static_cast<int>(vchCiphertext.size()), vchPlaintext.data());
+    if (nLen == 0) {
+        CKeyingMaterial().swap(vchPlaintext);
         return false;
+    }
 
     vchPlaintext.resize(nLen);
     return true;
