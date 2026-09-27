@@ -123,6 +123,16 @@ jobs:
             packages: g++-arm-linux-gnueabihf
             configure_flags: --without-gui --disable-bench
             run_tests: false
+          - name: aarch64-disable-wallet
+            host: aarch64-linux-gnu
+            packages: g++-aarch64-linux-gnu
+            configure_flags: --without-gui --disable-wallet --disable-bench
+            run_tests: false
+          - name: aarch64
+            host: aarch64-linux-gnu
+            packages: g++-aarch64-linux-gnu
+            configure_flags: --without-gui --disable-bench
+            run_tests: false
           - name: linux-disable-wallet
             host: x86_64-pc-linux-gnu
             packages: ''

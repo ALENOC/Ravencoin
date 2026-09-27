@@ -24,7 +24,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-       OS: [ 'windows', 'osx' ]
+        include:
+          - OS: windows
+            host: x86_64-w64-mingw32
+          - OS: osx
+            host: x86_64-apple-darwin14
+          - OS: linux
+            host: x86_64-linux-gnu
+          - OS: arm32v7
+            host: arm-linux-gnueabihf
+          - OS: aarch64
+            host: aarch64-linux-gnu
 
 #&&&&&& Beginning- section to free up space on root for the builds and for 30GB of swap
     steps:
@@ -128,11 +138,9 @@ jobs:
     - name: Add Dependencies to the System PATH
       shell: bash
       run: |
-        if [[ "${{ matrix.OS }}" == "windows" ]]; then
-          echo "$GITHUB_WORKSPACE/depends/x86_64-w64-mingw32/native/bin" >> "$GITHUB_PATH"
-        else
-          echo "$GITHUB_WORKSPACE/depends/x86_64-apple-darwin14/native/bin" >> "$GITHUB_PATH"
-        fi
+        native_bin="$GITHUB_WORKSPACE/depends/${{ matrix.host }}/native/bin"
+        test -d "$native_bin"
+        echo "$native_bin" >> "$GITHUB_PATH"
 
     - name: Build Config
       run: |
@@ -164,12 +172,56 @@ jobs:
         test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
         git diff --exit-code
         git diff --cached --exit-code
-        test -n "$(find release -type f -size +0c -print -quit)"
+        pkgversion="$(sed -n 's/^#define PACKAGE_VERSION "\([^"]*\)"/\1/p' src/config/raven-config.h)"
+        test -n "$pkgversion"
+        distname="raven-${pkgversion}"
+        if [[ "${{ github.base_ref || github.ref_name }}" != *release* ]]; then
+          distname="${distname}-$(git rev-parse --short HEAD)"
+        fi
+
+        case "${{ matrix.OS }}" in
+          windows)
+            artifacts=("${distname}-win64.zip" "${distname}-win64-setup-unsigned.exe" "${distname}-win64-unsigned.tar.gz")
+            ;;
+          osx)
+            artifacts=("${distname}-osx64.tar.gz" "${distname}-osx-unsigned.dmg" "${distname}-osx-unsigned.tar.gz")
+            ;;
+          linux) artifacts=("${distname}-x86_64-linux-gnu.tar.gz") ;;
+          arm32v7) artifacts=("${distname}-arm-linux-gnueabihf.tar.gz") ;;
+          aarch64) artifacts=("${distname}-aarch64-linux-gnu.tar.gz") ;;
+          *) exit 1 ;;
+        esac
+
+        source_archive="${distname}.tar.gz"
+        source_tar="release/${distname}.tar"
+        git archive --format=tar --prefix="${distname}/" HEAD > "$source_tar"
+        test "$(git get-tar-commit-id < "$source_tar")" = "$GITHUB_SHA"
+        gzip -9n "$source_tar"
+        test -s "release/${source_archive}"
+        gzip -t "release/${source_archive}"
+
+        cd release
+        for artifact in "${artifacts[@]}"; do
+          test -s "$artifact"
+        done
+        {
+          echo "commit=$GITHUB_SHA"
+          echo "target=${{ matrix.OS }}"
+          echo "host=${{ matrix.host }}"
+          echo "source_archive=$source_archive"
+          echo "status=unsigned CI build; Windows and macOS outputs are not signed final releases"
+        } > PROVENANCE.txt
+        test -s PROVENANCE.txt
+        grep -Fx "commit=$GITHUB_SHA" PROVENANCE.txt
+        grep -Fx "source_archive=$source_archive" PROVENANCE.txt
+        sha256sum -- "${artifacts[@]}" "$source_archive" PROVENANCE.txt > SHA256SUMS
+        test -s SHA256SUMS
+        sha256sum --check SHA256SUMS
     
     - name: Upload Artifacts to Job
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
-        name: raven-${{ matrix.OS }}-${{ github.sha }}
+        name: raven-unsigned-${{ matrix.OS }}-${{ github.sha }}
         path: ${{ github.workspace }}/release
         if-no-files-found: error
         retention-days: 14

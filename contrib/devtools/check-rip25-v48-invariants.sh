@@ -587,6 +587,9 @@ require_fixed 'python3 test/functional/test_runner.py --require-tests' "$final_g
 require_fixed 'wallet_encryption_rewrite.py rpc_assettransfer.py' "$final_gate" 'required wallet and PQ asset-scope functional tests are missing'
 require_fixed 'id: posttest_integrity' "$final_gate" 'final gate does not recheck source after security tests'
 require_fixed 'id: postbuild_integrity' "$final_gate" 'final gate does not recheck source after cross-builds'
+final_build_matrix="$(sed -n '/^      matrix:/,/^    steps:/p' "$final_gate")"
+require_text "$final_build_matrix" $'          - name: aarch64-disable-wallet\n            host: aarch64-linux-gnu\n            packages: g++-aarch64-linux-gnu\n            configure_flags: --without-gui --disable-wallet --disable-bench\n            run_tests: false' 'final gate lacks the aarch64 no-wallet cross-build'
+require_text "$final_build_matrix" $'          - name: aarch64\n            host: aarch64-linux-gnu\n            packages: g++-aarch64-linux-gnu\n            configure_flags: --without-gui --disable-bench\n            run_tests: false' 'final gate lacks the aarch64 wallet cross-build'
 reject_fixed 'statuses: write' "$final_gate" 'final gate has unnecessary status write permission'
 reject_fixed 'pull_request_target' "$final_gate" 'final gate must not execute branch code via pull_request_target'
 reject_fixed 'secrets.' "$final_gate" 'final gate must not expose repository secrets'
@@ -615,12 +618,40 @@ release_workflow=.github/workflows/build-raven.yml
 require_fixed '      - fix/rip25-v48-glm-remediation' "$release_workflow" 'release workflow does not build remediation-branch pushes'
 require_fixed '  pull_request:' "$release_workflow" 'release workflow does not build integration pull requests'
 require_fixed 'runs-on: ubuntu-22.04' "$release_workflow" 'release workflow uses an unsupported runner'
-require_fixed "OS: [ 'windows', 'osx' ]" "$release_workflow" 'release workflow is not statically limited to Windows and macOS'
+release_matrix="$(sed -n '/^      matrix:/,/^    steps:/p' "$release_workflow")"
+release_axes="$(grep -E '^        [A-Za-z_][A-Za-z_0-9]*:' <<<"$release_matrix" || true)"
+[[ "$release_axes" == '        include:' ]] || fail 'release workflow has unexpected matrix axes'
+release_target_count="$(grep -Ec '^          - OS: ' <<<"$release_matrix" || true)"
+(( release_target_count == 5 )) || fail 'release workflow must build exactly five supported targets'
+for target_host in windows:x86_64-w64-mingw32 osx:x86_64-apple-darwin14 linux:x86_64-linux-gnu arm32v7:arm-linux-gnueabihf aarch64:aarch64-linux-gnu; do
+  target="${target_host%%:*}"
+  host="${target_host#*:}"
+  require_text "$release_matrix" "$(printf '          - OS: %s\n            host: %s' "$target" "$host")" "release workflow lacks the $target/$host target"
+done
 require_min_count 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' "$release_workflow" 2 'release workflow does not bind checkout and artifact source to the reported SHA'
 require_fixed 'test -z "$(git status --porcelain)"' "$release_workflow" 'release workflow does not require a pristine checkout'
 require_min_count 'bash -Eeuo pipefail' "$release_workflow" 4 'release helper scripts are not invoked fail closed'
 require_fixed 'if-no-files-found: error' "$release_workflow" 'release artifact upload permits missing output'
-require_fixed 'test -n "$(find release -type f -size +0c -print -quit)"' "$release_workflow" 'release workflow does not verify nonempty artifacts'
+require_fixed 'native_bin="$GITHUB_WORKSPACE/depends/${{ matrix.host }}/native/bin"' "$release_workflow" 'release workflow uses the wrong target native tools'
+require_fixed 'test -d "$native_bin"' "$release_workflow" 'release workflow accepts missing target native tools'
+for artifact_suffix in win64.zip win64-setup-unsigned.exe win64-unsigned.tar.gz osx64.tar.gz osx-unsigned.dmg osx-unsigned.tar.gz x86_64-linux-gnu.tar.gz arm-linux-gnueabihf.tar.gz aarch64-linux-gnu.tar.gz; do
+  require_fixed "\${distname}-${artifact_suffix}" "$release_workflow" "release workflow does not require the $artifact_suffix artifact"
+done
+require_fixed 'test -s "$artifact"' "$release_workflow" 'release workflow accepts empty target artifacts'
+require_fixed 'git archive --format=tar --prefix="${distname}/" HEAD' "$release_workflow" 'release workflow lacks an exact-commit source archive'
+require_fixed 'git get-tar-commit-id < "$source_tar"' "$release_workflow" 'release workflow does not verify embedded source-archive commit provenance'
+require_fixed 'test -s "release/${source_archive}"' "$release_workflow" 'release workflow accepts an empty source archive'
+require_fixed 'gzip -t "release/${source_archive}"' "$release_workflow" 'release workflow does not verify compressed source-archive integrity'
+require_fixed 'sha256sum -- "${artifacts[@]}" "$source_archive" PROVENANCE.txt > SHA256SUMS' "$release_workflow" 'release workflow does not hash target, source, and provenance artifacts'
+require_fixed 'test -s SHA256SUMS' "$release_workflow" 'release workflow accepts an empty checksum manifest'
+require_fixed 'sha256sum --check SHA256SUMS' "$release_workflow" 'release workflow does not verify artifact hashes'
+require_fixed 'test -s PROVENANCE.txt' "$release_workflow" 'release workflow accepts empty provenance'
+require_fixed 'grep -Fx "commit=$GITHUB_SHA" PROVENANCE.txt' "$release_workflow" 'release workflow does not bind provenance to the checkout SHA'
+require_fixed 'echo "target=${{ matrix.OS }}"' "$release_workflow" 'release provenance omits the target'
+require_fixed 'echo "host=${{ matrix.host }}"' "$release_workflow" 'release provenance omits the cross-build host'
+require_fixed 'name: raven-unsigned-${{ matrix.OS }}-${{ github.sha }}' "$release_workflow" 'release workflow labels unsigned artifacts as releases'
+require_fixed 'status=unsigned CI build; Windows and macOS outputs are not signed final releases' "$release_workflow" 'release provenance claims unsigned outputs are signed releases'
+require_fixed 'EXTRA_OPTS=()' .github/scripts/04-configure-build.sh 'release configure helper fails under nounset without wallet flags'
 require_fixed '436df6dfc7073365d12f8ef6c1fdb060777c720602cc67c2dcf9a59d94290e38' .github/scripts/02-copy-build-dependencies.sh 'macOS SDK checksum pin changed'
 require_fixed 'sha256sum --check' .github/scripts/02-copy-build-dependencies.sh 'macOS SDK is not verified before extraction'
 reject_fixed 'pip3 install ds-store' .github/scripts/00-install-deps.sh 'release workflow uses an unpinned PyPI ds-store package'
@@ -644,7 +675,9 @@ fi
 
 test_binary=src/test/test_raven
 [[ -x "$test_binary" ]] || fail "behavioral test binary is missing or not executable: $test_binary"
-newer_source="$(find src -type f \( -name '*.cpp' -o -name '*.h' \) -newer "$test_binary" -print -quit)"
+# Qt translation units are built by the release matrix, not linked into the
+# headless behavioral test binary.
+newer_source="$(find src -path src/qt -prune -o -type f \( -name '*.cpp' -o -name '*.h' \) -newer "$test_binary" -print -quit)"
 [[ -z "$newer_source" ]] || fail "behavioral test binary is stale relative to: $newer_source"
 
 behavioral_tests=(
@@ -681,6 +714,8 @@ behavioral_tests=(
   kawpow_v48_hardening_tests
   bip39_tests
   wallet_crypto/lock_cleanses_and_releases_plaintext_secret_storage
+  wallet_crypto/corrupt_bip39_unlock_is_atomic
+  wallet_crypto/corrupt_classical_key_cannot_publish_bip39_plaintext
   pq_wallet_tests
 )
 
