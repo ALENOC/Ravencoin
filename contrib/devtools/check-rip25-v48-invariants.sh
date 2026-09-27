@@ -573,6 +573,9 @@ require_fixed 'fRetryWithChainStateRebuild' src/init.cpp 'chainstate-ahead autom
 require_fixed 'fCoinsAheadOfIndex = !mapBlockIndex.count(pcoinsTip->GetBestBlock())' src/init.cpp 'chainstate-ahead detection missing'
 require_fixed 'passetsdb = new CAssetsDB(nBlockTreeDBCache, false, fReset || fReindexChainState)' src/init.cpp 'asset DB is not wiped on chainstate rebuild'
 require_fixed 'prestricteddb = new CRestrictedDB(nBlockTreeDBCache, false, fReset || fReindexChainState)' src/init.cpp 'restricted-asset DB is not wiped on chainstate rebuild'
+require_fixed "'feature_chainstate_ahead.py'" test/functional/test_runner.py 'chainstate-ahead restart regression is not registered'
+require_fixed 'shutil.copytree(checkpoint_dir, index_dir)' test/functional/feature_chainstate_ahead.py 'chainstate-ahead regression does not restore the older block index'
+require_fixed 'observer.checkaddresstag(tagged_address, qualifier_name), False' test/functional/feature_chainstate_ahead.py 'chainstate-ahead regression does not inspect restricted-state rollback'
 
 # GLM-001 and CI supply-chain integrity: checkout commit is the tested tree.
 final_gate=.github/workflows/rip25-v48-final-gate.yml
@@ -587,7 +590,7 @@ require_fixed 'run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests
 require_fixed 'id: required_functional' "$final_gate" 'final gate does not require functional security tests'
 require_fixed 'python3 contrib/devtools/test-required-functional-gate.py' "$final_gate" 'functional gate negative controls are not run'
 require_fixed 'python3 test/functional/test_runner.py --require-tests' "$final_gate" 'functional gate permits absent or skipped security tests'
-require_fixed 'wallet_encryption_rewrite.py rpc_assettransfer.py' "$final_gate" 'required wallet and PQ asset-scope functional tests are missing'
+require_fixed 'wallet_encryption_rewrite.py rpc_assettransfer.py feature_chainstate_ahead.py' "$final_gate" 'required wallet, asset-scope, and chainstate-ahead functional tests are missing'
 require_fixed 'id: posttest_integrity' "$final_gate" 'final gate does not recheck source after security tests'
 require_fixed 'id: postbuild_integrity' "$final_gate" 'final gate does not recheck source after cross-builds'
 final_build_matrix="$(sed -n '/^      matrix:/,/^    steps:/p' "$final_gate")"
@@ -626,6 +629,7 @@ release_build_job="$(sed -n '/^  build:/,/^    strategy:/p' "$release_workflow")
 require_text "$release_security_job" 'make check' 'release artifact workflow does not run unit security tests before packaging'
 require_text "$release_security_job" 'check-rip25-v48-invariants.sh --run-tests' 'release artifact workflow does not run behavioral security tests before packaging'
 require_text "$release_security_job" 'test_runner.py --require-tests' 'release artifact workflow does not run required functional tests before packaging'
+require_text "$release_security_job" 'feature_chainstate_ahead.py' 'release artifact workflow does not test chainstate-ahead recovery'
 require_text "$release_security_job" 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' 'release security job does not bind tests to the artifact SHA'
 require_text "$release_build_job" '    needs: security-tests' 'release artifact matrix can package without passing security tests'
 release_matrix="$(sed -n '/^      matrix:/,/^    steps:/p' "$release_workflow")"
@@ -742,5 +746,9 @@ for test_filter in "${behavioral_tests[@]}"; do
     "$test_binary" --run_test="$test_filter" --log_level=test_suite
   fi
 done
+
+python3 contrib/devtools/test-required-functional-gate.py
+python3 test/functional/test_runner.py --require-tests --jobs=2 \
+  wallet_encryption_rewrite.py rpc_assettransfer.py feature_chainstate_ahead.py
 
 echo 'RIP-25/v4.8 structural + behavioral invariants: OK'
