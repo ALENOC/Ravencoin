@@ -124,6 +124,7 @@ BASE_SCRIPTS= [
     'feature_minchainwork.py',
     'wallet_encryption.py',
     'wallet_encryption_rewrite.py',
+    'feature_chainstate_ahead.py',
     'feature_listmyassets.py',
     'mempool_reorg.py',
     'rpc_txoutproof.py',
