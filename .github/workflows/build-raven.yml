@@ -17,7 +17,74 @@ env:
   SCRIPTS: ${{ GITHUB.WORKSPACE }}/.github/scripts
 
 jobs:
+  security-tests:
+    name: Required security tests before artifact builds
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify checkout
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git status --porcelain)"
+
+      - name: Install test prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            automake autotools-dev bsdmainutils build-essential ca-certificates \
+            cmake curl git libtool pkg-config python3 ninja-build
+
+      - name: Check structural security invariants
+        run: ./contrib/devtools/check-rip25-v48-invariants.sh --structural-only
+
+      - name: Build pinned test dependencies
+        run: make -C depends -j2 HOST=x86_64-pc-linux-gnu NO_QT=1
+
+      - name: Verify source before test build
+        shell: bash
+        run: |
+          git diff --exit-code
+          git diff --cached --exit-code
+
+      - name: Configure native test build
+        run: |
+          ./autogen.sh
+          mkdir -p "$HOME/.ccache"
+          CONFIG_SITE="$PWD/depends/x86_64-pc-linux-gnu/share/config.site" \
+            ./configure --without-gui --disable-bench
+
+      - name: Build and run unit tests
+        run: |
+          make -j2
+          make check
+
+      - name: Run behavioral security invariants
+        run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests
+
+      - name: Run required functional security tests
+        run: |
+          python3 contrib/devtools/test-required-functional-gate.py
+          python3 test/functional/test_runner.py --require-tests --jobs=2 \
+            wallet_encryption_rewrite.py rpc_assettransfer.py
+
+      - name: Verify tested source and commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+
   build:
+    needs: security-tests
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     
