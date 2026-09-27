@@ -621,6 +621,13 @@ release_workflow=.github/workflows/build-raven.yml
 require_fixed '      - fix/rip25-v48-glm-remediation' "$release_workflow" 'release workflow does not build remediation-branch pushes'
 require_fixed '  pull_request:' "$release_workflow" 'release workflow does not build integration pull requests'
 require_fixed 'runs-on: ubuntu-22.04' "$release_workflow" 'release workflow uses an unsupported runner'
+release_security_job="$(sed -n '/^  security-tests:/,/^  build:/p' "$release_workflow")"
+release_build_job="$(sed -n '/^  build:/,/^    strategy:/p' "$release_workflow")"
+require_text "$release_security_job" 'make check' 'release artifact workflow does not run unit security tests before packaging'
+require_text "$release_security_job" 'check-rip25-v48-invariants.sh --run-tests' 'release artifact workflow does not run behavioral security tests before packaging'
+require_text "$release_security_job" 'test_runner.py --require-tests' 'release artifact workflow does not run required functional tests before packaging'
+require_text "$release_security_job" 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' 'release security job does not bind tests to the artifact SHA'
+require_text "$release_build_job" '    needs: security-tests' 'release artifact matrix can package without passing security tests'
 release_matrix="$(sed -n '/^      matrix:/,/^    steps:/p' "$release_workflow")"
 release_axes="$(grep -E '^        [A-Za-z_][A-Za-z_0-9]*:' <<<"$release_matrix" || true)"
 [[ "$release_axes" == '        include:' ]] || fail 'release workflow has unexpected matrix axes'
@@ -678,9 +685,9 @@ fi
 
 test_binary=src/test/test_raven
 [[ -x "$test_binary" ]] || fail "behavioral test binary is missing or not executable: $test_binary"
-# Qt translation units are built by the release matrix, not linked into the
-# headless behavioral test binary.
-newer_source="$(find src -path src/qt -prune -o -type f \( -name '*.cpp' -o -name '*.h' \) -newer "$test_binary" -print -quit)"
+# Qt and benchmark translation units are not linked into the headless
+# behavioral test binary.
+newer_source="$(find src \( -path src/qt -o -path src/bench \) -prune -o -type f \( -name '*.cpp' -o -name '*.h' \) -newer "$test_binary" -print -quit)"
 [[ -z "$newer_source" ]] || fail "behavioral test binary is stale relative to: $newer_source"
 
 behavioral_tests=(
