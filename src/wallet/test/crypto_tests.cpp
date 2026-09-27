@@ -60,6 +60,57 @@ BOOST_FIXTURE_TEST_SUITE(wallet_crypto, BasicTestingSetup)
                    vchPassphrase.empty() && vchPassphrase.capacity() == 0 &&
                    g_vchSeed.empty() && g_vchSeed.capacity() == 0;
         }
+
+        bool UnlockForTest(const CKeyingMaterial& masterKey)
+        {
+            return Unlock(masterKey);
+        }
+
+        void TruncateEncryptedWords()
+        {
+            LOCK(cs_KeyStore);
+            vchCryptedBip39Words.pop_back();
+        }
+
+        void TruncateEncryptedPassphrase()
+        {
+            LOCK(cs_KeyStore);
+            vchCryptedBip39Passphrase.pop_back();
+        }
+
+        void TruncateEncryptedSeed()
+        {
+            LOCK(cs_KeyStore);
+            vchCryptedBip39VchSeed.pop_back();
+        }
+
+        void TruncateEncryptedClassicalKey()
+        {
+            LOCK(cs_KeyStore);
+            mapCryptedKeys.begin()->second.second.pop_back();
+        }
+
+        bool ReencryptWithWrongSeed(CKeyingMaterial& masterKey)
+        {
+            LOCK(cs_KeyStore);
+            g_vchSeed[0] ^= 1;
+            return EncryptBip39(masterKey);
+        }
+
+        bool ReencryptWithWrongWordHash(CKeyingMaterial& masterKey)
+        {
+            LOCK(cs_KeyStore);
+            nWordHash.begin()[0] ^= 1;
+            return EncryptBip39(masterKey);
+        }
+
+        bool ReencryptWithInvalidWords(CKeyingMaterial& masterKey)
+        {
+            LOCK(cs_KeyStore);
+            vchWords.back() = 'x';
+            nWordHash = Hash(vchWords.begin(), vchWords.end());
+            return EncryptBip39(masterKey);
+        }
     };
 
     class TestCrypter
@@ -189,6 +240,37 @@ BOOST_FIXTURE_TEST_SUITE(wallet_crypto, BasicTestingSetup)
         BOOST_REQUIRE(keystore.PrepareUnlockedSecrets(masterKey));
         BOOST_REQUIRE(keystore.HasAllocatedPlaintextSecrets());
         BOOST_REQUIRE(keystore.Lock());
+        BOOST_CHECK(keystore.IsLocked());
+        BOOST_CHECK(keystore.PlaintextSecretStorageReleased());
+    }
+
+    BOOST_AUTO_TEST_CASE(corrupt_bip39_unlock_is_atomic)
+    {
+        CKeyingMaterial masterKey(WALLET_CRYPTO_KEY_SIZE, 0x42);
+        for (int mode = 0; mode < 6; ++mode) {
+            TestKeyStore keystore;
+            BOOST_REQUIRE(keystore.PrepareUnlockedSecrets(masterKey));
+            if (mode == 0) keystore.TruncateEncryptedWords();
+            if (mode == 1) keystore.TruncateEncryptedPassphrase();
+            if (mode == 2) keystore.TruncateEncryptedSeed();
+            if (mode == 3) BOOST_REQUIRE(keystore.ReencryptWithWrongSeed(masterKey));
+            if (mode == 4) BOOST_REQUIRE(keystore.ReencryptWithWrongWordHash(masterKey));
+            if (mode == 5) BOOST_REQUIRE(keystore.ReencryptWithInvalidWords(masterKey));
+            BOOST_REQUIRE(keystore.Lock());
+            BOOST_CHECK(!keystore.UnlockForTest(masterKey));
+            BOOST_CHECK(keystore.IsLocked());
+            BOOST_CHECK(keystore.PlaintextSecretStorageReleased());
+        }
+    }
+
+    BOOST_AUTO_TEST_CASE(corrupt_classical_key_cannot_publish_bip39_plaintext)
+    {
+        TestKeyStore keystore;
+        CKeyingMaterial masterKey(WALLET_CRYPTO_KEY_SIZE, 0x42);
+        BOOST_REQUIRE(keystore.PrepareUnlockedSecrets(masterKey));
+        BOOST_REQUIRE(keystore.Lock());
+        keystore.TruncateEncryptedClassicalKey();
+        BOOST_CHECK(!keystore.UnlockForTest(masterKey));
         BOOST_CHECK(keystore.IsLocked());
         BOOST_CHECK(keystore.PlaintextSecretStorageReleased());
     }
