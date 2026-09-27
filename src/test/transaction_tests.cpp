@@ -8,9 +8,11 @@
 #include "test/test_raven.h"
 
 #include "clientversion.h"
+#include "chainparams.h"
 #include "checkqueue.h"
 #include "consensus/tx_verify.h"
 #include "consensus/validation.h"
+#include "crypto/mldsa.h"
 #include "core_memusage.h"
 #include "core_io.h"
 #include "key.h"
@@ -121,6 +123,7 @@ static std::map<std::string, unsigned int> mapFlagNames = {
         {std::string("WITNESS"),                               (unsigned int) SCRIPT_VERIFY_WITNESS},
         {std::string("DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM"), (unsigned int) SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM},
         {std::string("WITNESS_PUBKEYTYPE"),                    (unsigned int) SCRIPT_VERIFY_WITNESS_PUBKEYTYPE},
+        {std::string("PQ_HYBRID"),                             (unsigned int) SCRIPT_VERIFY_PQ_HYBRID},
 };
 
 unsigned int ParseScriptFlags(std::string strFlags)
@@ -176,6 +179,8 @@ BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
         //
         // verifyFlags is a comma separated list of script verification flags to apply, or "NONE"
         UniValue tests = read_json(std::string(json_tests::tx_valid, json_tests::tx_valid + sizeof(json_tests::tx_valid)));
+        const Consensus::PQSignatureContext mainnetPQContext =
+            CreateChainParams("main")->GetConsensus().pqSignatureContext;
 
         ScriptError err;
         for (unsigned int idx = 0; idx < tests.size(); idx++)
@@ -246,7 +251,7 @@ BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
                     unsigned int verify_flags = ParseScriptFlags(test[2].get_str());
                     const CScriptWitness *witness = &tx.vin[i].scriptWitness;
                     BOOST_CHECK_MESSAGE(VerifyScript(tx.vin[i].scriptSig, mapprevOutScriptPubKeys[tx.vin[i].prevout],
-                                                     witness, verify_flags, TransactionSignatureChecker(&tx, i, amount, txdata), &err),
+                                                     witness, verify_flags, TransactionSignatureChecker(&tx, i, amount, txdata, mainnetPQContext), &err),
                                         strTest);
                     BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
                 }
@@ -266,6 +271,8 @@ BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
         //
         // verifyFlags is a comma separated list of script verification flags to apply, or "NONE"
         UniValue tests = read_json(std::string(json_tests::tx_invalid, json_tests::tx_invalid + sizeof(json_tests::tx_invalid)));
+        const Consensus::PQSignatureContext mainnetPQContext =
+            CreateChainParams("main")->GetConsensus().pqSignatureContext;
 
         // Initialize to SCRIPT_ERR_OK. The tests expect err to be changed to a
         // value other than SCRIPT_ERR_OK.
@@ -337,12 +344,142 @@ BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
                     }
                     const CScriptWitness *witness = &tx.vin[i].scriptWitness;
                     fValid = VerifyScript(tx.vin[i].scriptSig, mapprevOutScriptPubKeys[tx.vin[i].prevout],
-                                          witness, verify_flags, TransactionSignatureChecker(&tx, i, amount, txdata), &err);
+                                          witness, verify_flags, TransactionSignatureChecker(&tx, i, amount, txdata, mainnetPQContext), &err);
                 }
                 BOOST_CHECK_MESSAGE(!fValid, strTest);
                 BOOST_CHECK_MESSAGE(err != SCRIPT_ERR_OK, ScriptErrorString(err));
             }
         }
+    }
+
+    BOOST_AUTO_TEST_CASE(pq_witness_v2_tx_vector_mutations)
+    {
+        const UniValue vectors = read_json(std::string(
+            json_tests::tx_valid, json_tests::tx_valid + sizeof(json_tests::tx_valid)));
+        unsigned int vectorIndex = vectors.size();
+        for (unsigned int i = 0; i < vectors.size(); ++i) {
+            const UniValue& candidate = vectors[i];
+            if (candidate.isArray() && candidate.size() == 3 &&
+                candidate[2].isStr() &&
+                candidate[2].get_str() == "P2SH,WITNESS,PQ_HYBRID") {
+                vectorIndex = i;
+                break;
+            }
+        }
+        BOOST_REQUIRE_MESSAGE(vectorIndex < vectors.size(),
+                              "Missing signed RIP-25 tx_valid vector");
+        const UniValue& vector = vectors[vectorIndex];
+        BOOST_REQUIRE(vector[0].isArray());
+        BOOST_REQUIRE_EQUAL(vector[0].size(), 1U);
+        const UniValue& prevout = vector[0][0];
+        BOOST_REQUIRE_EQUAL(prevout.size(), 4U);
+        const CScript prevoutScript = ParseScript(prevout[2].get_str());
+        BOOST_REQUIRE_EQUAL(prevoutScript.size(), 34U);
+        const CAmount amount = prevout[3].get_int64();
+        CDataStream stream(ParseHex(vector[1].get_str()), SER_NETWORK, PROTOCOL_VERSION);
+        const CTransaction serializedTx(deserialize, stream);
+        const CMutableTransaction signedSpend(serializedTx);
+        BOOST_REQUIRE_EQUAL(signedSpend.vin.size(), 1U);
+        BOOST_REQUIRE_EQUAL(signedSpend.vin[0].scriptWitness.stack.size(), 2U);
+        BOOST_REQUIRE_EQUAL(signedSpend.vin[0].scriptWitness.stack[0].size(),
+                            mldsa::SIGNATURE_BYTES);
+        BOOST_REQUIRE_EQUAL(signedSpend.vin[0].scriptWitness.stack[1].size(),
+                            mldsa::PUBLICKEY_BYTES);
+
+        const Consensus::PQSignatureContext mainnetContext =
+            CreateChainParams("main")->GetConsensus().pqSignatureContext;
+        const Consensus::PQSignatureContext testnetContext =
+            CreateChainParams("test")->GetConsensus().pqSignatureContext;
+        const unsigned int flags = ParseScriptFlags(vector[2].get_str());
+
+        auto check = [&](const CMutableTransaction& candidate,
+                         const CScript& candidatePrevoutScript,
+                         const Consensus::PQSignatureContext& context,
+                         bool expectedResult, ScriptError expectedError,
+                         const char* label) {
+            const CTransaction tx(candidate);
+            CValidationState state;
+            BOOST_REQUIRE_MESSAGE(CheckTransaction(tx, state) && state.IsValid(),
+                                  label << ": CheckTransaction must remain valid");
+            const PrecomputedTransactionData txdata(tx);
+            ScriptError err = SCRIPT_ERR_UNKNOWN_ERROR;
+            const bool result = VerifyScript(
+                tx.vin[0].scriptSig, candidatePrevoutScript,
+                &tx.vin[0].scriptWitness, flags,
+                TransactionSignatureChecker(&tx, 0, amount, txdata, context),
+                &err);
+            BOOST_CHECK_MESSAGE(result == expectedResult,
+                                label << ": unexpected verification result");
+            BOOST_CHECK_MESSAGE(err == expectedError,
+                                label << ": " << ScriptErrorString(err));
+        };
+
+        check(signedSpend, prevoutScript, mainnetContext,
+              true, SCRIPT_ERR_OK, "valid ML-DSA witness-v2 spend");
+
+        CMutableTransaction shortSignature(signedSpend);
+        shortSignature.vin[0].scriptWitness.stack[0].pop_back();
+        check(shortSignature, prevoutScript, mainnetContext,
+              false, SCRIPT_ERR_PQ_SIGNATURE_SIZE, "short signature");
+
+        CMutableTransaction longSignature(signedSpend);
+        longSignature.vin[0].scriptWitness.stack[0].push_back(0);
+        check(longSignature, prevoutScript, mainnetContext,
+              false, SCRIPT_ERR_PQ_SIGNATURE_SIZE, "long signature");
+
+        CMutableTransaction appendedHashType(signedSpend);
+        appendedHashType.vin[0].scriptWitness.stack[0].push_back(SIGHASH_ALL);
+        check(appendedHashType, prevoutScript, mainnetContext,
+              false, SCRIPT_ERR_PQ_SIGNATURE_SIZE, "appended sighash byte");
+
+        CMutableTransaction shortPublicKey(signedSpend);
+        shortPublicKey.vin[0].scriptWitness.stack[1].pop_back();
+        check(shortPublicKey, prevoutScript, mainnetContext,
+              false, SCRIPT_ERR_PQ_PUBKEY_SIZE, "short public key");
+
+        CMutableTransaction longPublicKey(signedSpend);
+        longPublicKey.vin[0].scriptWitness.stack[1].push_back(0);
+        check(longPublicKey, prevoutScript, mainnetContext,
+              false, SCRIPT_ERR_PQ_PUBKEY_SIZE, "long public key");
+
+        CMutableTransaction missingElement(signedSpend);
+        missingElement.vin[0].scriptWitness.stack.resize(1);
+        check(missingElement, prevoutScript, mainnetContext,
+              false, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH, "missing witness element");
+
+        CMutableTransaction extraElement(signedSpend);
+        extraElement.vin[0].scriptWitness.stack.emplace_back(1, 0);
+        check(extraElement, prevoutScript, mainnetContext,
+              false, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH, "extra witness element");
+
+        CScript wrongProgram(prevoutScript);
+        wrongProgram[2] ^= 0x01;
+        check(signedSpend, wrongProgram, mainnetContext,
+              false, SCRIPT_ERR_PQ_WITNESS_PROGRAM_MISMATCH, "wrong witness program");
+
+        const CScript shortProgram = CScript() << OP_2 <<
+            std::vector<unsigned char>(prevoutScript.begin() + 2,
+                                       prevoutScript.end() - 1);
+        check(signedSpend, shortProgram, mainnetContext,
+              false, SCRIPT_ERR_WITNESS_PROGRAM_WRONG_LENGTH, "short witness program");
+
+        CMutableTransaction changedPublicKey(signedSpend);
+        changedPublicKey.vin[0].scriptWitness.stack[1][0] ^= 0x01;
+        check(changedPublicKey, prevoutScript, mainnetContext,
+              false, SCRIPT_ERR_PQ_WITNESS_PROGRAM_MISMATCH, "changed public key");
+
+        CMutableTransaction changedSignature(signedSpend);
+        changedSignature.vin[0].scriptWitness.stack[0][0] ^= 0x01;
+        check(changedSignature, prevoutScript, mainnetContext,
+              false, SCRIPT_ERR_PQ_SIGNATURE_VERIFY_FAILED, "changed signature");
+
+        check(signedSpend, prevoutScript, testnetContext,
+              false, SCRIPT_ERR_PQ_SIGNATURE_VERIFY_FAILED, "wrong network context");
+
+        CMutableTransaction changedOutput(signedSpend);
+        --changedOutput.vout[0].nValue;
+        check(changedOutput, prevoutScript, mainnetContext,
+              false, SCRIPT_ERR_PQ_SIGNATURE_VERIFY_FAILED, "changed sighash input");
     }
 
     BOOST_AUTO_TEST_CASE(basic_transaction_test)
