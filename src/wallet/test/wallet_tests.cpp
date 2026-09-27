@@ -18,6 +18,7 @@
 #include "ui_interface.h"
 #include "validation.h"
 #include "wallet/coincontrol.h"
+#include "wallet/db.h"
 #include "wallet/test/wallet_test_fixture.h"
 #include "wallet/walletdb.h"
 
@@ -45,6 +46,20 @@ std::vector<std::unique_ptr<CWalletTx>> wtxn;
 typedef std::set<CInputCoin> CoinSet;
 
 namespace {
+
+class FailingOpenDbEnv : public DbEnv
+{
+public:
+    explicit FailingOpenDbEnv(bool& destroyed)
+        : DbEnv(DB_CXX_NO_EXCEPTIONS), destroyed_(destroyed) {}
+
+    ~FailingOpenDbEnv() override { destroyed_ = true; }
+
+    int open(const char*, u_int32_t, int) override { return DB_RUNRECOVERY; }
+
+private:
+    bool& destroyed_;
+};
 
 class ScopedWalletFactoryTestState
 {
@@ -96,6 +111,33 @@ using RegisteredWalletPtr = std::unique_ptr<CWallet, RegisteredWalletDeleter>;
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
+
+    BOOST_AUTO_TEST_CASE(database_environment_open_failure_renews_handle)
+    {
+        CDBEnv env;
+        delete env.dbenv;
+        bool failedHandleDestroyed = false;
+        env.dbenv = new FailingOpenDbEnv(failedHandleDestroyed);
+
+        BOOST_CHECK(!env.Open(pathTemp / "db-retry"));
+        BOOST_REQUIRE(failedHandleDestroyed);
+        BOOST_CHECK(env.Open(pathTemp / "db-retry"));
+        env.Close();
+    }
+
+    BOOST_AUTO_TEST_CASE(database_mock_negative_open_failure_renews_handle)
+    {
+        CDBEnv env;
+        delete env.dbenv;
+        bool failedHandleDestroyed = false;
+        env.dbenv = new FailingOpenDbEnv(failedHandleDestroyed);
+
+        BOOST_CHECK_THROW(env.MakeMock(), std::runtime_error);
+        BOOST_REQUIRE(failedHandleDestroyed);
+        BOOST_CHECK(!env.IsMock());
+        env.MakeMock();
+        env.Close();
+    }
 
     static const CWallet testWallet;
     static std::vector<COutput> vCoins;

@@ -371,6 +371,8 @@ require_fixed 'throwing_load_observer_cannot_dangle_wallet' src/wallet/test/pq_w
 require_fixed 'nonstandard_load_observer_cannot_dangle_wallet' src/wallet/test/pq_wallet_tests.cpp 'nonstandard wallet-observer lifetime regression is missing'
 require_fixed 'failed-rescan-wallet.dat' src/wallet/test/wallet_tests.cpp 'failed initial-rescan publication regression is missing'
 require_fixed 'successful-rescan-wallet.dat' src/wallet/test/wallet_tests.cpp 'successful initial-rescan locator regression is missing'
+require_fixed 'database_environment_open_failure_renews_handle' src/wallet/test/wallet_tests.cpp 'Berkeley DB retry-handle regression is missing'
+require_fixed 'database_mock_negative_open_failure_renews_handle' src/wallet/test/wallet_tests.cpp 'Berkeley DB negative-error regression is missing'
 require_fixed 'ScopedWalletFactoryTestState' src/wallet/test/wallet_tests.cpp 'wallet factory test state is not restored after exceptions'
 require_fixed 'gArgs.ClearArg("-rescan")' src/wallet/test/wallet_tests.cpp 'wallet factory test leaves a previously absent rescan argument set'
 require_fixed 'gArgs.ClearArg("-keypool")' src/wallet/test/wallet_tests.cpp 'wallet factory test leaves a previously absent keypool argument set'
@@ -717,6 +719,8 @@ behavioral_tests=(
   wallet_crypto/corrupt_bip39_unlock_is_atomic
   wallet_crypto/corrupt_classical_key_cannot_publish_bip39_plaintext
   wallet_crypto/bip39_cbc_mutation_in_every_block_rejects
+  wallet_tests/database_environment_open_failure_renews_handle
+  wallet_tests/database_mock_negative_open_failure_renews_handle
   pq_wallet_tests
 )
 
