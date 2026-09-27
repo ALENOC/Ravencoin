@@ -172,6 +172,7 @@ MnemonicDialog2::MnemonicDialog2(QWidget *parent) :
     ui(new Ui::MnemonicDialog2)
 {
     ui->setupUi(this);
+    ui->seedwordsText->setUndoRedoEnabled(false);
     
     std::array<LanguageDetails, NUM_LANGUAGES_BIP39_SUPPORTED> languagesDetails = CMnemonic::GetLanguagesDetails();    
    
@@ -244,6 +245,7 @@ void MnemonicDialog2::GenerateWords(int languageSelected)
     SecureString words = CMnemonic::Generate(128, languageSelected);
 #endif
     ScopedSecureStringCleanser cleanseWords(words);
+    BestEffortClear(MnemonicDialog2::ui->seedwordsText);
     MnemonicDialog2::ui->seedwordsText->setPlainText(
         QString::fromUtf8(words.data(), static_cast<int>(words.size())));
 }
@@ -255,6 +257,7 @@ MnemonicDialog3::MnemonicDialog3(QWidget *parent) :
     ui(new Ui::MnemonicDialog3)
 {
     ui->setupUi(this);
+    ui->seedwordsEdit->setUndoRedoEnabled(false);
 
     MnemonicDialog3::ui->seedwordsEdit->installEventFilter(this);
 
