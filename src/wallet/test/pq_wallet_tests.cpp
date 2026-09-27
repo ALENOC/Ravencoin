@@ -1736,7 +1736,6 @@ BOOST_AUTO_TEST_CASE(bip44_encryption_and_backup_are_ciphertext_only)
     const SecureString walletPassphrase("bip44-ciphertext-only-passphrase");
     const std::vector<unsigned char> words = Bip39TestWords();
     const std::vector<unsigned char> fullPassphrase = Bip39TestPassphrase();
-    const std::vector<unsigned char> seed = Bip39TestSeed();
     const uint256 wordHash = Hash(words.begin(), words.end());
 
     for (const bool withMnemonicPassphrase : {false, true}) {
@@ -1745,6 +1744,12 @@ BOOST_AUTO_TEST_CASE(bip44_encryption_and_backup_are_ciphertext_only)
         const std::string backupFilename = "bip44-ciphertext-only-" + suffix + "-backup.dat";
         const std::vector<unsigned char> mnemonicPassphrase =
             withMnemonicPassphrase ? fullPassphrase : std::vector<unsigned char>();
+        // Independent PBKDF2-HMAC-SHA512 BIP39 vector for the empty
+        // passphrase; the TREZOR seed belongs only to the other case.
+        const std::vector<unsigned char> seed = withMnemonicPassphrase
+            ? Bip39TestSeed()
+            : ParseHex("5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19"
+                       "a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4");
 
         CKey persistedKey;
         persistedKey.MakeNewKey(true);

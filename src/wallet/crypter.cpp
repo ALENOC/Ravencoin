@@ -7,9 +7,12 @@
 
 #include "crypto/aes.h"
 #include "crypto/sha512.h"
+#include "hash.h"
 #include "script/script.h"
 #include "script/standard.h"
 #include "util.h"
+#include "utilstrencodings.h"
+#include "wallet/bip39.h"
 
 #include <string>
 #include <vector>
@@ -239,20 +242,22 @@ bool CCryptoKeyStore::Unlock(const CKeyingMaterial& vMasterKeyIn)
                     break;
             }
         }
-        if (vchCryptedBip39Words.size() || vchCryptedBip39Passphrase.size() || vchCryptedBip39VchSeed.size()) {
-            if (!DecryptBip39(vMasterKeyIn)) {
-                LogPrintf("Failed to decrypt bip 39 data");
-                assert(false);
-            }
-        }
         if (keyPass && keyFail)
         {
             LogPrintf("The wallet is probably corrupted: Some keys decrypt but not all.\n");
-            assert(false);
+            return false;
         }
         if (keyFail || !keyPass)
             return false;
-        vMasterKey = vMasterKeyIn;
+
+        CKeyingMaterial validatedMasterKey(vMasterKeyIn);
+        if (vchCryptedBip39Words.size() || vchCryptedBip39Passphrase.size() || vchCryptedBip39VchSeed.size()) {
+            if (!DecryptBip39(vMasterKeyIn)) {
+                LogPrintf("Failed to decrypt or validate BIP39 data\n");
+                return false;
+            }
+        }
+        vMasterKey.swap(validatedMasterKey);
         fDecryptionThoroughlyChecked = true;
     }
     NotifyStatusChanged(this);
@@ -557,30 +562,55 @@ bool CCryptoKeyStore::DecryptBip39(const CKeyingMaterial& vMasterKeyIn)
 {
     {
         LOCK(cs_KeyStore);
+        if (vchCryptedBip39Words.size() < AES_BLOCKSIZE ||
+            vchCryptedBip39Words.size() % AES_BLOCKSIZE != 0 ||
+            vchCryptedBip39VchSeed.size() != BIP39_CRYPTED_SEED_SIZE ||
+            (!vchCryptedBip39Passphrase.empty() &&
+             (vchCryptedBip39Passphrase.size() < AES_BLOCKSIZE ||
+              vchCryptedBip39Passphrase.size() % AES_BLOCKSIZE != 0))) {
+            return false;
+        }
+
         CKeyingMaterial vchDecryptedWords;
         if (!DecryptSecret(vMasterKeyIn, vchCryptedBip39Words, nWordHash, vchDecryptedWords)) {
             return false;
         }
-
-        SecureVector words(vchDecryptedWords.begin(), vchDecryptedWords.end());
-        vchWords.swap(words);
-
-        CKeyingMaterial vchDecryptedVchSeed;
-        if (!DecryptSecret(vMasterKeyIn, vchCryptedBip39VchSeed, nWordHash, vchDecryptedVchSeed)) {
+        if (Hash(vchDecryptedWords.begin(), vchDecryptedWords.end()) != nWordHash) {
+            return false;
+        }
+        SecureString words;
+        words.reserve(vchDecryptedWords.size() > 64 ? vchDecryptedWords.size() : 64);
+        words.assign(vchDecryptedWords.begin(), vchDecryptedWords.end());
+        if (!CMnemonic::Check(words)) {
             return false;
         }
 
-        SecureVector seed(vchDecryptedVchSeed.begin(), vchDecryptedVchSeed.end());
-        g_vchSeed.swap(seed);
+        CKeyingMaterial vchDecryptedVchSeed;
+        if (!DecryptSecret(vMasterKeyIn, vchCryptedBip39VchSeed, nWordHash, vchDecryptedVchSeed) ||
+            vchDecryptedVchSeed.size() != BIP39_SEED_SIZE) {
+            return false;
+        }
 
+        CKeyingMaterial vchDecryptedPassphrase;
         if (!vchCryptedBip39Passphrase.empty()) {
-            CKeyingMaterial vchDecryptedPassphrase;
             if (!DecryptSecret(vMasterKeyIn, vchCryptedBip39Passphrase, nWordHash, vchDecryptedPassphrase)) {
                 return false;
             }
-            SecureVector passphrase(vchDecryptedPassphrase.begin(), vchDecryptedPassphrase.end());
-            vchPassphrase.swap(passphrase);
         }
+
+        SecureString passphrase;
+        passphrase.reserve(vchDecryptedPassphrase.size() > 64 ? vchDecryptedPassphrase.size() : 64);
+        passphrase.assign(vchDecryptedPassphrase.begin(), vchDecryptedPassphrase.end());
+        SecureVector derivedSeed;
+        if (!CMnemonic::ToSeed(words, passphrase, derivedSeed) ||
+            derivedSeed.size() != BIP39_SEED_SIZE ||
+            !TimingResistantEqual(derivedSeed, vchDecryptedVchSeed)) {
+            return false;
+        }
+
+        vchWords.swap(vchDecryptedWords);
+        vchPassphrase.swap(vchDecryptedPassphrase);
+        g_vchSeed.swap(vchDecryptedVchSeed);
     }
 
     return true;
