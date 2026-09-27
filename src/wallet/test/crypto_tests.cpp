@@ -250,6 +250,31 @@ BOOST_FIXTURE_TEST_SUITE(wallet_crypto, BasicTestingSetup)
         }
     }
 
+    BOOST_AUTO_TEST_CASE(malformed_cbc_input_releases_output)
+    {
+        CCrypter crypt;
+        const CKeyingMaterial key(WALLET_CRYPTO_KEY_SIZE, 0x11);
+        const std::vector<unsigned char> iv(WALLET_CRYPTO_IV_SIZE, 0x22);
+        BOOST_REQUIRE(crypt.SetKey(key, iv));
+
+        const CKeyingMaterial expected{0x31, 0x32};
+        std::vector<unsigned char> ciphertext;
+        BOOST_REQUIRE(crypt.Encrypt(expected, ciphertext));
+        CKeyingMaterial plaintext;
+        BOOST_REQUIRE(crypt.Decrypt(ciphertext, plaintext));
+        BOOST_CHECK(plaintext == expected);
+
+        for (size_t size : {size_t(0), size_t(1), size_t(15), size_t(16), size_t(17)}) {
+            plaintext.assign(32, 0xa5);
+            BOOST_CHECK(!crypt.Decrypt(std::vector<unsigned char>(size, 0x42), plaintext));
+            BOOST_CHECK(plaintext.empty());
+        }
+
+        ciphertext.assign(16, 0x42);
+        BOOST_CHECK(!crypt.Encrypt(CKeyingMaterial(), ciphertext));
+        BOOST_CHECK(ciphertext.empty());
+    }
+
     BOOST_AUTO_TEST_CASE(lock_cleanses_and_releases_plaintext_secret_storage)
     {
         TestKeyStore keystore;

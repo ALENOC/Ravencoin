@@ -457,6 +457,7 @@ require_fixed 'SecureVector().swap(vchMnemonicPassphrase)' src/wallet/walletdb.h
 require_fixed 'SecureVector().swap(vchSeed)' src/wallet/walletdb.h 'HD-chain seed storage is only resized, not released'
 require_fixed 'lock_cleanses_and_releases_plaintext_secret_storage' src/wallet/test/crypto_tests.cpp 'encrypted-wallet secret-release regression is missing'
 require_fixed 'wallet_lock_releases_transient_hd_chain_secrets' src/wallet/test/pq_wallet_tests.cpp 'HD-chain secret-release regression is missing'
+require_fixed 'malformed_cbc_input_releases_output' src/wallet/test/crypto_tests.cpp 'malformed wallet ciphertext cleanup regression is missing'
 
 # Wallet salvage must build and durably close a replacement before atomically
 # renaming either database. A reported failure must not publish a backup name.
@@ -719,6 +720,7 @@ behavioral_tests=(
   wallet_crypto/corrupt_bip39_unlock_is_atomic
   wallet_crypto/corrupt_classical_key_cannot_publish_bip39_plaintext
   wallet_crypto/bip39_cbc_mutation_in_every_block_rejects
+  wallet_crypto/malformed_cbc_input_releases_output
   wallet_tests/database_environment_open_failure_renews_handle
   wallet_tests/database_mock_negative_open_failure_renews_handle
   pq_wallet_tests
