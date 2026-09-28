@@ -27,7 +27,7 @@ The exact context bytes are the ASCII prefix followed by these hashes, with no t
 - Testnet: `000000ecfc5e6324a079542221d00e10362bdc894d56500c414060eea8a3ad5a`
 - Regtest: `0b2c703dc93bb63a36c4e33b85be4855ddbca2ac951a7a0a29b8de0408200a3c`
 
-The caller must derive script flags from the block's contextual activation state. Once RIP-25 is active, supply both `ravenconsensus_SCRIPT_FLAGS_VERIFY_WITNESS` and `ravenconsensus_SCRIPT_FLAGS_VERIFY_PQ_HYBRID` (bit 16). Before activation, omit the PQ flag to retain future-witness semantics. This API does not determine BIP9 state or validate a whole transaction or block. Supplying only the PQ flag without WITNESS is invalid. Never omit the PQ flag when verifying an activated witness-v2 spend.
+The caller must derive script flags from the block's contextual activation state. Once RIP-25 is active, supply `ravenconsensus_SCRIPT_FLAGS_VERIFY_P2SH`, `ravenconsensus_SCRIPT_FLAGS_VERIFY_WITNESS` and `ravenconsensus_SCRIPT_FLAGS_VERIFY_PQ_HYBRID` (bit 16). Before activation, omit the PQ flag to retain future-witness semantics. This API does not determine BIP9 state or validate a whole transaction or block. WITNESS without P2SH and PQ without WITNESS are invalid flag combinations. Never omit the PQ flag when verifying an activated witness-v2 spend.
 
 All entry points return exactly `1` for valid and `0` for invalid. Unknown flags return `0` with `ravenconsensus_ERR_INVALID_FLAGS`; an error enum value is never returned as the verification result.
 

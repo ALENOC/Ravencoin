@@ -123,7 +123,15 @@ bool NetworkContext(unsigned int network, Consensus::PQSignatureContext& context
 /** Check that all specified flags are part of the libconsensus interface. */
 static bool verify_flags(unsigned int flags)
 {
-    return (flags & ~(ravenconsensus_SCRIPT_FLAGS_VERIFY_ALL)) == 0;
+    if ((flags & ~(ravenconsensus_SCRIPT_FLAGS_VERIFY_ALL)) != 0)
+        return false;
+    if ((flags & ravenconsensus_SCRIPT_FLAGS_VERIFY_WITNESS) &&
+        !(flags & ravenconsensus_SCRIPT_FLAGS_VERIFY_P2SH))
+        return false;
+    if ((flags & ravenconsensus_SCRIPT_FLAGS_VERIFY_PQ_HYBRID) &&
+        !(flags & ravenconsensus_SCRIPT_FLAGS_VERIFY_WITNESS))
+        return false;
+    return true;
 }
 
 static int verify_script(const unsigned char *scriptPubKey, unsigned int scriptPubKeyLen, CAmount amount,
@@ -133,10 +141,6 @@ static int verify_script(const unsigned char *scriptPubKey, unsigned int scriptP
                                     bool legacyInterface, ravenconsensus_error* err)
 {
     if (!verify_flags(flags)) {
-        return set_error(err, ravenconsensus_ERR_INVALID_FLAGS);
-    }
-    if ((flags & ravenconsensus_SCRIPT_FLAGS_VERIFY_PQ_HYBRID) &&
-        !(flags & ravenconsensus_SCRIPT_FLAGS_VERIFY_WITNESS)) {
         return set_error(err, ravenconsensus_ERR_INVALID_FLAGS);
     }
     try {
@@ -189,9 +193,7 @@ int ravenconsensus_verify_script(const unsigned char *scriptPubKey, unsigned int
                                    const unsigned char *txTo        , unsigned int txToLen,
                                    unsigned int nIn, unsigned int flags, ravenconsensus_error* err)
 {
-    if (!verify_flags(flags) ||
-        ((flags & ravenconsensus_SCRIPT_FLAGS_VERIFY_PQ_HYBRID) &&
-         !(flags & ravenconsensus_SCRIPT_FLAGS_VERIFY_WITNESS))) {
+    if (!verify_flags(flags)) {
         return set_error(err, ravenconsensus_ERR_INVALID_FLAGS);
     }
     if (flags & ravenconsensus_SCRIPT_FLAGS_VERIFY_WITNESS) {
