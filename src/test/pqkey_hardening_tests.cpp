@@ -5,9 +5,11 @@
 // RIP-25: adversarial regression tests for PQ key/wallet and v4.8 port hardening.
 
 #include "chain.h"
+#include "base58.h"
 #include "chainparams.h"
 #include "consensus/consensus.h"
 #include "consensus/rip25.h"
+#include "consensus/tx_verify.h"
 #include "consensus/validation.h"
 #include "crypto/mldsa.h"
 #include "crypto/sha256.h"
@@ -22,6 +24,7 @@
 #include "streams.h"
 #include "test/test_raven.h"
 #include "utilstrencodings.h"
+#include "wallet/pqderivation.h"
 
 #include <boost/test/unit_test.hpp>
 
@@ -50,6 +53,14 @@ const Consensus::PQSignatureContext& NetworkContext(const char* network)
         return testParams->GetConsensus().pqSignatureContext;
     return regtestParams->GetConsensus().pqSignatureContext;
 }
+
+class NetworkSelectionRestore
+{
+    const std::string original = GetParams().NetworkIDString();
+
+public:
+    ~NetworkSelectionRestore() { SelectParams(original); }
+};
 
 } // namespace
 
@@ -315,6 +326,29 @@ BOOST_AUTO_TEST_CASE(mldsa_backend_compatibility_kat)
     }
 }
 
+BOOST_AUTO_TEST_CASE(mldsa_acvp_keygen_kat)
+{
+    // FIPS 204 keyGen test group 1, case 1 from the liboqs 0.12.0 ACVP
+    // internalProjection.json. These expected values come from the published
+    // vector, not from the key-generation result under test.
+    const std::vector<unsigned char> seed = ParseHex(
+        "93EF2E6EF1FB08999D142ABE0295482370D3F43BDB254A78E2B0D5168ECA065F");
+    BOOST_REQUIRE_EQUAL(seed.size(), mldsa::SEED_BYTES);
+
+    std::array<unsigned char, mldsa::PUBLICKEY_BYTES> publicKey{};
+    std::array<unsigned char, mldsa::SECRETKEY_BYTES> secretKey{};
+    std::array<unsigned char, CSHA256::OUTPUT_SIZE> digest{};
+    BOOST_REQUIRE(mldsa::KeyGen(publicKey.data(), secretKey.data(), seed.data()));
+
+    CSHA256().Write(publicKey.data(), publicKey.size()).Finalize(digest.data());
+    BOOST_CHECK_EQUAL(HexStr(digest.begin(), digest.end()),
+        "6995b20ecd5cde41719035028a712ccf35b1adf53b913030423d9d6fa188d673");
+    CSHA256().Write(secretKey.data(), secretKey.size()).Finalize(digest.data());
+    BOOST_CHECK_EQUAL(HexStr(digest.begin(), digest.end()),
+        "16a35d4b59f932aeada987dc689b075add0df57b4815bb103be7443ee3c1c561");
+    memory_cleanse(secretKey.data(), secretKey.size());
+}
+
 BOOST_AUTO_TEST_CASE(secret_public_key_binding)
 {
     CPQKey key1;
@@ -534,6 +568,167 @@ BOOST_AUTO_TEST_CASE(witness_v2_signatures_are_bound_to_network_context)
             BOOST_CHECK_EQUAL(error, signingNetwork == verifyingNetwork
                 ? SCRIPT_ERR_OK : SCRIPT_ERR_PQ_SIGNATURE_VERIFY_FAILED);
         }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(rip25_production_full_chain_kat)
+{
+    // The source is the published BIP39 "abandon ... about"/"TREZOR" seed.
+    // Expected derivation seeds were computed independently with BIP32
+    // HMAC-SHA512; transaction IDs and sighashes with explicit little-endian
+    // serialization and SHA256d; addresses with BIP350 Bech32m.
+    const std::vector<unsigned char> walletSeed = ParseHex(
+        "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e5349553"
+        "1f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04");
+    BOOST_REQUIRE_EQUAL(walletSeed.size(), pqderivation::BIP39_SEED_BYTES);
+
+    struct KatCase {
+        const char* network;
+        uint32_t coinType;
+        const char* keypath;
+        const char* pqSeed;
+        const char* program;
+        const char* address;
+        const char* fundingHex;
+        const char* fundingTxid;
+        const char* spendHex;
+        const char* spendTxid;
+        const char* sighash;
+    };
+    const KatCase cases[] = {
+        {
+            "main", 175, "m/25'/175'/0'/0'/0'",
+            "5312ca47967e38c2c45a56837491a4b4a627bc697c4f247a7a090a854d798222",
+            "ffc2fc161fdad5c12334fc2c5c0a52f2c21ad02ff5d585155a6b58c23b002e43",
+            "rvn1zgvhqqw7ztp4459v96h6jl5q6cte9yzju9n7rgg7p6hdp79huctlshjd5ac",
+            "02000000010000000000000000000000000000000000000000000000000000000000000000"
+            "ffffffff025151ffffffff0100ca9a3b00000000225220432e003bc2586b5a1585d5f5"
+            "2fd01ac2f2520a5c2cfc3423c1d5da1f16fcc2ff00000000",
+            "f5c6dacd7f7e9dc26ee4ce89a8ecd0a33655eacac16c8049210ade78a3808a2f",
+            "02000000012f8a80a378de0a2149806cc1caea5536a3d0eca889cee46ec29d7e7fcdda"
+            "c6f50000000000ffffffff0118c69a3b00000000015100000000",
+            "d9fdfa163ea3bb3b70fe42d536d061a21156dcf36fb035f872e056be99925da6",
+            "07cbfdb9a30791a779eb668df4178aa044d39a0b970568fce797e0940295be0e"
+        },
+        {
+            "test", 1, "m/25'/1'/0'/0'/0'",
+            "e0f3d1cfb06da142ccdbdc54aed4e131c9ab16403d97a33964bad3dc99f45e2d",
+            "3b2b571eb1bf9f935a19f2acbe99ce27fb7d3519a54e4b2f6017f5f3a876c9ad",
+            "trvn1z4hyhd28n75tkqt6tf6j3jdtalvnuaxd74nepjk5nn7lmz8jh9vaspj3xdu",
+            "02000000010000000000000000000000000000000000000000000000000000000000000000"
+            "ffffffff025151ffffffff0100ca9a3b00000000225220adc976a8f3f517602f4b4ea5"
+            "19357dfb27ce99beacf2195a939fbfb11e572b3b00000000",
+            "a5f00dcc242140aba60071686f3f17e0edd2a115a7f29c54155db04f848f8bbf",
+            "0200000001bf8b8f844fb05d15549cf2a715a1d2ede0173f6f687100a6ab402124cc0d"
+            "f0a50000000000ffffffff0118c69a3b00000000015100000000",
+            "58a317ed4cbc902aa6a0be3ee1eed0d2d31b1a2b367b81e86cf866e3a76c4626",
+            "65e96681e7e05607b0c659de85296f6937c01ffb10eecb95c4ff71ce35d3c64e"
+        },
+        {
+            "regtest", 1, "m/25'/1'/0'/0'/0'",
+            "e0f3d1cfb06da142ccdbdc54aed4e131c9ab16403d97a33964bad3dc99f45e2d",
+            "3b2b571eb1bf9f935a19f2acbe99ce27fb7d3519a54e4b2f6017f5f3a876c9ad",
+            "rcrt1z4hyhd28n75tkqt6tf6j3jdtalvnuaxd74nepjk5nn7lmz8jh9vasg4ztx8",
+            "02000000010000000000000000000000000000000000000000000000000000000000000000"
+            "ffffffff025151ffffffff0100ca9a3b00000000225220adc976a8f3f517602f4b4ea5"
+            "19357dfb27ce99beacf2195a939fbfb11e572b3b00000000",
+            "a5f00dcc242140aba60071686f3f17e0edd2a115a7f29c54155db04f848f8bbf",
+            "0200000001bf8b8f844fb05d15549cf2a715a1d2ede0173f6f687100a6ab402124cc0d"
+            "f0a50000000000ffffffff0118c69a3b00000000015100000000",
+            "58a317ed4cbc902aa6a0be3ee1eed0d2d31b1a2b367b81e86cf866e3a76c4626",
+            "65e96681e7e05607b0c659de85296f6937c01ffb10eecb95c4ff71ce35d3c64e"
+        }
+    };
+
+    NetworkSelectionRestore restoreNetwork;
+    for (const KatCase& vector : cases) {
+        SelectParams(vector.network);
+        BOOST_CHECK_EQUAL(pqderivation::GetKeypath(vector.coinType, 0), vector.keypath);
+
+        SecureVector pqSeed;
+        BOOST_REQUIRE(pqderivation::DeriveSeed(walletSeed.data(), walletSeed.size(),
+                                               vector.coinType, 0, pqSeed));
+        BOOST_REQUIRE_EQUAL(pqSeed.size(), mldsa::SEED_BYTES);
+        BOOST_CHECK_EQUAL(HexStr(pqSeed.begin(), pqSeed.end()), vector.pqSeed);
+
+        CPQKey key;
+        BOOST_REQUIRE(key.SetSeed(pqSeed.data()));
+        SecureVector().swap(pqSeed);
+        const CPQPubKey pubkey = key.GetPubKey();
+        const uint256 program = pubkey.GetWitnessProgram();
+        BOOST_CHECK_EQUAL(program.GetHex(), vector.program);
+        BOOST_CHECK_EQUAL(EncodeDestination(WitnessV2PQDestination(program)),
+                          vector.address);
+
+        CBasicKeyStore keystore;
+        BOOST_REQUIRE(keystore.AddPQKeyPubKey(key, pubkey));
+
+        // A deterministic coinbase-shaped funding transaction supplies the
+        // witness-v2 output without relying on mutable chainstate fixtures.
+        const CAmount amount = 10 * COIN;
+        CMutableTransaction funding;
+        funding.vin.emplace_back(COutPoint(), CScript() << OP_1 << OP_1);
+        funding.vout.emplace_back(amount, GetScriptForWitnessV2PQ(program));
+        const CTransaction fundingTx(funding);
+        CValidationState fundingState;
+        BOOST_REQUIRE(CheckTransaction(fundingTx, fundingState));
+        CDataStream fundingWire(SER_NETWORK,
+            PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS);
+        fundingWire << fundingTx;
+        BOOST_CHECK_EQUAL(HexStr(fundingWire.begin(), fundingWire.end()),
+                          vector.fundingHex);
+        BOOST_CHECK_EQUAL(fundingTx.GetHash().GetHex(), vector.fundingTxid);
+
+        CMutableTransaction spend;
+        spend.vin.emplace_back(COutPoint(fundingTx.GetHash(), 0));
+        spend.vout.emplace_back(amount - 1000, CScript() << OP_TRUE);
+        const Consensus::PQSignatureContext& context = NetworkContext(vector.network);
+        BOOST_REQUIRE(SignSignature(keystore, fundingTx, spend, 0, SIGHASH_ALL,
+                                    context));
+        const CTransaction spendTx(spend);
+        CValidationState spendState;
+        BOOST_REQUIRE(CheckTransaction(spendTx, spendState));
+        BOOST_REQUIRE_EQUAL(spendTx.vin[0].scriptWitness.stack.size(), 2U);
+        BOOST_CHECK_EQUAL(spendTx.vin[0].scriptWitness.stack[0].size(),
+                          mldsa::SIGNATURE_BYTES);
+        BOOST_CHECK_EQUAL(spendTx.vin[0].scriptWitness.stack[1].size(),
+                          mldsa::PUBLICKEY_BYTES);
+        BOOST_CHECK(std::equal(pubkey.begin(), pubkey.end(),
+                               spendTx.vin[0].scriptWitness.stack[1].begin()));
+
+        CDataStream spendNoWitness(SER_NETWORK,
+            PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS);
+        spendNoWitness << spendTx;
+        BOOST_CHECK_EQUAL(HexStr(spendNoWitness.begin(), spendNoWitness.end()),
+                          vector.spendHex);
+        BOOST_CHECK_EQUAL(spendTx.GetHash().GetHex(), vector.spendTxid);
+
+        const uint256 sighash = SignatureHash(CScript(), spendTx, 0,
+            SIGHASH_ALL, amount, SIGVERSION_WITNESS_V2_PQ);
+        BOOST_CHECK_EQUAL(sighash.GetHex(), vector.sighash);
+        const PrecomputedTransactionData cache(spendTx);
+        BOOST_CHECK(SignatureHash(CScript(), spendTx, 0, SIGHASH_ALL, amount,
+                                  SIGVERSION_WITNESS_V2_PQ, &cache) == sighash);
+
+        const unsigned int flags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS |
+                                   SCRIPT_VERIFY_PQ_HYBRID;
+        ScriptError error = SCRIPT_ERR_UNKNOWN_ERROR;
+        BOOST_CHECK(VerifyScript(spendTx.vin[0].scriptSig,
+            fundingTx.vout[0].scriptPubKey,
+            &spendTx.vin[0].scriptWitness, flags,
+            TransactionSignatureChecker(&spendTx, 0, amount, context), &error));
+        BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
+
+        // The production signer may hedge with randomness. Capture and
+        // round-trip its witness, but never require a fixed signature/wtxid.
+        BOOST_CHECK(spendTx.GetWitnessHash() != spendTx.GetHash());
+        CDataStream witnessWire(SER_NETWORK, PROTOCOL_VERSION);
+        witnessWire << spendTx;
+        CMutableTransaction decoded;
+        witnessWire >> decoded;
+        const CTransaction decodedTx(decoded);
+        BOOST_CHECK(decodedTx.GetHash() == spendTx.GetHash());
+        BOOST_CHECK(decodedTx.GetWitnessHash() == spendTx.GetWitnessHash());
     }
 }
 
