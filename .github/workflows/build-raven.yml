@@ -67,6 +67,13 @@ jobs:
           make -j2
           make check
 
+      - name: Exercise the real PQ verifier fuzz target
+        run: |
+          make -C src -j2 test/test_raven_fuzzy
+          src/test/test_raven_fuzzy --pq-smoke
+          src/test/test_raven_fuzzy < src/test/fuzz/pq_witness_v2_seed
+          src/test/test_raven_fuzzy --pq-seed-tx | src/test/test_raven_fuzzy
+
       - name: Run behavioral security invariants
         run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests
 

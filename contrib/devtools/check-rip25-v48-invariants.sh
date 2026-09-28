@@ -529,6 +529,7 @@ reject_fixed 'OQS_randombytes_custom_algorithm' src/crypto/mldsa.cpp 'determinis
 reject_fixed 'OQS_randombytes_switch_algorithm' src/crypto/mldsa.cpp 'deterministic keygen still changes process-global RNG state'
 require_fixed 'mldsa::SelfTest()' src/init.cpp 'node startup does not fail closed on ML-DSA backend self-test failure'
 require_fixed 'mldsa_backend_compatibility_kat' src/test/pqkey_hardening_tests.cpp 'multi-seed backend compatibility KAT is missing'
+require_fixed 'mldsa_acvp_keygen_kat' src/test/pqkey_hardening_tests.cpp 'independent FIPS 204 key-generation KAT is missing'
 require_fixed 'OQS_SIG_sign_with_ctx_str' src/crypto/mldsa.cpp 'ML-DSA signing does not use the FIPS 204 context API'
 require_fixed 'OQS_SIG_verify_with_ctx_str' src/crypto/mldsa.cpp 'ML-DSA verification does not use the FIPS 204 context API'
 require_fixed 'RVN/ML-DSA-44/v1/0000006b444bc2f2ffe627be9d9e7e7a0730000870ef6eb6da46c8eae389df90' src/chainparams.cpp 'mainnet ML-DSA context changed'
@@ -553,6 +554,20 @@ require_fixed 'test/data/bip39_vectors.json' src/Makefile.test.include 'BIP39 ve
 require_fixed 'test/rip25_versionbits_tests.cpp' src/Makefile.test.include 'RIP-25 versionbits test is not wired into make check'
 require_fixed 'test/kawpow_v48_hardening_tests.cpp' src/Makefile.test.include 'KAWPOW v4.8 hardening test is not wired into make check'
 require_fixed 'witness_v2_active_rules_accept_valid_and_reject_invalid_mldsa' src/test/pqkey_hardening_tests.cpp 'active witness-v2 regression missing'
+require_fixed '{std::string("PQ_HYBRID"),                             (unsigned int) SCRIPT_VERIFY_PQ_HYBRID}' src/test/transaction_tests.cpp 'transaction vector runner cannot enable PQ consensus rules'
+require_min_count 'TransactionSignatureChecker(&tx, i, amount, txdata, mainnetPQContext)' src/test/transaction_tests.cpp 2 'PQ transaction vectors do not use the mainnet verification context in both runners'
+require_fixed 'P2SH,WITNESS,PQ_HYBRID' src/test/data/tx_valid.json 'valid PQ transaction vector is missing'
+require_fixed 'P2SH,WITNESS,PQ_HYBRID' src/test/data/tx_invalid.json 'invalid PQ transaction vector is missing'
+require_fixed 'pq_witness_v2_tx_vector_mutations' src/test/transaction_tests.cpp 'PQ transaction vector mutation matrix is missing'
+require_fixed 'ravenconsensus_verify_script_with_amount_and_network' src/script/ravenconsensus.h 'shared verifier lacks a network-aware PQ entry point'
+require_fixed 'return set_error(err, ravenconsensus_ERR_INVALID_FLAGS)' src/script/ravenconsensus.cpp 'shared verifier reports unsupported flags as script success'
+require_fixed '!(flags & ravenconsensus_SCRIPT_FLAGS_VERIFY_P2SH)' src/script/ravenconsensus.cpp 'shared verifier permits WITNESS without P2SH'
+require_fixed 'ravenconsensus_legacy_rejects_unverifiable_pq' src/test/script_tests.cpp 'legacy shared verifier fail-closed regression is missing'
+require_fixed 'ravenconsensus_pq_network_context_and_activation' src/test/script_tests.cpp 'shared verifier cross-network regression is missing'
+require_fixed 'ravenconsensus_witness_requires_p2sh_flag' src/test/script_tests.cpp 'shared verifier flag-implication regression is missing'
+require_fixed 'FuzzPQWitness' src/test/test_raven_fuzzy.cpp 'real PQ witness verifier fuzz path is missing'
+fuzz_link_block="$(sed -n '/^test_test_raven_fuzzy_LDADD =/,/^#$/p' src/Makefile.test.include)"
+require_text "$fuzz_link_block" '$(LIBOQS_LIBS)' 'fuzz binary does not link the real ML-DSA verifier'
 require_fixed 'SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH' src/test/pqkey_hardening_tests.cpp 'empty active witness-v2 rejection is untested'
 require_fixed 'SCRIPT_ERR_PQ_SIGNATURE_VERIFY_FAILED' src/test/pqkey_hardening_tests.cpp 'malformed ML-DSA rejection is untested'
 require_fixed 'verifyFlags |= SCRIPT_VERIFY_PQ_HYBRID' src/script/sign.cpp 'PQ transaction signing does not self-check under witness-v2 rules'
@@ -592,6 +607,8 @@ require_fixed 'python3 contrib/devtools/test-required-functional-gate.py' "$fina
 require_fixed 'python3 test/functional/test_runner.py --require-tests' "$final_gate" 'functional gate permits absent or skipped security tests'
 require_fixed 'wallet_encryption_rewrite.py rpc_assettransfer.py feature_chainstate_ahead.py' "$final_gate" 'required wallet, asset-scope, and chainstate-ahead functional tests are missing'
 require_fixed 'id: posttest_integrity' "$final_gate" 'final gate does not recheck source after security tests'
+final_security_job="$(sed -n '/^  security-tests:/,/^  build:/p' "$final_gate")"
+require_text "$final_security_job" 'test/test_raven_fuzzy --pq-smoke' 'final security job does not run the PQ verifier fuzz smoke test'
 require_fixed 'id: postbuild_integrity' "$final_gate" 'final gate does not recheck source after cross-builds'
 final_build_matrix="$(sed -n '/^      matrix:/,/^    steps:/p' "$final_gate")"
 require_text "$final_build_matrix" $'          - name: aarch64-disable-wallet\n            host: aarch64-linux-gnu\n            packages: g++-aarch64-linux-gnu\n            configure_flags: --without-gui --disable-wallet --disable-bench\n            run_tests: false' 'final gate lacks the aarch64 no-wallet cross-build'
@@ -626,6 +643,7 @@ require_fixed '  pull_request:' "$release_workflow" 'release workflow does not b
 require_fixed 'runs-on: ubuntu-22.04' "$release_workflow" 'release workflow uses an unsupported runner'
 release_security_job="$(sed -n '/^  security-tests:/,/^  build:/p' "$release_workflow")"
 release_build_job="$(sed -n '/^  build:/,/^    strategy:/p' "$release_workflow")"
+require_text "$release_security_job" 'test/test_raven_fuzzy --pq-smoke' 'release security job does not run the PQ verifier fuzz smoke test'
 require_text "$release_security_job" 'make check' 'release artifact workflow does not run unit security tests before packaging'
 require_text "$release_security_job" 'check-rip25-v48-invariants.sh --run-tests' 'release artifact workflow does not run behavioral security tests before packaging'
 require_text "$release_security_job" 'test_runner.py --require-tests' 'release artifact workflow does not run required functional tests before packaging'
@@ -712,6 +730,14 @@ behavioral_tests=(
   transaction_tests/compact_witness_truncated_element_is_atomic_and_chunked
   transaction_tests/compact_witness_move_leaves_valid_source
   transaction_tests/compact_witness_preserves_compactsize_boundaries
+  transaction_tests/tx_valid_test
+  transaction_tests/tx_invalid_test
+  transaction_tests/pq_witness_v2_tx_vector_mutations
+  script_tests/ravenconsensus_legacy_rejects_unverifiable_pq
+  script_tests/ravenconsensus_pq_network_context_and_activation
+  script_tests/ravenconsensus_witness_requires_p2sh_flag
+  amount_tests/Fee_Arithmetic_Boundaries_Test
+  amount_tests/Fee_Rate_Addition_Boundaries_Test
   blockencodings_tests/block_family_counts_reject_before_element_read
   blockencodings_tests/block_family_transaction_count_boundary_roundtrips
   blockencodings_tests/block_family_count_bounds_are_atomic_and_apply_on_write
@@ -746,6 +772,17 @@ for test_filter in "${behavioral_tests[@]}"; do
     "$test_binary" --run_test="$test_filter" --log_level=test_suite
   fi
 done
+
+fuzz_binary=src/test/test_raven_fuzzy
+[[ -x "$fuzz_binary" ]] || fail "PQ fuzz smoke binary is missing or not executable: $fuzz_binary"
+for fuzz_source in src/test/test_raven_fuzzy.cpp src/crypto/mldsa.cpp src/script/interpreter.cpp src/Makefile.test.include; do
+  [[ ! "$fuzz_source" -nt "$fuzz_binary" ]] || fail "PQ fuzz smoke binary is stale relative to: $fuzz_source"
+done
+echo 'RIP-25/v4.8 behavioral invariant: real PQ verifier fuzz smoke'
+fuzz_smoke_output="$("$fuzz_binary" --pq-smoke)" || fail 'real PQ verifier fuzz smoke failed'
+[[ "$fuzz_smoke_output" == 'PQ witness fuzz smoke: 1 valid, 7 invalid, 256 mutations; 1 serialized valid, 7 serialized invalid, 256 wire mutations' ]] || fail 'PQ fuzz smoke did not execute the verifier-specific cases'
+echo "$fuzz_smoke_output"
+"$fuzz_binary" --pq-seed-tx | "$fuzz_binary"
 
 python3 contrib/devtools/test-required-functional-gate.py
 python3 test/functional/test_runner.py --require-tests --jobs=2 \
