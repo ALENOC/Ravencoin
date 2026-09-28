@@ -15,8 +15,10 @@
 #include "utilstrencodings.h"
 
 #include <cerrno>
+#include <cctype>
 #include <stdint.h>
 #include <limits>
+#include <sstream>
 
 #ifndef WIN32
 #include <sys/stat.h>
@@ -25,6 +27,40 @@
 #include <boost/thread.hpp>
 
 namespace {
+using SalvageString =
+    std::basic_string<char, std::char_traits<char>, zero_after_free_allocator<char>>;
+using SalvageStream =
+    std::basic_stringstream<char, std::char_traits<char>, zero_after_free_allocator<char>>;
+
+void ClearSalvageString(SalvageString& value)
+{
+    // Short lines may live inside the string object rather than its allocator.
+    if (value.capacity() != 0) {
+        value.resize(value.capacity(), '\0');
+        memory_cleanse(&value[0], value.size());
+    }
+    SalvageString().swap(value);
+}
+
+CDBEnv::SalvagedBytes ParseSalvageHex(const SalvageString& encoded)
+{
+    CDBEnv::SalvagedBytes result;
+    const char* psz = encoded.c_str();
+    while (true) {
+        while (std::isspace(static_cast<unsigned char>(*psz)))
+            ++psz;
+        signed char digit = HexDigit(*psz++);
+        if (digit == -1)
+            break;
+        unsigned char byte = digit << 4;
+        digit = HexDigit(*psz++);
+        if (digit == -1)
+            break;
+        result.push_back(byte | digit);
+    }
+    return result;
+}
+
 //! Make sure database has a unique fileid within the environment. If it
 //! doesn't, throw an error. BDB caches do not work properly when more than one
 //! open database has the same fileid (values written to one database may show
@@ -64,8 +100,8 @@ void ClearSalvagedData(std::vector<CDBEnv::KeyValPair>& rows)
             memory_cleanse(row.first.data(), row.first.size());
         if (!row.second.empty())
             memory_cleanse(row.second.data(), row.second.size());
-        std::vector<unsigned char>().swap(row.first);
-        std::vector<unsigned char>().swap(row.second);
+        CDBEnv::SalvagedBytes().swap(row.first);
+        CDBEnv::SalvagedBytes().swap(row.second);
     }
     std::vector<CDBEnv::KeyValPair>().swap(rows);
 }
@@ -558,7 +594,9 @@ CDBEnv::SalvageResult CDBEnv::Salvage(const std::string& strFile, bool fAggressi
     if (fAggressive)
         flags |= DB_AGGRESSIVE;
 
-    std::stringstream strDump;
+    // Berkeley DB renders the entire wallet as hex. The locked secure allocator
+    // cannot hold large wallets, so use a cleanse-on-free allocator here.
+    SalvageStream strDump;
 
     Db db(dbenv, 0);
     int result = db.verify(strFile.c_str(), nullptr, &strDump, flags);
@@ -582,11 +620,22 @@ CDBEnv::SalvageResult CDBEnv::Salvage(const std::string& strFile, bool fAggressi
     //  ... repeated
     // DATA=END
 
-    std::string strLine;
+    SalvageString strLine;
+    SalvageString keyHex, valueHex;
+    struct LineCleaner {
+        SalvageString& header;
+        SalvageString& key;
+        SalvageString& value;
+        ~LineCleaner()
+        {
+            ClearSalvageString(header);
+            ClearSalvageString(key);
+            ClearSalvageString(value);
+        }
+    } cleanLines{strLine, keyHex, valueHex};
     while (!strDump.eof() && strLine != HEADER_END)
         getline(strDump, strLine); // Skip past header
 
-    std::string keyHex, valueHex;
     while (!strDump.eof() && keyHex != DATA_END) {
         getline(strDump, keyHex);
         if (keyHex != DATA_END) {
@@ -597,7 +646,7 @@ CDBEnv::SalvageResult CDBEnv::Salvage(const std::string& strFile, bool fAggressi
                 LogPrintf("CDBEnv::Salvage: WARNING: Number of keys in data does not match number of values.\n");
                 break;
             }
-            vResult.push_back(make_pair(ParseHex(keyHex), ParseHex(valueHex)));
+            vResult.emplace_back(ParseSalvageHex(keyHex), ParseSalvageHex(valueHex));
         }
     }
 
