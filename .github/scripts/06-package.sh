@@ -100,9 +100,21 @@ if [[ ${OS} == "windows" ]]; then
     
 elif [[ ${OS} == "osx" ]]; then
 
-    # macdeploy's custom_dsstore.py needs the ds_store module; use the
-    # checksum-pinned depends build rather than an unpinned PyPI install.
-    export PYTHONPATH="${GITHUB_WORKSPACE}/depends/x86_64-apple-darwin14/native/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+    # Use all three checksum-pinned macdeploy modules from depends.
+    native_python_lib="${GITHUB_WORKSPACE}/depends/x86_64-apple-darwin14/native/lib"
+    export PYTHONPATH="${native_python_lib}/python3/dist-packages:${native_python_lib}/python/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+    python3 - "${native_python_lib}" <<'PY'
+import importlib
+import os
+import sys
+
+root = os.path.realpath(sys.argv[1])
+for name in ("biplist", "mac_alias", "ds_store"):
+    module = importlib.import_module(name)
+    source = os.path.realpath(module.__file__)
+    if os.path.commonpath((root, source)) != root:
+        raise SystemExit("macOS packaging requires pinned depends module: " + name)
+PY
 
     make install-strip DESTDIR=${STAGE_DIR}/${DISTNAME}
 
