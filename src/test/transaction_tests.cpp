@@ -183,6 +183,7 @@ BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
             CreateChainParams("main")->GetConsensus().pqSignatureContext;
 
         ScriptError err;
+        bool sawPQVector = false;
         for (unsigned int idx = 0; idx < tests.size(); idx++)
         {
             UniValue test = tests[idx];
@@ -227,6 +228,7 @@ BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
                 }
 
                 std::string transaction = test[1].get_str();
+                sawPQVector |= test[2].get_str() == "P2SH,WITNESS,PQ_HYBRID";
                 CDataStream stream(ParseHex(transaction), SER_NETWORK, PROTOCOL_VERSION);
                 CTransaction tx(deserialize, stream);
 
@@ -257,6 +259,7 @@ BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
                 }
             }
         }
+        BOOST_CHECK_MESSAGE(sawPQVector, "Missing signed RIP-25 tx_valid vector");
     }
 
     BOOST_AUTO_TEST_CASE(tx_invalid_test)
@@ -277,6 +280,7 @@ BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
         // Initialize to SCRIPT_ERR_OK. The tests expect err to be changed to a
         // value other than SCRIPT_ERR_OK.
         ScriptError err = SCRIPT_ERR_OK;
+        bool sawPQVector = false;
         for (unsigned int idx = 0; idx < tests.size(); idx++)
         {
             UniValue test = tests[idx];
@@ -321,6 +325,7 @@ BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
                 }
 
                 std::string transaction = test[1].get_str();
+                sawPQVector |= test[2].get_str() == "P2SH,WITNESS,PQ_HYBRID";
                 CDataStream stream(ParseHex(transaction), SER_NETWORK, PROTOCOL_VERSION);
                 CTransaction tx(deserialize, stream);
 
@@ -350,6 +355,7 @@ BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
                 BOOST_CHECK_MESSAGE(err != SCRIPT_ERR_OK, ScriptErrorString(err));
             }
         }
+        BOOST_CHECK_MESSAGE(sawPQVector, "Missing corrupted RIP-25 tx_invalid vector");
     }
 
     BOOST_AUTO_TEST_CASE(pq_witness_v2_tx_vector_mutations)
