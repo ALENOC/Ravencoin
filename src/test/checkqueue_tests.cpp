@@ -461,7 +461,11 @@ BOOST_FIXTURE_TEST_SUITE(checkqueue_tests, TestingSetup)
         // Try to get control of the queue a bunch of times
         for (auto x = 0; x < 100 && !fails; ++x)
         {
-            fails = queue->ControlMutex.try_lock();
+            if (queue->ControlMutex.try_lock())
+            {
+                queue->ControlMutex.unlock();
+                fails = true;
+            }
         }
         {
             // Unfreeze (we need lock n case of spurious wakeup)
