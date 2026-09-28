@@ -91,16 +91,35 @@ the witness version. Remaining bytes supply mutation data. The input cap is
 1 MiB for both stdin and libFuzzer. The existing binary test IDs continue to
 exercise transaction and other network deserialization separately.
 
+The reserved mode byte `0xff` instead treats the following byte as controls
+and the remainder as an attacker-supplied serialized witness transaction.
+The harness checks wire counts and lengths without allocating declared
+vectors, then invokes production transaction deserialization. It accepts a
+single input, up to 16 outputs, script fields up to 10,000 bytes, and up to
+four witness elements of at most 4,096 bytes each. A supplied public key is
+hashed into the witness-v2 program so exact-size malformed key/signature
+pairs can reach production `VerifyScript` and liboqs. Control bits 0-1 select
+mainnet, testnet, regtest, or an invalid context. Bit `0x04` changes the
+witness version, `0x08` corrupts the program, and `0x10` removes the PQ
+activation flag. The preflight uses the production CompactSize reader and
+rejects malformed or oversized lengths before they can trigger excessive
+allocations.
+
 A focused smoke check must succeed before fuzzing:
 
 ```
 src/test/test_raven_fuzzy --pq-smoke
 src/test/test_raven_fuzzy < src/test/fuzz/pq_witness_v2_seed
+src/test/test_raven_fuzzy --pq-seed-tx > /tmp/pq_witness_wire_seed
+src/test/test_raven_fuzzy < /tmp/pq_witness_wire_seed
 ```
 
 For a short AFL run, use this seed in a dedicated input directory, then run
 the instrumented binary with `afl-fuzz`. Retain the output corpus and rerun
 interesting cases under ASan and UBSan. The smoke check asserts one valid and
 seven invalid outcomes, then runs 256 deterministic mutation inputs,
-including full-length signature and public-key mutations. It does not
-replace long-running fuzzing.
+including full-length signature and public-key mutations. It also asserts
+one valid serialized transaction and seven invalid cases (non-canonical
+CompactSize, excessive declared length, truncation, missing/extra stack
+items, long signature, and oversized witness element),
+then mutates 256 wire-format inputs. It does not replace long-running fuzzing.
