@@ -10,6 +10,7 @@
 #include "amount.h"
 #include "serialize.h"
 
+#include <limits>
 #include <string>
 
 extern const std::string CURRENCY_UNIT;
@@ -46,7 +47,15 @@ public:
     friend bool operator<=(const CFeeRate& a, const CFeeRate& b) { return a.nSatoshisPerK <= b.nSatoshisPerK; }
     friend bool operator>=(const CFeeRate& a, const CFeeRate& b) { return a.nSatoshisPerK >= b.nSatoshisPerK; }
     friend bool operator!=(const CFeeRate& a, const CFeeRate& b) { return a.nSatoshisPerK != b.nSatoshisPerK; }
-    CFeeRate& operator+=(const CFeeRate& a) { nSatoshisPerK += a.nSatoshisPerK; return *this; }
+    CFeeRate& operator+=(const CFeeRate& a) {
+        if (a.nSatoshisPerK > 0 && nSatoshisPerK > std::numeric_limits<CAmount>::max() - a.nSatoshisPerK)
+            nSatoshisPerK = std::numeric_limits<CAmount>::max();
+        else if (a.nSatoshisPerK < 0 && nSatoshisPerK < std::numeric_limits<CAmount>::min() - a.nSatoshisPerK)
+            nSatoshisPerK = std::numeric_limits<CAmount>::min();
+        else
+            nSatoshisPerK += a.nSatoshisPerK;
+        return *this;
+    }
     std::string ToString() const;
 
     ADD_SERIALIZE_METHODS;

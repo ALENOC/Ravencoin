@@ -153,6 +153,35 @@ BOOST_FIXTURE_TEST_SUITE(amount_tests, BasicTestingSetup)
         BOOST_CHECK(a == b);
     }
 
+    BOOST_AUTO_TEST_CASE(Fee_Rate_Addition_Boundaries_Test)
+    {
+        const CAmount maxAmount = std::numeric_limits<CAmount>::max();
+        const CAmount minAmount = std::numeric_limits<CAmount>::min();
+
+        CFeeRate positive(maxAmount - 1);
+        positive += CFeeRate(1);
+        BOOST_CHECK(positive == CFeeRate(maxAmount));
+        positive += CFeeRate(1);
+        BOOST_CHECK(positive == CFeeRate(maxAmount));
+
+        CFeeRate negative(minAmount + 1);
+        negative += CFeeRate(-1);
+        BOOST_CHECK(negative == CFeeRate(minAmount));
+        negative += CFeeRate(-1);
+        BOOST_CHECK(negative == CFeeRate(minAmount));
+
+        CFeeRate positiveSelf(maxAmount / 2 + 1);
+        positiveSelf += positiveSelf;
+        BOOST_CHECK(positiveSelf == CFeeRate(maxAmount));
+        CFeeRate negativeSelf(minAmount / 2 - 1);
+        negativeSelf += negativeSelf;
+        BOOST_CHECK(negativeSelf == CFeeRate(minAmount));
+
+        CFeeRate opposite(maxAmount);
+        opposite += CFeeRate(minAmount);
+        BOOST_CHECK(opposite == CFeeRate(-1));
+    }
+
     BOOST_AUTO_TEST_CASE(ToString_Test)
     {
         BOOST_TEST_MESSAGE("Running ToString Test");
