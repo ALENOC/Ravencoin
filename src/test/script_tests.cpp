@@ -185,6 +185,50 @@ BOOST_FIXTURE_TEST_SUITE(script_tests, BasicTestingSetup)
         BOOST_CHECK_EQUAL(invalidFlags.second, ravenconsensus_ERR_INVALID_FLAGS);
     }
 
+    BOOST_AUTO_TEST_CASE(ravenconsensus_witness_requires_p2sh_flag)
+    {
+        const CScript witnessV2 = CScript() << OP_2 << std::vector<unsigned char>(32, 0x42);
+        const CScript nested = GetScriptForDestination(CScriptID(witnessV2));
+        const std::vector<std::pair<CScript, CScript>> candidates = {
+            {witnessV2, CScript()},
+            {nested, CScript() << ToByteVector(witnessV2)},
+        };
+        const unsigned int invalidFlags[] = {
+            ravenconsensus_SCRIPT_FLAGS_VERIFY_WITNESS,
+            ravenconsensus_SCRIPT_FLAGS_VERIFY_WITNESS |
+                ravenconsensus_SCRIPT_FLAGS_VERIFY_PQ_HYBRID,
+        };
+        for (const auto& candidate : candidates) {
+            CMutableTransaction tx;
+            tx.vin.resize(1);
+            tx.vout.resize(1);
+            tx.vin[0].prevout = COutPoint(uint256S("01"), 0);
+            tx.vin[0].scriptSig = candidate.second;
+            tx.vout[0].nValue = 1;
+            CDataStream serialized(SER_NETWORK, PROTOCOL_VERSION);
+            serialized << tx;
+            const auto* bytes = reinterpret_cast<const unsigned char*>(serialized.data());
+            for (const unsigned int flags : invalidFlags) {
+                ravenconsensus_error err = ravenconsensus_ERR_OK;
+                BOOST_CHECK_EQUAL(ravenconsensus_verify_script_with_amount(
+                    candidate.first.data(), candidate.first.size(), 1,
+                    bytes, serialized.size(), 0, flags, &err), 0);
+                BOOST_CHECK_EQUAL(err, ravenconsensus_ERR_INVALID_FLAGS);
+                err = ravenconsensus_ERR_OK;
+                BOOST_CHECK_EQUAL(ravenconsensus_verify_script(
+                    candidate.first.data(), candidate.first.size(),
+                    bytes, serialized.size(), 0, flags, &err), 0);
+                BOOST_CHECK_EQUAL(err, ravenconsensus_ERR_INVALID_FLAGS);
+                err = ravenconsensus_ERR_OK;
+                BOOST_CHECK_EQUAL(ravenconsensus_verify_script_with_amount_and_network(
+                    candidate.first.data(), candidate.first.size(), 1,
+                    bytes, serialized.size(), 0, flags,
+                    ravenconsensus_NETWORK_MAIN, &err), 0);
+                BOOST_CHECK_EQUAL(err, ravenconsensus_ERR_INVALID_FLAGS);
+            }
+        }
+    }
+
     BOOST_AUTO_TEST_CASE(ravenconsensus_pq_network_context_and_activation)
     {
         const char* names[] = {"main", "test", "regtest"};
