@@ -9,6 +9,7 @@
 #include "fs.h"
 #include "hash.h"
 #include "pqkey.h"
+#include "support/allocators/zeroafterfree.h"
 #include "test/test_raven.h"
 #include "ui_interface.h"
 #include "util.h"
@@ -31,6 +32,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -1382,6 +1384,14 @@ BOOST_AUTO_TEST_CASE(bip39_records_are_key_critical)
     BOOST_CHECK(retainedByKeyOnlyRecovery("cbip39vchseed", cryptedSeed));
 }
 
+BOOST_AUTO_TEST_CASE(salvage_rows_use_secure_storage)
+{
+    using CleansingBytes =
+        std::vector<unsigned char, zero_after_free_allocator<unsigned char>>;
+    BOOST_CHECK((std::is_same<CDBEnv::KeyValPair::first_type, CleansingBytes>::value));
+    BOOST_CHECK((std::is_same<CDBEnv::KeyValPair::second_type, CleansingBytes>::value));
+}
+
 BOOST_AUTO_TEST_CASE(recovery_faults_preserve_original_database)
 {
     using Fault = wallet_db::RecoveryTestAccess::Fault;
@@ -1525,6 +1535,19 @@ BOOST_AUTO_TEST_CASE(recovery_handles_zero_length_raw_rows)
         filename, empty, nonemptyValue.size()));
     BOOST_CHECK(wallet_db::RecoveryTestAccess::HasRaw(
         filename, nonemptyKey, empty.size()));
+}
+
+BOOST_AUTO_TEST_CASE(recovery_handles_dump_larger_than_locked_pool_limit)
+{
+    const std::string filename = "large-recovery-wallet.dat";
+    const std::vector<unsigned char> key{0x42};
+    const std::vector<unsigned char> value(300000, 0x5a);
+    BOOST_REQUIRE(wallet_db::RecoveryTestAccess::WriteRaw(filename, key, value));
+
+    std::string backupFilename;
+    BOOST_REQUIRE(wallet_db::RecoveryTestAccess::Recover(filename, backupFilename));
+    BOOST_CHECK(!backupFilename.empty());
+    BOOST_CHECK(wallet_db::RecoveryTestAccess::HasRaw(filename, key, value.size()));
 }
 
 BOOST_AUTO_TEST_CASE(bip44_key_only_recovery_preserves_derivation_lineage)

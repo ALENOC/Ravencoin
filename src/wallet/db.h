@@ -10,6 +10,7 @@
 #include "clientversion.h"
 #include "fs.h"
 #include "serialize.h"
+#include "support/allocators/zeroafterfree.h"
 #include "streams.h"
 #include "sync.h"
 #include "version.h"
@@ -71,7 +72,8 @@ public:
      * NOTE: reads the entire database into memory, so cannot be used
      * for huge databases.
      */
-    typedef std::pair<std::vector<unsigned char>, std::vector<unsigned char> > KeyValPair;
+    typedef std::vector<unsigned char, zero_after_free_allocator<unsigned char> > SalvagedBytes;
+    typedef std::pair<SalvagedBytes, SalvagedBytes> KeyValPair;
     enum class SalvageResult { FAILED, PARTIAL, COMPLETE };
     SalvageResult Salvage(const std::string& strFile, bool fAggressive, std::vector<KeyValPair>& vResult);
 
