@@ -149,7 +149,9 @@ BOOST_FIXTURE_TEST_SUITE(script_tests, BasicTestingSetup)
         };
 
         const unsigned int flags = ravenconsensus_SCRIPT_FLAGS_VERIFY_ALL;
-        BOOST_CHECK_EQUAL(verify(witnessV2, flags).first, 0);
+        const auto nativeResult = verify(witnessV2, flags);
+        BOOST_CHECK_EQUAL(nativeResult.first, 0);
+        BOOST_CHECK_EQUAL(nativeResult.second, ravenconsensus_ERR_PQ_CONTEXT_REQUIRED);
         CDataStream nativeSerialized(SER_NETWORK, PROTOCOL_VERSION);
         nativeSerialized << tx;
         ravenconsensus_error noAmountError = ravenconsensus_ERR_OK;
@@ -170,7 +172,9 @@ BOOST_FIXTURE_TEST_SUITE(script_tests, BasicTestingSetup)
             &noAmountError), 0);
         BOOST_CHECK_EQUAL(noAmountError, ravenconsensus_ERR_PQ_CONTEXT_REQUIRED);
         tx.vin[0].scriptSig = CScript() << ToByteVector(witnessV2);
-        BOOST_CHECK_EQUAL(verify(nested, flags).first, 0);
+        const auto nestedResult = verify(nested, flags);
+        BOOST_CHECK_EQUAL(nestedResult.first, 0);
+        BOOST_CHECK_EQUAL(nestedResult.second, ravenconsensus_ERR_PQ_CONTEXT_REQUIRED);
 
         tx.vin[0].scriptSig.clear();
         const auto ordinaryScript = verify(CScript() << OP_TRUE, flags);
