@@ -690,6 +690,12 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
             }
             /** RVN COIN START **/
             else if (sendTo[name_].type() == UniValue::VOBJ) {
+                if (!IsSupportedAssetDestination(destination)) {
+                    throw JSONRPCError(
+                        RPC_INVALID_ADDRESS_OR_KEY,
+                        "Ravencoin asset outputs require a legacy P2PKH address; RIP-25 witness-v2 destinations protect native RVN only");
+                }
+
                 auto asset_ = sendTo[name_].get_obj();
                 auto assetKey_ = asset_.getKeys()[0];
 
@@ -890,8 +896,13 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                         fHasOwnerChange = true;
                     }
 
-                    if (fHasOwnerChange && !IsValidDestinationString(owner_change_address.get_str()))
-                        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, owner_change_address is not a valid Ravencoin address");
+                    if (fHasOwnerChange) {
+                        const CTxDestination ownerChangeDestination = DecodeDestination(owner_change_address.get_str());
+                        if (!IsValidDestination(ownerChangeDestination))
+                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, owner_change_address is not a valid Ravencoin address");
+                        if (!IsSupportedAssetDestination(ownerChangeDestination))
+                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, owner_change_address must be a legacy P2PKH address");
+                    }
 
                     if (IsAssetNameAnRestricted(asset_name.get_str()))
                         throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, asset_name can't be a restricted asset name. Please use reissue_restricted with the correct parameters");
@@ -1057,8 +1068,13 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                         fHasOwnerChange = true;
                     }
 
-                    if (fHasOwnerChange && !IsValidDestinationString(owner_change_address.get_str()))
-                        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, owner_change_address is not a valid Ravencoin address");
+                    if (fHasOwnerChange) {
+                        const CTxDestination ownerChangeDestination = DecodeDestination(owner_change_address.get_str());
+                        if (!IsValidDestination(ownerChangeDestination))
+                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, owner_change_address is not a valid Ravencoin address");
+                        if (!IsSupportedAssetDestination(ownerChangeDestination))
+                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, owner_change_address must be a legacy P2PKH address");
+                    }
 
                     UniValue ipfs_hash = "";
                     if (has_ipfs.get_int() == 1) {
@@ -1182,9 +1198,15 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                         fHasOwnerChange = true;
                     }
 
-                    if (fHasOwnerChange && !IsValidDestinationString(owner_change_address.get_str()))
-                        throw JSONRPCError(RPC_INVALID_PARAMETER,
-                                           "Invalid parameter, owner_change_address is not a valid Ravencoin address");
+                    if (fHasOwnerChange) {
+                        const CTxDestination ownerChangeDestination = DecodeDestination(owner_change_address.get_str());
+                        if (!IsValidDestination(ownerChangeDestination))
+                            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                                               "Invalid parameter, owner_change_address is not a valid Ravencoin address");
+                        if (!IsSupportedAssetDestination(ownerChangeDestination))
+                            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                                               "Invalid parameter, owner_change_address must be a legacy P2PKH address");
+                    }
 
                     std::string strAssetName = asset_name.get_str();
 
@@ -1294,8 +1316,13 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                         fHasRootChange = true;
                     }
 
-                    if (fHasRootChange && !IsValidDestinationString(root_change_address.get_str()))
-                        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, root_change_address is not a valid Ravencoin address");
+                    if (fHasRootChange) {
+                        const CTxDestination rootChangeDestination = DecodeDestination(root_change_address.get_str());
+                        if (!IsValidDestination(rootChangeDestination))
+                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, root_change_address is not a valid Ravencoin address");
+                        if (!IsSupportedAssetDestination(rootChangeDestination))
+                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, root_change_address must be a legacy P2PKH address");
+                    }
 
                     CAmount nAmount = AmountFromValue(asset_quantity);
                     if (nAmount < QUALIFIER_ASSET_MIN_AMOUNT || nAmount > QUALIFIER_ASSET_MAX_AMOUNT)
@@ -1367,8 +1394,11 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                     if (!addresses.isArray() || addresses.size() < 1 || addresses.size() > 10)
                         throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, value for key address must be an array of size 1 to 10");
                     for (int i = 0; i < (int)addresses.size(); i++) {
-                        if (!IsValidDestinationString(addresses[i].get_str()))
+                        const CTxDestination tagDestination = DecodeDestination(addresses[i].get_str());
+                        if (!IsValidDestination(tagDestination))
                             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, supplied address is not a valid Ravencoin address");
+                        if (!IsSupportedNullAssetDestination(tagDestination))
+                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, supplied address does not support asset tag data");
                     }
 
                     CAmount changeQty = COIN;
@@ -1412,8 +1442,11 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                     if (!addresses.isArray() || addresses.size() < 1 || addresses.size() > 10)
                         throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, value for key address must be an array of size 1 to 10");
                     for (int i = 0; i < (int)addresses.size(); i++) {
-                        if (!IsValidDestinationString(addresses[i].get_str()))
+                        const CTxDestination freezeDestination = DecodeDestination(addresses[i].get_str());
+                        if (!IsValidDestination(freezeDestination))
                             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, supplied address is not a valid Ravencoin address");
+                        if (!IsSupportedNullAssetDestination(freezeDestination))
+                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, supplied address does not support asset freeze data");
                     }
 
                     // owner change
@@ -1693,8 +1726,8 @@ static void TxInErrorToJSON(const CTxIn& txin, UniValue& vErrorsRet, const std::
     entry.push_back(Pair("txid", txin.prevout.hash.ToString()));
     entry.push_back(Pair("vout", (uint64_t)txin.prevout.n));
     UniValue witness(UniValue::VARR);
-    for (unsigned int i = 0; i < txin.scriptWitness.stack.size(); i++) {
-        witness.push_back(HexStr(txin.scriptWitness.stack[i].begin(), txin.scriptWitness.stack[i].end()));
+    for (const auto& element : txin.scriptWitness.stack) {
+        witness.push_back(HexStr(element.begin(), element.end()));
     }
     entry.push_back(Pair("witness", witness));
     entry.push_back(Pair("scriptSig", HexStr(txin.scriptSig.begin(), txin.scriptSig.end())));
@@ -1780,7 +1813,12 @@ UniValue combinerawtransaction(const JSONRPCRequest& request)
         // ... and merge in other signatures:
         for (const CMutableTransaction& txv : txVariants) {
             if (txv.vin.size() > i) {
-                sigdata = CombineSignatures(prevPubKey, TransactionSignatureChecker(&txConst, i, amount), sigdata, DataFromTransaction(txv, i));
+                sigdata = CombineSignatures(
+                    prevPubKey,
+                    TransactionSignatureChecker(
+                        &txConst, i, amount,
+                        GetParams().GetConsensus().pqSignatureContext),
+                    sigdata, DataFromTransaction(txv, i));
             }
         }
 
@@ -2016,13 +2054,27 @@ UniValue signrawtransaction(const JSONRPCRequest& request)
         SignatureData sigdata;
         // Only sign SIGHASH_SINGLE if there's a corresponding output:
         if (!fHashSingle || (i < mtx.vout.size()))
-            ProduceSignature(MutableTransactionSignatureCreator(&keystore, &mtx, i, amount, nHashType), prevPubKey, sigdata);
-        sigdata = CombineSignatures(prevPubKey, TransactionSignatureChecker(&txConst, i, amount), sigdata, DataFromTransaction(mtx, i));
+            ProduceSignature(MutableTransactionSignatureCreator(
+                                 &keystore, &mtx, i, amount, nHashType,
+                                 GetParams().GetConsensus().pqSignatureContext),
+                             prevPubKey, sigdata);
+        sigdata = CombineSignatures(
+            prevPubKey,
+            TransactionSignatureChecker(
+                &txConst, i, amount,
+                GetParams().GetConsensus().pqSignatureContext),
+            sigdata, DataFromTransaction(mtx, i));
 
         UpdateTransaction(mtx, i, sigdata);
 
         ScriptError serror = SCRIPT_ERR_OK;
-        if (!VerifyScript(txin.scriptSig, prevPubKey, &txin.scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS, TransactionSignatureChecker(&txConst, i, amount), &serror)) {
+        if (!VerifyScript(
+                txin.scriptSig, prevPubKey, &txin.scriptWitness,
+                STANDARD_SCRIPT_VERIFY_FLAGS,
+                TransactionSignatureChecker(
+                    &txConst, i, amount,
+                    GetParams().GetConsensus().pqSignatureContext),
+                &serror)) {
             if (serror == SCRIPT_ERR_INVALID_STACK_OPERATION) {
                 // Unable to sign input and verification failed (possible attempt to partially sign).
                 TxInErrorToJSON(txin, vErrors, "Unable to sign input, invalid stack size (possibly missing key)");

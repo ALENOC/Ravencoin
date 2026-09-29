@@ -787,7 +787,8 @@ void CTxMemPool::removeRecursive(const CTransaction &origTx, MemPoolRemovalReaso
     }
 }
 
-void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMemPoolHeight, int flags)
+void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMemPoolHeight,
+                                int flags, bool fPQHybridActive)
 {
     // Remove transactions spending a coinbase which are now immature and no-longer-final transactions
     LOCK(cs);
@@ -812,6 +813,30 @@ void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMem
                     break;
                 }
             }
+        }
+        if (!fPQHybridActive && !txToRemove.count(it)) {
+            bool removeForPQRollback = HasPQWitnessV2Output(tx);
+            for (const CTxIn& txin : tx.vin) {
+                if (removeForPQRollback)
+                    break;
+
+                CScript prevScriptPubKey;
+                const indexed_transaction_set::const_iterator parent = mapTx.find(txin.prevout.hash);
+                if (parent != mapTx.end()) {
+                    if (txin.prevout.n >= parent->GetTx().vout.size())
+                        continue;
+                    prevScriptPubKey = parent->GetTx().vout[txin.prevout.n].scriptPubKey;
+                } else {
+                    const Coin& coin = pcoins->AccessCoin(txin.prevout);
+                    if (coin.IsSpent())
+                        continue;
+                    prevScriptPubKey = coin.out.scriptPubKey;
+                }
+
+                removeForPQRollback = SpendsPQWitnessV2Program(txin, prevScriptPubKey);
+            }
+            if (removeForPQRollback)
+                txToRemove.insert(it);
         }
         if (!validLP) {
             mapTx.modify(it, update_lock_points(lp));
@@ -848,13 +873,18 @@ void CTxMemPool::removeConflicts(const CTransaction &tx)
 void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight)
 {
     ConnectedBlockAssetData connectedBlockAssetData;
-    removeForBlock(vtx, nBlockHeight, connectedBlockAssetData);
+    removeForBlock(vtx, nBlockHeight, connectedBlockAssetData,
+                   IsTransferOverflowCheckDeployed(), false);
 }
 
 /**
  * Called when a block is connected. Removes from mempool and updates the miner fee estimator.
  */
-void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight, ConnectedBlockAssetData& connectedBlockData)
+void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx,
+                                unsigned int nBlockHeight,
+                                ConnectedBlockAssetData& connectedBlockData,
+                                bool fTransferOverflowActive,
+                                bool fTransferOverflowJustActivated)
 {
     LOCK(cs);
     std::set<uint256> setAlreadyRemoving;
@@ -970,7 +1000,7 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigne
                     if (i != mapTx.end()) {
                         CValidationState state;
                         std::vector<std::pair<std::string, uint256>> vReissueAssets;
-                        if (!setAlreadyRemoving.count(hash) && !Consensus::CheckTxAssets(i->GetTx(), state, pcoinsTip, passets, false, vReissueAssets)) {
+                        if (!setAlreadyRemoving.count(hash) && !Consensus::CheckTxAssets(i->GetTx(), state, pcoinsTip, passets, false, vReissueAssets, fTransferOverflowActive)) {
                             entries.push_back(&*i);
                             trans.emplace_back(i->GetTx());
                             setAlreadyRemoving.insert(hash);
@@ -1008,6 +1038,36 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigne
         }
         removeConflicts(tx);
         ClearPrioritisation(tx.GetHash());
+    }
+
+    // DEPLOYMENT_TRANSFER_OVERFLOW tightens validity for transactions that
+    // were admissible in LOCKED_IN. Revalidate the remaining pool exactly on
+    // the false-to-true transition, after connected/conflicting transactions
+    // have been removed and the new UTXO/asset state has been flushed. The
+    // mempool-backed view preserves parent outputs while invalid roots and all
+    // of their descendants are collected before mutation.
+    if (fTransferOverflowJustActivated) {
+        AssertLockHeld(cs_main);
+        assert(fTransferOverflowActive);
+        CCoinsViewMemPool viewMemPool(pcoinsTip, *this);
+        CCoinsViewCache view(&viewMemPool);
+        setEntries invalidRoots;
+        for (txiter it = mapTx.begin(); it != mapTx.end(); ++it) {
+            CValidationState state;
+            std::vector<std::pair<std::string, uint256>> vReissueAssets;
+            if (!Consensus::CheckTxAssets(it->GetTx(), state, view, passets,
+                                          false, vReissueAssets, true)) {
+                invalidRoots.insert(it);
+                LogPrint(BCLog::MEMPOOL,
+                         "Removing tx %s at transfer-overflow activation: %s\n",
+                         it->GetTx().GetHash().ToString(), state.GetRejectReason());
+            }
+        }
+
+        setEntries invalidWithDescendants;
+        for (txiter it : invalidRoots)
+            CalculateDescendants(it, invalidWithDescendants);
+        RemoveStaged(invalidWithDescendants, false, MemPoolRemovalReason::REORG);
     }
     /** RVN END */
 
@@ -1056,14 +1116,14 @@ void CTxMemPool::clear()
     _clear();
 }
 
-static void CheckInputsAndUpdateCoins(const CTransaction& tx, CCoinsViewCache& mempoolDuplicate, const int64_t spendheight) {
+static void CheckInputsAndUpdateCoins(const CTransaction& tx, CCoinsViewCache& mempoolDuplicate, const int64_t spendheight, bool fTransferOverflowActive) {
     CValidationState state;
     CAmount txfee = 0;
     bool fCheckResult = tx.IsCoinBase() || Consensus::CheckTxInputs(tx, state, mempoolDuplicate, spendheight, txfee);
     /** RVN START */
     if (AreAssetsDeployed()) {
         std::vector<std::pair<std::string, uint256>> vReissueAssets;
-        bool fCheckAssets = Consensus::CheckTxAssets(tx, state, mempoolDuplicate, passets, false, vReissueAssets);
+        bool fCheckAssets = Consensus::CheckTxAssets(tx, state, mempoolDuplicate, passets, false, vReissueAssets, fTransferOverflowActive);
         assert(fCheckResult && fCheckAssets);
     } else
         assert(fCheckResult);
@@ -1087,6 +1147,9 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
     CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(pcoins));
     const int64_t spendheight = GetSpendHeight(mempoolDuplicate);
 
+    // Resolve the active-tip policy context before taking mempool.cs to preserve
+    // the global cs_main -> mempool.cs lock order.
+    const bool transferOverflowActive = IsTransferOverflowCheckDeployed();
     LOCK(cs);
     std::list<const CTxMemPoolEntry*> waitingOnDependants;
     for (indexed_transaction_set::const_iterator it = mapTx.begin(); it != mapTx.end(); it++) {
@@ -1164,7 +1227,7 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
         if (fDependsWait)
             waitingOnDependants.push_back(&(*it));
         else {
-            CheckInputsAndUpdateCoins(tx, mempoolDuplicate, spendheight);
+            CheckInputsAndUpdateCoins(tx, mempoolDuplicate, spendheight, transferOverflowActive);
         }
     }
     unsigned int stepsSinceLastRemove = 0;
@@ -1177,7 +1240,7 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
             stepsSinceLastRemove++;
             assert(stepsSinceLastRemove < waitingOnDependants.size());
         } else {
-            CheckInputsAndUpdateCoins(entry->GetTx(), mempoolDuplicate, spendheight);
+            CheckInputsAndUpdateCoins(entry->GetTx(), mempoolDuplicate, spendheight, transferOverflowActive);
             stepsSinceLastRemove = 0;
         }
     }

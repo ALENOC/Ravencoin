@@ -329,13 +329,16 @@ namespace {
 /** Convert from one power-of-2 number base to another. */
 template<int frombits, int tobits, bool pad>
 bool ConvertBits(std::vector<uint8_t>& out, const std::vector<uint8_t>& in) {
-    int acc = 0;
+    static_assert(frombits > 0 && frombits <= 8 && tobits > 0 && tobits <= 8,
+                  "ConvertBits requires byte-sized input and output groups");
+    uint32_t acc = 0;
     int bits = 0;
-    const int maxv = (1 << tobits) - 1;
+    const uint32_t maxv = (1U << tobits) - 1U;
+    const uint32_t max_acc = (1U << (frombits + tobits - 1)) - 1U;
     for (size_t i = 0; i < in.size(); ++i) {
-        int value = in[i];
-        if (value < 0 || (value >> frombits)) return false;
-        acc = (acc << frombits) | value;
+        const uint32_t value = in[i];
+        if (value >> frombits) return false;
+        acc = ((acc << frombits) | value) & max_acc;
         bits += frombits;
         while (bits >= tobits) {
             bits -= tobits;

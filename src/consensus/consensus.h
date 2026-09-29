@@ -43,6 +43,8 @@ static const int WITNESS_SCALE_FACTOR = 4;
 
 static const size_t MIN_TRANSACTION_WEIGHT = WITNESS_SCALE_FACTOR * 60; // 60 is the lower bound for the size of a valid CTransaction
 static const size_t MIN_SERIALIZABLE_TRANSACTION_WEIGHT = WITNESS_SCALE_FACTOR * 10; // 10 is the lower bound for a serialized CTransaction
+/** No valid phase-2 block can contain more transactions than this. */
+static const size_t MAX_BLOCK_TRANSACTION_COUNT = MAX_BLOCK_WEIGHT_RIP25_PHASE2 / MIN_TRANSACTION_WEIGHT;
 
 #define UNUSED_VAR     __attribute__ ((unused))
 //! This variable needs to in this class because undo.h uses it. However because it is in this class
@@ -52,7 +54,6 @@ UNUSED_VAR static bool fRip5IsActive = false;
 UNUSED_VAR static bool fTransferScriptIsActive = false;
 UNUSED_VAR static bool fEnforcedValuesIsActive = false;
 UNUSED_VAR static bool fCheckCoinbaseAssetsIsActive = false;
-UNUSED_VAR static bool fCheckTransferOverflowIsActive = false;
 
 /** Structural upper bounds supported by this binary. Exact active limits are contextual. */
 unsigned int GetMaxBlockWeight();
@@ -61,6 +62,7 @@ unsigned int GetMaxBlockSerializedSize();
 /** RIP-25 activation/resource state for the block after pindexPrev. */
 bool IsPQWitnessDiscountActive(const CBlockIndex* pindexPrev, const Consensus::Params& params);
 unsigned int GetMaxBlockWeightForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params);
+unsigned int GetMaxBlockSerializedSizeForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params);
 
 /** Flags for nSequence and nLockTime locks */
 enum {

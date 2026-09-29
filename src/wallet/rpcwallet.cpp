@@ -6,6 +6,7 @@
 
 #include "amount.h"
 #include "base58.h"
+#include "bech32.h"
 #include "chain.h"
 #include "consensus/validation.h"
 #include "core_io.h"
@@ -24,6 +25,7 @@
 #include "util.h"
 #include "utiltime.h"
 #include "utilmoneystr.h"
+#include "pqkey.h"
 #include "wallet/coincontrol.h"
 #include "wallet/feebumper.h"
 #include "wallet/wallet.h"
@@ -62,7 +64,15 @@ std::string HelpRequiringPassphrase(CWallet * const pwallet)
 
 bool EnsureWalletIsAvailable(CWallet * const pwallet, bool avoidException)
 {
-    if (pwallet) return true;
+    if (pwallet) {
+        if (!pwallet->IsEncryptionRewritePending())
+            return true;
+        if (avoidException)
+            return false;
+        throw JSONRPCError(
+            RPC_WALLET_ERROR,
+            "Wallet encryption recovery is pending. Restart before using this wallet.");
+    }
     if (avoidException) return false;
     if (::vpwallets.empty()) {
         // Note: It isn't currently possible to trigger this error because
@@ -222,6 +232,32 @@ UniValue getnewaddress(const JSONRPCRequest& request)
     return EncodeDestination(keyID);
 }
 
+
+UniValue getnewpqaddress(const JSONRPCRequest& request)
+{
+    CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) return NullUniValue;
+    if (request.fHelp || request.params.size() > 1)
+        throw std::runtime_error("getnewpqaddress ( \"account\" )\nReturns a new post-quantum Raven address (witness v2, ML-DSA-44).\n");
+    LOCK2(cs_main, pwallet->cs_wallet);
+
+    // RIP-25 witness-v2 outputs are anyone-can-spend to pre-activation consensus.
+    // Do not let mainnet wallets generate addresses that are not yet protected.
+    if (!IsPQHybridDeployed())
+        throw JSONRPCError(RPC_WALLET_ERROR, "RIP-25 is not active on this network; refusing to generate an unprotected witness-v2 address");
+
+    EnsureWalletIsUnlocked(pwallet);
+
+    std::string strAccount;
+    if (!request.params[0].isNull()) strAccount = AccountFromValue(request.params[0]);
+    CPQPubKey pqPubKey;
+    if (!pwallet->GenerateNewPQKey(pqPubKey))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to derive and persist ML-DSA-44 keypair");
+    uint256 witnessProgram = pqPubKey.GetWitnessProgram();
+    WitnessV2PQDestination dest(witnessProgram);
+    pwallet->SetAddressBook(dest, strAccount, "receive");
+    return EncodeDestination(dest);
+}
 
 CTxDestination GetAccountAddress(CWallet* const pwallet, std::string strAccount, bool bForceNew=false)
 {
@@ -1369,6 +1405,7 @@ public:
         }
         return false;
     }
+    bool operator()(const WitnessV2PQDestination &dest) const { return false; }
 };
 
 UniValue addwitnessaddress(const JSONRPCRequest& request)
@@ -2594,7 +2631,15 @@ UniValue encryptwallet(const JSONRPCRequest& request)
             "encryptwallet <passphrase>\n"
             "Encrypts the wallet with <passphrase>.");
 
+    const bool wasCrypted = pwallet->IsCrypted();
     if (!pwallet->EncryptWallet(strWalletPass)) {
+        if (!wasCrypted && pwallet->IsCrypted()) {
+            StartShutdown();
+            throw JSONRPCError(
+                RPC_WALLET_ENCRYPTION_FAILED,
+                "Error: Wallet encryption failed after the live key state changed. "
+                "The Raven server is stopping; restart before using the wallet.");
+        }
         throw JSONRPCError(RPC_WALLET_ENCRYPTION_FAILED, "Error: Failed to encrypt the wallet.");
     }
 
@@ -3542,6 +3587,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "getmasterkeyinfo",         &getmasterkeyinfo,         {} },
     { "wallet",             "getmywords",               &getmywords,                        {} },
     { "wallet",             "getnewaddress",            &getnewaddress,            {"account"} },
+    { "wallet",             "getnewpqaddress",          &getnewpqaddress,          {"account"} },
     { "wallet",             "getrawchangeaddress",      &getrawchangeaddress,      {} },
     { "wallet",             "getreceivedbyaccount",     &getreceivedbyaccount,     {"account","minconf"} },
     { "wallet",             "getreceivedbyaddress",     &getreceivedbyaddress,     {"address","minconf"} },

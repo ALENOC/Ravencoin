@@ -13,11 +13,25 @@
 #include "arith_uint256.h"
 
 #include <assert.h>
+#include <stdexcept>
 #include "chainparamsseeds.h"
 
 //TODO: Take these out
 extern double algoHashTotal[16];
 extern int algoHashHits[16];
+
+template <std::size_t N>
+static Consensus::PQSignatureContext MakePQSignatureContext(const char (&literal)[N])
+{
+    static_assert(N == Consensus::PQ_SIGNATURE_CONTEXT_BYTES + 1,
+                  "RIP-25 context must contain 81 bytes plus the C string terminator");
+    Consensus::PQSignatureContext context{};
+    for (std::size_t i = 0; i < context.size(); ++i)
+        context[i] = static_cast<unsigned char>(literal[i]);
+    if (!Consensus::IsValidPQSignatureContext(context))
+        throw std::runtime_error("invalid RIP-25 ML-DSA network context");
+    return context;
+}
 
 
 static CBlock CreateGenesisBlock(const char* pszTimestamp, const CScript& genesisOutputScript, uint32_t nTime, uint32_t nNonce, uint32_t nBits, int32_t nVersion, const CAmount& genesisReward)
@@ -168,7 +182,7 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideRuleChangeActivationThreshold = 1411; // Approx 70% of 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideMinerConfirmationWindow = 2016;
 
-        // RIP-25: Post-Quantum Hybrid Signatures (ECDSA + ML-DSA-44)
+        // RIP-25: ML-DSA-44 witness-v2 deployment (historical DEPLOYMENT_PQ_HYBRID enum name retained)
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 1798761600; // placeholder
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1830297600; // placeholder
@@ -200,6 +214,8 @@ public:
         consensus.hashGenesisBlock = genesis.GetX16RHash();
 
         assert(consensus.hashGenesisBlock == uint256S("0000006b444bc2f2ffe627be9d9e7e7a0730000870ef6eb6da46c8eae389df90"));
+        consensus.pqSignatureContext = MakePQSignatureContext(
+            "RVN/ML-DSA-44/v1/0000006b444bc2f2ffe627be9d9e7e7a0730000870ef6eb6da46c8eae389df90");
         assert(genesis.hashMerkleRoot == uint256S("28ff00a867739a352523808d301f504bc4547699398d70faf2266a8bae5f3516"));
 
         vSeeds.emplace_back("seed-raven.bitactivate.com", false);
@@ -441,6 +457,8 @@ public:
 
         //Test MerkleRoot and GenesisBlock
         assert(consensus.hashGenesisBlock == uint256S("0x000000ecfc5e6324a079542221d00e10362bdc894d56500c414060eea8a3ad5a"));
+        consensus.pqSignatureContext = MakePQSignatureContext(
+            "RVN/ML-DSA-44/v1/000000ecfc5e6324a079542221d00e10362bdc894d56500c414060eea8a3ad5a");
         assert(genesis.hashMerkleRoot == uint256S("28ff00a867739a352523808d301f504bc4547699398d70faf2266a8bae5f3516"));
 
         vFixedSeeds.clear();
@@ -672,6 +690,8 @@ public:
         consensus.hashGenesisBlock = genesis.GetX16RHash();
 
         assert(consensus.hashGenesisBlock == uint256S("0x0b2c703dc93bb63a36c4e33b85be4855ddbca2ac951a7a0a29b8de0408200a3c "));
+        consensus.pqSignatureContext = MakePQSignatureContext(
+            "RVN/ML-DSA-44/v1/0b2c703dc93bb63a36c4e33b85be4855ddbca2ac951a7a0a29b8de0408200a3c");
         assert(genesis.hashMerkleRoot == uint256S("0x28ff00a867739a352523808d301f504bc4547699398d70faf2266a8bae5f3516"));
 
         vFixedSeeds.clear(); //!< Regtest mode doesn't have any fixed seeds.

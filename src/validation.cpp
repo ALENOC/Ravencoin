@@ -122,6 +122,8 @@ CBlockPolicyEstimator feeEstimator;
 CTxMemPool mempool(&feeEstimator);
 
 static void CheckBlockIndex(const Consensus::Params& consensusParams);
+static bool IsPQHybridActiveLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params);
+static bool IsTransferOverflowCheckActiveLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params);
 
 /** Constant stuff for coinbase transactions we create: */
 CScript COINBASE_FLAGS;
@@ -265,7 +267,7 @@ enum FlushStateMode {
 static bool FlushStateToDisk(const CChainParams& chainParams, CValidationState &state, FlushStateMode mode, int nManualPruneHeight=0);
 static void FindFilesToPruneManual(std::set<int>& setFilesToPrune, int nManualPruneHeight);
 static void FindFilesToPrune(std::set<int>& setFilesToPrune, uint64_t nPruneAfterHeight);
-bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsViewCache &inputs, bool fScriptChecks, unsigned int flags, bool cacheSigStore, bool cacheFullScriptStore, PrecomputedTransactionData& txdata, std::vector<CScriptCheck> *pvChecks = nullptr);
+bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsViewCache &inputs, bool fScriptChecks, unsigned int flags, bool cacheSigStore, bool cacheFullScriptStore, PrecomputedTransactionData& txdata, std::vector<CScriptCheck> *pvChecks = nullptr, const Consensus::PQSignatureContext& pqSignatureContext = Consensus::NullPQSignatureContext());
 static FILE* OpenUndoFile(const CDiskBlockPos &pos, bool fReadOnly = false);
 
 bool CheckFinalTx(const CTransaction &tx, int flags)
@@ -472,8 +474,11 @@ void UpdateMempoolForReorg(DisconnectedBlockTransactions &disconnectpool, bool f
     // the disconnectpool that were added back and cleans up the mempool state.
     mempool.UpdateTransactionsFromBlock(vHashUpdate);
 
-    // We also need to remove any now-immature transactions
-    mempool.removeForReorg(pcoinsTip, chainActive.Tip()->nHeight + 1, STANDARD_LOCKTIME_VERIFY_FLAGS);
+    // Remove transactions invalidated by the new tip's maturity, lock-time,
+    // or contextual pre-activation RIP-25 policy.
+    const bool pqEnabled = IsPQHybridActiveLocked(chainActive.Tip(), GetParams().GetConsensus());
+    mempool.removeForReorg(pcoinsTip, chainActive.Tip()->nHeight + 1,
+                           STANDARD_LOCKTIME_VERIFY_FLAGS, pqEnabled);
     // Re-limit mempool size, in case we added any transactions
     LimitMempoolSize(mempool, gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000, gArgs.GetArg("-mempoolexpiry", DEFAULT_MEMPOOL_EXPIRY) * 60 * 60);
 }
@@ -481,7 +486,8 @@ void UpdateMempoolForReorg(DisconnectedBlockTransactions &disconnectpool, bool f
 // Used to avoid mempool polluting consensus critical paths if CCoinsViewMempool
 // were somehow broken and returning the wrong scriptPubKeys
 static bool CheckInputsFromMempoolAndCache(const CTransaction& tx, CValidationState &state, const CCoinsViewCache &view, CTxMemPool& pool,
-                 unsigned int flags, bool cacheSigStore, PrecomputedTransactionData& txdata) {
+                 unsigned int flags, bool cacheSigStore, PrecomputedTransactionData& txdata,
+                 const Consensus::PQSignatureContext& pqSignatureContext) {
     AssertLockHeld(cs_main);
 
     // pool.cs should be locked already, but go ahead and re-take the lock here
@@ -511,7 +517,8 @@ static bool CheckInputsFromMempoolAndCache(const CTransaction& tx, CValidationSt
         }
     }
 
-    return CheckInputs(tx, state, view, true, flags, cacheSigStore, true, txdata);
+    return CheckInputs(tx, state, view, true, flags, cacheSigStore, true, txdata,
+                       nullptr, pqSignatureContext);
 }
 
 static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool& pool, CValidationState& state, const CTransactionRef& ptx,
@@ -538,9 +545,17 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
 
     // Reject transactions with witness before segregated witness activates (override with -prematurewitness)
     bool witnessEnabled = IsWitnessEnabled(chainActive.Tip(), chainparams.GetConsensus());
+    const bool pqEnabled = IsPQHybridActiveLocked(chainActive.Tip(), chainparams.GetConsensus());
+    const bool transferOverflowActive = IsTransferOverflowCheckActiveLocked(chainActive.Tip(), chainparams.GetConsensus());
     if (!gArgs.GetBoolArg("-prematurewitness", false) && tx.HasWitness() && !witnessEnabled) {
         return state.DoS(0, false, REJECT_NONSTANDARD, "no-witness-yet", true);
     }
+
+    // RIP-25: before BIP9 activation witness-v2 is deliberately an unknown
+    // witness program to legacy consensus. Upgraded policy must not relay or
+    // mine newly-created v2 outputs until ML-DSA enforcement is ACTIVE.
+    if (!pqEnabled && HasPQWitnessV2Output(tx))
+        return state.DoS(0, false, REJECT_NONSTANDARD, "premature-pq-witness", true);
 
     // Rather not work on nonstandard transactions (unless -testnet/-regtest)
     std::string reason;
@@ -665,7 +680,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
         }
 
         if (AreAssetsDeployed()) {
-            if (!Consensus::CheckTxAssets(tx, state, view, GetCurrentAssetCache(), true, vReissueAssets))
+            if (!Consensus::CheckTxAssets(tx, state, view, GetCurrentAssetCache(), true, vReissueAssets, transferOverflowActive))
                 return error("%s: Consensus::CheckTxAssets: %s, %s", __func__, tx.GetHash().ToString(),
                              FormatStateMessage(state));
         }
@@ -679,7 +694,9 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
         if (tx.HasWitness() && fRequireStandard && !IsWitnessStandard(tx, view))
             return state.DoS(0, false, REJECT_NONSTANDARD, "bad-witness-nonstandard", true);
 
-        int64_t nSigOpsCost = GetTransactionSigOpCost(tx, view, STANDARD_SCRIPT_VERIFY_FLAGS);
+        const unsigned int sigOpFlags = STANDARD_SCRIPT_VERIFY_FLAGS |
+            (pqEnabled ? SCRIPT_VERIFY_PQ_HYBRID : SCRIPT_VERIFY_NONE);
+        int64_t nSigOpsCost = GetTransactionSigOpCost(tx, view, sigOpFlags);
 
         // nModifiedFees includes any fee deltas from PrioritiseTransaction
         CAmount nModifiedFees = nFees;
@@ -882,6 +899,8 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
         }
 
         unsigned int scriptVerifyFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
+        if (pqEnabled)
+            scriptVerifyFlags |= SCRIPT_VERIFY_PQ_HYBRID;
         if (!chainparams.RequireStandard()) {
             scriptVerifyFlags = gArgs.GetArg("-promiscuousmempoolflags", scriptVerifyFlags);
         }
@@ -889,13 +908,14 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
         // Check against previous transactions
         // This is done last to help prevent CPU exhaustion denial-of-service attacks.
         PrecomputedTransactionData txdata(tx);
-        if (!CheckInputs(tx, state, view, true, scriptVerifyFlags, true, false, txdata)) {
+        if (!CheckInputs(tx, state, view, true, scriptVerifyFlags, true, false,
+                         txdata, nullptr, chainparams.GetConsensus().pqSignatureContext)) {
             // SCRIPT_VERIFY_CLEANSTACK requires SCRIPT_VERIFY_WITNESS, so we
             // need to turn both off, and compare against just turning off CLEANSTACK
             // to see if the failure is specifically due to witness validation.
             CValidationState stateDummy; // Want reported failures to be from first CheckInputs
-            if (!tx.HasWitness() && CheckInputs(tx, stateDummy, view, true, scriptVerifyFlags & ~(SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_CLEANSTACK), true, false, txdata) &&
-                !CheckInputs(tx, stateDummy, view, true, scriptVerifyFlags & ~SCRIPT_VERIFY_CLEANSTACK, true, false, txdata)) {
+            if (!tx.HasWitness() && CheckInputs(tx, stateDummy, view, true, scriptVerifyFlags & ~(SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_CLEANSTACK), true, false, txdata, nullptr, chainparams.GetConsensus().pqSignatureContext) &&
+                !CheckInputs(tx, stateDummy, view, true, scriptVerifyFlags & ~SCRIPT_VERIFY_CLEANSTACK, true, false, txdata, nullptr, chainparams.GetConsensus().pqSignatureContext)) {
                 // Only the witness is missing, so the transaction itself may be fine.
                 state.SetCorruptionPossible();
             }
@@ -918,7 +938,10 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
         // invalid blocks (using TestBlockValidity), however allowing such
         // transactions into the mempool can be exploited as a DoS attack.
         unsigned int currentBlockScriptVerifyFlags = GetBlockScriptFlags(chainActive.Tip(), GetParams().GetConsensus());
-        if (!CheckInputsFromMempoolAndCache(tx, state, view, pool, currentBlockScriptVerifyFlags, true, txdata))
+        if (!CheckInputsFromMempoolAndCache(tx, state, view, pool,
+                                            currentBlockScriptVerifyFlags, true,
+                                            txdata,
+                                            chainparams.GetConsensus().pqSignatureContext))
         {
             // If we're using promiscuousmempoolflags, we may hit this normally
             // Check if current block has some flags that scriptVerifyFlags
@@ -927,7 +950,9 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
                 return error("%s: BUG! PLEASE REPORT THIS! ConnectInputs failed against latest-block but not STANDARD flags %s, %s",
                     __func__, hash.ToString(), FormatStateMessage(state));
             } else {
-                if (!CheckInputs(tx, state, view, true, MANDATORY_SCRIPT_VERIFY_FLAGS, true, false, txdata)) {
+                if (!CheckInputs(tx, state, view, true, MANDATORY_SCRIPT_VERIFY_FLAGS,
+                                 true, false, txdata, nullptr,
+                                 chainparams.GetConsensus().pqSignatureContext)) {
                     return error("%s: ConnectInputs failed against MANDATORY but not STANDARD flags due to promiscuous mempool %s, %s",
                         __func__, hash.ToString(), FormatStateMessage(state));
                 } else {
@@ -1552,7 +1577,11 @@ void UpdateCoins(const CTransaction& tx, CCoinsViewCache& inputs, int nHeight)
 bool CScriptCheck::operator()() {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
     const CScriptWitness *witness = &ptxTo->vin[nIn].scriptWitness;
-    return VerifyScript(scriptSig, m_tx_out.scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, m_tx_out.nValue, cacheStore, *txdata), &error);
+    return VerifyScript(scriptSig, m_tx_out.scriptPubKey, witness, nFlags,
+                        CachingTransactionSignatureChecker(ptxTo, nIn, m_tx_out.nValue,
+                                                           cacheStore, *txdata,
+                                                           pqSignatureContext),
+                        &error);
 }
 
 int GetSpendHeight(const CCoinsViewCache& inputs)
@@ -1589,23 +1618,33 @@ void InitScriptExecutionCache() {
  *
  * Non-static (and re-declared) in src/test/txvalidationcache_tests.cpp
  */
-bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsViewCache &inputs, bool fScriptChecks, unsigned int flags, bool cacheSigStore, bool cacheFullScriptStore, PrecomputedTransactionData& txdata, std::vector<CScriptCheck> *pvChecks)
+bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsViewCache &inputs, bool fScriptChecks, unsigned int flags, bool cacheSigStore, bool cacheFullScriptStore, PrecomputedTransactionData& txdata, std::vector<CScriptCheck> *pvChecks, const Consensus::PQSignatureContext& pqSignatureContext)
 {
     if (!tx.IsCoinBase())
     {
-        if (pvChecks)
-            pvChecks->reserve(tx.vin.size());
-
         // The first loop above does all the inexpensive checks.
         // Only if ALL inputs pass do we perform expensive ECDSA signature checks.
         // Helps prevent CPU exhaustion attacks.
 
-        // Skip script verification when connecting blocks under the
-        // assumevalid block. Assuming the assumevalid block is valid this
-        // is safe because block merkle hashes are still computed and checked,
-        // Of course, if an assumed valid block is invalid due to false scriptSigs
-        // this optimization would allow an invalid chain to be accepted.
-        if (fScriptChecks) {
+        // Under assumevalid, retain the exact RIP-25 predicate for native
+        // witness-v2 inputs and every P2SH input, since P2SH can hide the PQ
+        // redeem program. Classical non-P2SH scripts retain Core's historical
+        // optimization. A selective result is never cached as a full-script
+        // validation result.
+        const bool fRIP25SelectiveChecks =
+            !fScriptChecks && (flags & SCRIPT_VERIFY_PQ_HYBRID);
+        // Selective assumevalid checks must execute inline. Otherwise callers
+        // with a disabled check queue could silently discard deferred PQ work.
+        std::vector<CScriptCheck>* pDeferredChecks =
+            fRIP25SelectiveChecks ? nullptr : pvChecks;
+        if (pDeferredChecks)
+            pDeferredChecks->reserve(tx.vin.size());
+
+        if (fScriptChecks || fRIP25SelectiveChecks) {
+            if ((flags & SCRIPT_VERIFY_PQ_HYBRID) &&
+                !Consensus::IsValidPQSignatureContext(pqSignatureContext)) {
+                return state.Error("CheckInputs: missing or invalid RIP-25 ML-DSA network context");
+            }
             // First check if script executions have been cached with the same
             // flags. Note that this assumes that the inputs provided are
             // correct (ie that the transaction hash which is in tx's prevouts
@@ -1615,7 +1654,13 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
             // We only use the first 19 bytes of nonce to avoid a second SHA
             // round - giving us 19 + 32 + 4 = 55 bytes (+ 8 + 1 = 64)
             static_assert(55 - sizeof(flags) - 32 >= 128/8, "Want at least 128 bits of nonce for script execution cache");
-            CSHA256().Write(scriptExecutionCacheNonce.begin(), 55 - sizeof(flags) - 32).Write(tx.GetWitnessHash().begin(), 32).Write((unsigned char*)&flags, sizeof(flags)).Finalize(hashCacheEntry.begin());
+            CSHA256 cacheHasher;
+            cacheHasher.Write(scriptExecutionCacheNonce.begin(), 55 - sizeof(flags) - 32)
+                       .Write(tx.GetWitnessHash().begin(), 32)
+                       .Write((unsigned char*)&flags, sizeof(flags));
+            if (flags & SCRIPT_VERIFY_PQ_HYBRID)
+                cacheHasher.Write(pqSignatureContext.data(), pqSignatureContext.size());
+            cacheHasher.Finalize(hashCacheEntry.begin());
             AssertLockHeld(cs_main); //TODO: Remove this requirement by making CuckooCache not require external locks
             if (scriptExecutionCache.contains(hashCacheEntry, !cacheFullScriptStore)) {
                 return true;
@@ -1626,6 +1671,17 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                 const Coin& coin = inputs.AccessCoin(prevout);
                 assert(!coin.IsSpent());
 
+                if (fRIP25SelectiveChecks) {
+                    int witnessVersion = -1;
+                    std::vector<unsigned char> witnessProgram;
+                    const bool fNativeWitnessV2 =
+                        coin.out.scriptPubKey.IsWitnessProgram(witnessVersion, witnessProgram) &&
+                        witnessVersion == 2;
+                    if (!fNativeWitnessV2 && !coin.out.scriptPubKey.IsPayToScriptHash()) {
+                        continue;
+                    }
+                }
+
                 // We very carefully only pass in things to CScriptCheck which
                 // are clearly committed to by tx' witness hash. This provides
                 // a sanity check that our caching is not introducing consensus
@@ -1633,10 +1689,11 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                 // spent being checked as a part of CScriptCheck.
 
                 // Verify signature
-                CScriptCheck check(coin.out, tx, i, flags, cacheSigStore, &txdata);
-                if (pvChecks) {
-                    pvChecks->push_back(CScriptCheck());
-                    check.swap(pvChecks->back());
+                CScriptCheck check(coin.out, tx, i, flags, cacheSigStore, &txdata,
+                                   pqSignatureContext);
+                if (pDeferredChecks) {
+                    pDeferredChecks->push_back(CScriptCheck());
+                    check.swap(pDeferredChecks->back());
                 } else if (!check()) {
                     if (flags & STANDARD_NOT_MANDATORY_VERIFY_FLAGS) {
                         // Check whether the failure was caused by a
@@ -1646,7 +1703,8 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                         // avoid splitting the network between upgraded and
                         // non-upgraded nodes.
                         CScriptCheck check2(coin.out, tx, i,
-                                flags & ~STANDARD_NOT_MANDATORY_VERIFY_FLAGS, cacheSigStore, &txdata);
+                                flags & ~STANDARD_NOT_MANDATORY_VERIFY_FLAGS,
+                                cacheSigStore, &txdata, pqSignatureContext);
                         if (check2())
                             return state.Invalid(false, REJECT_NONSTANDARD, strprintf("non-mandatory-script-verify-flag (%s)", ScriptErrorString(check.GetScriptError())));
                     }
@@ -1662,7 +1720,7 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                 }
             }
 
-            if (cacheFullScriptStore && !pvChecks) {
+            if (fScriptChecks && cacheFullScriptStore && !pDeferredChecks) {
                 // We executed all of the provided scripts, and were told to
                 // cache the result. Do so now.
                 scriptExecutionCache.insert(hashCacheEntry);
@@ -2291,6 +2349,108 @@ void ThreadScriptCheck() {
 // Protected by cs_main
 VersionBitsCache versionbitscache;
 
+static bool IsTransferOverflowCheckActiveLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    AssertLockHeld(cs_main);
+    return VersionBitsState(pindexPrev, params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW, versionbitscache) == THRESHOLD_ACTIVE;
+}
+
+bool IsTransferOverflowCheckActive(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    LOCK(cs_main);
+    return IsTransferOverflowCheckActiveLocked(pindexPrev, params);
+}
+
+static bool IsPQHybridActiveLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    AssertLockHeld(cs_main);
+    // Test chains may explicitly force-enable RIP-25; mainnet follows BIP9.
+    if (params.nPQHybridEnabled)
+        return true;
+    return VersionBitsState(pindexPrev, params, Consensus::DEPLOYMENT_PQ_HYBRID, versionbitscache) == THRESHOLD_ACTIVE;
+}
+
+bool IsPQWitnessDiscountActive(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    AssertLockHeld(cs_main);
+    return IsPQHybridActiveLocked(pindexPrev, params);
+}
+
+static bool IsPQWitnessV2Prevout(const CScript& scriptPubKey)
+{
+    int witnessVersion = -1;
+    std::vector<unsigned char> witnessProgram;
+    return scriptPubKey.IsWitnessProgram(witnessVersion, witnessProgram) &&
+           witnessVersion == 2 && witnessProgram.size() == 32;
+}
+
+static int64_t GetContextualPQWitnessDiscount(const CTransaction& tx, const CCoinsViewCache& view)
+{
+    int64_t discount = 0;
+    for (const auto& txin : tx.vin) {
+        const Coin& coin = view.AccessCoin(txin.prevout);
+        if (coin.IsSpent() || !IsPQWitnessV2Prevout(coin.out.scriptPubKey))
+            continue;
+        discount += GetPQWitnessInputDiscount(txin);
+    }
+    return discount;
+}
+
+int64_t GetContextualTransactionWeight(const CTransaction& tx, const CCoinsViewCache& view, bool pqWitnessDiscountActive)
+{
+    const int64_t standardWeight = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * (WITNESS_SCALE_FACTOR - 1)
+                                 + ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+    return standardWeight - (pqWitnessDiscountActive ? GetContextualPQWitnessDiscount(tx, view) : 0);
+}
+
+static int GetPQHybridActivationHeightLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    AssertLockHeld(cs_main);
+    if (params.nPQHybridEnabled)
+        return 0;
+    if (VersionBitsState(pindexPrev, params, Consensus::DEPLOYMENT_PQ_HYBRID, versionbitscache) != THRESHOLD_ACTIVE)
+        return -1;
+    return VersionBitsStateSinceHeight(pindexPrev, params, Consensus::DEPLOYMENT_PQ_HYBRID, versionbitscache);
+}
+
+static unsigned int GetMaxBlockWeightForPrevLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    AssertLockHeld(cs_main);
+    const int activationHeight = GetPQHybridActivationHeightLocked(pindexPrev, params);
+    if (activationHeight < 0)
+        return MAX_BLOCK_WEIGHT_RIP2;
+
+    const int candidateHeight = pindexPrev ? pindexPrev->nHeight + 1 : 0;
+    assert(params.nPowTargetSpacing > 0);
+    const int64_t blocksPerYear = (365LL * 24 * 60 * 60) / params.nPowTargetSpacing;
+    if ((int64_t)candidateHeight >= (int64_t)activationHeight + blocksPerYear)
+        return MAX_BLOCK_WEIGHT_RIP25_PHASE2;
+    return MAX_BLOCK_WEIGHT_RIP25_PHASE1;
+}
+
+static unsigned int GetMaxBlockSerializedSizeForPrevLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    AssertLockHeld(cs_main);
+    const unsigned int activeWeightLimit = GetMaxBlockWeightForPrevLocked(pindexPrev, params);
+    if (activeWeightLimit == MAX_BLOCK_WEIGHT_RIP25_PHASE2)
+        return MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE2;
+    if (activeWeightLimit == MAX_BLOCK_WEIGHT_RIP25_PHASE1)
+        return MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE1;
+    return MAX_BLOCK_SERIALIZED_SIZE_RIP2;
+}
+
+unsigned int GetMaxBlockWeightForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    LOCK(cs_main);
+    return GetMaxBlockWeightForPrevLocked(pindexPrev, params);
+}
+
+unsigned int GetMaxBlockSerializedSizeForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    LOCK(cs_main);
+    return GetMaxBlockSerializedSizeForPrevLocked(pindexPrev, params);
+}
+
 int32_t ComputeBlockVersion(const CBlockIndex* pindexPrev, const Consensus::Params& params)
 {
     LOCK(cs_main);
@@ -2365,6 +2525,11 @@ static unsigned int GetBlockScriptFlags(const CBlockIndex* pindex, const Consens
     if (IsWitnessEnabled(pindex->pprev, consensusparams)) {
     		flags |= SCRIPT_VERIFY_WITNESS;
     		flags |= SCRIPT_VERIFY_NULLDUMMY;
+    }
+
+    // RIP-25: enforce ML-DSA witness-v2 rules only when the deployment is active.
+    if (IsPQHybridActiveLocked(pindex->pprev, consensusparams)) {
+        flags |= SCRIPT_VERIFY_PQ_HYBRID;
     }
 
     return flags;
@@ -2486,8 +2651,12 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     		nLockTimeFlags |= LOCKTIME_VERIFY_SEQUENCE;
     }
 
-    // Get the script flags for this block
+    // Get the script flags and active resource limits for this block.
     unsigned int flags = GetBlockScriptFlags(pindex, chainparams.GetConsensus());
+    const bool pqWitnessDiscountActive = IsPQWitnessDiscountActive(pindex->pprev, chainparams.GetConsensus());
+    const bool transferOverflowActive = IsTransferOverflowCheckActiveLocked(pindex->pprev, chainparams.GetConsensus());
+    const unsigned int activeBlockWeightLimit = GetMaxBlockWeightForPrevLocked(pindex->pprev, chainparams.GetConsensus());
+    int64_t contextualBlockWeight = GetBlockWeight(block);
 
     int64_t nTime2 = GetTimeMicros(); nTimeForks += nTime2 - nTime1;
     LogPrint(BCLog::BENCH, "    - Fork checks: %.2fms [%.2fs (%.2fms/blk)]\n", MILLI * (nTime2 - nTime1), nTimeForks * MICRO, nTimeForks * MILLI / nBlocksTotal);
@@ -2495,7 +2664,8 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     CBlockUndo blockundo;
     std::vector<std::pair<std::string, CBlockAssetUndo> > vUndoAssetData;
 
-    CCheckQueueControl<CScriptCheck> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : nullptr);
+    const bool fQueueScriptChecks = fScriptChecks && nScriptCheckThreads;
+    CCheckQueueControl<CScriptCheck> control(fQueueScriptChecks ? &scriptcheckqueue : nullptr);
 
     std::vector<int> prevheights;
     CAmount nFees = 0;
@@ -2528,6 +2698,14 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
                 state.SetFailedTransaction(tx.GetHash());
                 return error("%s: Consensus::CheckTxInputs: %s, %s", __func__, tx.GetHash().ToString(), FormatStateMessage(state));
             }
+
+            // RIP-25 consensus weight: preserve the approved 8x discount, but
+            // grant it only to an input that actually spends a witness-v2
+            // 32-byte program. This prevents unrelated/future witness stacks
+            // from obtaining the PQ discount merely by matching ML-DSA sizes.
+            if (pqWitnessDiscountActive)
+                contextualBlockWeight -= GetContextualPQWitnessDiscount(tx, view);
+
             nFees += txfee;
             if (!MoneyRange(nFees)) {
                 return state.DoS(100, error("%s: accumulated fee in the block out of range.", __func__),
@@ -2545,7 +2723,7 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
 
             if (AreAssetsDeployed()) {
                 std::vector<std::pair<std::string, uint256>> vReissueAssets;
-                if (!Consensus::CheckTxAssets(tx, state, view, assetsCache, false, vReissueAssets, false, &setMessages, block.nTime, &myNullAssetData)) {
+                if (!Consensus::CheckTxAssets(tx, state, view, assetsCache, false, vReissueAssets, transferOverflowActive, false, &setMessages, block.nTime, &myNullAssetData)) {
                     state.SetFailedTransaction(tx.GetHash());
                     return error("%s: Consensus::CheckTxAssets: %s, %s", __func__, tx.GetHash().ToString(),
                                  FormatStateMessage(state));
@@ -2648,7 +2826,10 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
         {
             std::vector<CScriptCheck> vChecks;
             bool fCacheResults = fJustCheck; /* Don't cache results if we're actually connecting blocks (still consult the cache, though) */
-            if (!CheckInputs(tx, state, view, fScriptChecks, flags, fCacheResults, fCacheResults, txdata[i], nScriptCheckThreads ? &vChecks : nullptr))
+            if (!CheckInputs(tx, state, view, fScriptChecks, flags, fCacheResults,
+                             fCacheResults, txdata[i],
+                             fQueueScriptChecks ? &vChecks : nullptr,
+                             chainparams.GetConsensus().pqSignatureContext))
                 return error("ConnectBlock(): CheckInputs on %s failed with %s",
                     tx.GetHash().ToString(), FormatStateMessage(state));
             control.Add(vChecks);
@@ -2735,6 +2916,11 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
         vPos.push_back(std::make_pair(tx.GetHash(), pos));
         pos.nTxOffset += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
     }
+    if (contextualBlockWeight > activeBlockWeightLimit) {
+        return state.DoS(100, false, REJECT_INVALID, "bad-blk-weight", false,
+                         strprintf("%s : UTXO-bound block weight %d exceeds %u", __func__, contextualBlockWeight, activeBlockWeightLimit));
+    }
+
     int64_t nTime3 = GetTimeMicros(); nTimeConnect += nTime3 - nTime2;
     LogPrint(BCLog::BENCH, "      - Connect %u transactions: %.2fms (%.3fms/tx, %.3fms/txin) [%.2fs (%.2fms/blk)]\n", (unsigned)block.vtx.size(), MILLI * (nTime3 - nTime2), MILLI * (nTime3 - nTime2) / block.vtx.size(), nInputs <= 1 ? 0 : MILLI * (nTime3 - nTime2) / (nInputs-1), nTimeConnect * MICRO, nTimeConnect * MILLI / nBlocksTotal);
 
@@ -3346,7 +3532,16 @@ bool static ConnectTip(CValidationState& state, const CChainParams& chainparams,
     int64_t nTime5 = GetTimeMicros(); nTimeChainState += nTime5 - nTime4;
     LogPrint(BCLog::BENCH, "  - Writing chainstate: %.2fms [%.2fs (%.2fms/blk)]\n", (nTime5 - nTime4) * MILLI, nTimeChainState * MICRO, nTimeChainState * MILLI / nBlocksTotal);
     // Remove conflicting transactions from the mempool.;
-    mempool.removeForBlock(blockConnecting.vtx, pindexNew->nHeight, assetDataFromBlock);
+    // The mempool is revalidated for the block *after* pindexNew.  Resolve the
+    // deployment against pindexNew itself even though chainActive is updated
+    // a few lines below.
+    const bool transferOverflowWasActive =
+        IsTransferOverflowCheckActiveLocked(pindexNew->pprev, chainparams.GetConsensus());
+    const bool transferOverflowActive =
+        IsTransferOverflowCheckActiveLocked(pindexNew, chainparams.GetConsensus());
+    mempool.removeForBlock(blockConnecting.vtx, pindexNew->nHeight, assetDataFromBlock,
+                           transferOverflowActive,
+                           transferOverflowActive && !transferOverflowWasActive);
     disconnectpool.removeForBlock(blockConnecting.vtx);
     // Update chainActive & related variables.
     UpdateTip(pindexNew, chainparams);
@@ -4145,9 +4340,9 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
 
     // The height declared inside the KAWPOW header feeds the PoW hash, the DAG epoch
     // and the ProgPoW period. It must match the actual height of the block.
-    if (nHeight >= consensusParams.nHeightHeaderCheckActivation &&
-        block.nTime >= nKAWPOWActivationTime &&
-        block.nHeight != (uint32_t)nHeight) {
+    if (!IsKAWPOWHeaderHeightValid(block, nHeight,
+                                   consensusParams.nHeightHeaderCheckActivation,
+                                   nKAWPOWActivationTime)) {
         return state.DoS(100,
                          error("%s: declared header height %u does not match chain height %d",
                                __func__, block.nHeight, nHeight),
@@ -4198,6 +4393,21 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
 static bool ContextualCheckBlock(const CBlock& block, CValidationState& state, const Consensus::Params& consensusParams, const CBlockIndex* pindexPrev, CAssetsCache* assetCache)
 {
     const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
+
+    // RIP-25: reorg/reindex-safe phased resource rules.  Before activation
+    // retain RIP-2 8 MWU.  At activation use 12 MWU + approved 8x PQ witness
+    // discount; after one nominal year of blocks use 16 MWU.
+    const bool pqActive = IsPQWitnessDiscountActive(pindexPrev, consensusParams);
+    const unsigned int activeWeightLimit = GetMaxBlockWeightForPrevLocked(pindexPrev, consensusParams);
+    const unsigned int activeSerializedLimit = GetMaxBlockSerializedSizeForPrevLocked(pindexPrev, consensusParams);
+    // After activation this is an optimistic lower bound: stack shape can be
+    // checked here, but the discounted input must also spend a real witness-v2
+    // prevout. ConnectBlock performs that UTXO-bound check before acceptance.
+    const int64_t preliminaryWeight = pqActive ? GetBlockWeightRIP25(block) : GetBlockWeight(block);
+    if (preliminaryWeight > activeWeightLimit)
+        return state.DoS(100, false, REJECT_INVALID, "bad-blk-weight", false, strprintf("%s : preliminary block weight %d exceeds %u", __func__, preliminaryWeight, activeWeightLimit));
+    if (::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION) > activeSerializedLimit)
+        return state.DoS(100, false, REJECT_INVALID, "bad-blk-size", false, strprintf("%s : contextual serialized block size exceeds %u", __func__, activeSerializedLimit));
 
     // Start enforcing BIP113 (Median Time Past) using versionbits logic.
     int nLockTimeFlags = 0;
@@ -4268,8 +4478,15 @@ static bool ContextualCheckBlock(const CBlock& block, CValidationState& state, c
     // large by filling up the coinbase witness, which doesn't change
     // the block hash, so we couldn't mark the block as permanently
     // failed).
-    if (GetBlockWeight(block) > GetMaxBlockWeight()) {
-        return state.DoS(100, false, REJECT_INVALID, "bad-blk-weight", false, strprintf("%s : weight limit failed", __func__));
+    // Absolute structural ceiling. GetBlockWeightRIP25 is deliberately
+    // optimistic (shape-only) here; if even that lower bound exceeds the
+    // phase-2 maximum, the block can never be valid. Exact UTXO-bound
+    // discounting is enforced later in ConnectBlock.
+    if (GetBlockWeightRIP25(block) > GetMaxBlockWeight()) {
+        return state.DoS(100, false, REJECT_INVALID, "bad-blk-weight", false, strprintf("%s : absolute RIP-25 weight ceiling failed", __func__));
+    }
+    if (::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION) > GetMaxBlockSerializedSize()) {
+        return state.DoS(100, false, REJECT_INVALID, "bad-blk-size", false, strprintf("%s : absolute serialized size limit failed", __func__));
     }
 
     return true;
@@ -5796,11 +6013,6 @@ void SetEnforcedCoinbase(bool value)
     fCheckCoinbaseAssetsIsActive = value;
 }
 
-// Only used by test framework
-void SetTransferOverflow(bool value) {
-    fCheckTransferOverflowIsActive = value;
-}
-
 bool AreEnforcedValuesDeployed()
 {
     if (fEnforcedValuesIsActive)
@@ -5836,6 +6048,12 @@ bool AreAssetsDeployed()
         fAssetsIsActive = true;
 
     return fAssetsIsActive;
+}
+
+// Only used by test framework
+void SetAssetsDeployed(bool value)
+{
+    fAssetsIsActive = value;
 }
 
 bool IsRip5Active()
@@ -5895,19 +6113,20 @@ bool IsRestrictedActive(unsigned int nBlockNumber)
 
 bool IsTransferOverflowCheckDeployed()
 {
-    if (fCheckTransferOverflowIsActive)
-        return true;
-
-    const ThresholdState thresholdState = VersionBitsTipState(GetParams().GetConsensus(), Consensus::DEPLOYMENT_TRANSFER_OVERFLOW);
-    if (thresholdState == THRESHOLD_ACTIVE)
-        fCheckTransferOverflowIsActive = true;
-
-    return fCheckTransferOverflowIsActive;
+    LOCK(cs_main);
+    return IsTransferOverflowCheckActiveLocked(chainActive.Tip(), GetParams().GetConsensus());
 }
 
 CAssetsCache* GetCurrentAssetCache()
 {
     return passets;
+}
+
+/** RIP-25: Post-Quantum Signatures deployment check at active-chain tip. */
+bool IsPQHybridDeployed()
+{
+    LOCK(cs_main);
+    return IsPQHybridActiveLocked(chainActive.Tip(), GetParams().GetConsensus());
 }
 /** RVN END */
 

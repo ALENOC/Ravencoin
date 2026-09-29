@@ -19,7 +19,69 @@
 #include <wallet/wallet.h>
 #endif
 
+namespace {
+
+CTxOut MakeAssetTransferOutput(const std::string& assetName, CAmount amount)
+{
+    CScript scriptPubKey = GetScriptForDestination(DecodeDestination(GetParams().GlobalBurnAddress()));
+    CAssetTransfer(assetName, amount).ConstructTransaction(scriptPubKey);
+    return CTxOut(0, scriptPubKey);
+}
+
+void AddAssetCoin(CCoinsViewCache& coins, const COutPoint& outpoint, const std::string& assetName, CAmount amount)
+{
+    coins.AddCoin(outpoint, Coin(MakeAssetTransferOutput(assetName, amount), 10, false), true);
+}
+
+} // namespace
+
 BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
+
+    BOOST_AUTO_TEST_CASE(asset_destination_scope_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+
+        const CKeyID p2pkh;
+        const CScriptID p2sh;
+        const WitnessV2PQDestination pq(uint256S("03"));
+
+        BOOST_CHECK(IsSupportedAssetDestination(p2pkh));
+        BOOST_CHECK(!IsSupportedAssetDestination(p2sh));
+        BOOST_CHECK(!IsSupportedAssetDestination(pq));
+        BOOST_CHECK(!IsSupportedAssetDestination(CNoDestination()));
+
+        BOOST_CHECK(IsSupportedNullAssetDestination(p2pkh));
+        BOOST_CHECK(IsSupportedNullAssetDestination(p2sh));
+        BOOST_CHECK(!IsSupportedNullAssetDestination(pq));
+        BOOST_CHECK(!IsSupportedNullAssetDestination(CNoDestination()));
+    }
+
+    BOOST_AUTO_TEST_CASE(pq_asset_envelope_is_not_witness_v2_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+
+        CScript script = GetScriptForWitnessV2PQ(uint256S("03"));
+        int witnessVersion = -1;
+        std::vector<unsigned char> witnessProgram;
+        BOOST_REQUIRE(script.IsWitnessProgram(witnessVersion, witnessProgram));
+        BOOST_CHECK_EQUAL(witnessVersion, 2);
+
+        CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(script);
+
+        int assetType = 0;
+        bool isOwner = false;
+        BOOST_CHECK(!script.IsWitnessProgram(witnessVersion, witnessProgram));
+        BOOST_CHECK(!script.IsAssetScript(assetType, isOwner));
+
+        CMutableTransaction mutableTx;
+        mutableTx.vin.emplace_back(COutPoint(uint256S("04"), 0));
+        mutableTx.vout.emplace_back(0, script);
+
+        const CTransaction tx(mutableTx);
+        CValidationState state;
+        BOOST_CHECK(!CheckTransaction(tx, state));
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-op-rvn-asset-not-in-right-script-location");
+    }
 
     BOOST_AUTO_TEST_CASE(asset_tx_valid_test)
     {
@@ -66,7 +128,7 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         // The outputs are assigning a destination to 1000 Assets
         // This test should pass because all assets are assigned a destination
         std::vector<std::pair<std::string, uint256>> vReissueAssets;
-        BOOST_CHECK_MESSAGE(Consensus::CheckTxAssets(tx, state, coins, nullptr, false, vReissueAssets, true), "CheckTxAssets Failed");
+        BOOST_CHECK_MESSAGE(Consensus::CheckTxAssets(tx, state, coins, nullptr, false, vReissueAssets, true, true), "CheckTxAssets Failed");
     }
 
     BOOST_AUTO_TEST_CASE(asset_tx_not_valid_test)
@@ -123,7 +185,7 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         // The outputs are assigning a destination to only 100 Assets
         // This should fail because 900 Assets aren't being assigned a destination (Trying to burn 900 Assets)
         std::vector<std::pair<std::string, uint256>> vReissueAssets;
-        BOOST_CHECK_MESSAGE(!Consensus::CheckTxAssets(tx, state, coins, nullptr, false, vReissueAssets, true), "CheckTxAssets should have failed");
+        BOOST_CHECK_MESSAGE(!Consensus::CheckTxAssets(tx, state, coins, nullptr, false, vReissueAssets, true, true), "CheckTxAssets should have failed");
     }
 
     BOOST_AUTO_TEST_CASE(asset_tx_valid_multiple_outs_test)
@@ -184,7 +246,7 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         // The outputs are assigned 100 Assets to 10 destinations (10 * 100) = 1000
         // This test should pass all assets that are being spent are assigned to a destination
         std::vector<std::pair<std::string, uint256>> vReissueAssets;
-        BOOST_CHECK_MESSAGE(Consensus::CheckTxAssets(tx, state, coins, nullptr, false, vReissueAssets, true), "CheckTxAssets failed");
+        BOOST_CHECK_MESSAGE(Consensus::CheckTxAssets(tx, state, coins, nullptr, false, vReissueAssets, true, true), "CheckTxAssets failed");
     }
 
     BOOST_AUTO_TEST_CASE(asset_tx_multiple_outs_invalid_test)
@@ -245,7 +307,7 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         // The outputs are assigning 100 Assets to 12 destinations (12 * 100 = 1200)
         // This test should fail because the Outputs are greater than the inputs
         std::vector<std::pair<std::string, uint256>> vReissueAssets;
-        BOOST_CHECK_MESSAGE(!Consensus::CheckTxAssets(tx, state, coins, nullptr, false, vReissueAssets, true), "CheckTxAssets passed when it should have failed");
+        BOOST_CHECK_MESSAGE(!Consensus::CheckTxAssets(tx, state, coins, nullptr, false, vReissueAssets, true, true), "CheckTxAssets passed when it should have failed");
     }
 
     BOOST_AUTO_TEST_CASE(asset_tx_multiple_assets_test)
@@ -365,7 +427,7 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         // The outputs are spending 100 Assets to 10 destinations (10 * 100 = 1000) (of each RAVEN, RAVENTEST, RAVENTESTTEST)
         // This test should pass because for each asset that is spent. It is assigned a destination
         std::vector<std::pair<std::string, uint256>> vReissueAssets;
-        BOOST_CHECK_MESSAGE(Consensus::CheckTxAssets(tx, state, coins, nullptr, false, vReissueAssets, true), state.GetDebugMessage());
+        BOOST_CHECK_MESSAGE(Consensus::CheckTxAssets(tx, state, coins, nullptr, false, vReissueAssets, true, true), state.GetDebugMessage());
 
 
         // Try it not but only spend 900 of each asset instead of 1000
@@ -418,7 +480,138 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         // Check the transaction that contains inputs that are spending 1000 Assets for 3 different assets
         // While only outputs only contain 900 Assets being sent to a destination
         // This should fail because 100 of each Asset isn't being sent to a destination (Trying to burn 100 Assets each)
-        BOOST_CHECK_MESSAGE(!Consensus::CheckTxAssets(tx2, state, coins, nullptr, false, vReissueAssets, true), "CheckTxAssets should have failed");
+        BOOST_CHECK_MESSAGE(!Consensus::CheckTxAssets(tx2, state, coins, nullptr, false, vReissueAssets, true, true), "CheckTxAssets should have failed");
+    }
+
+    BOOST_AUTO_TEST_CASE(transfer_overflow_checks_follow_explicit_context)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        const std::string assetName = "OVERFLOW";
+        std::vector<std::pair<std::string, uint256>> vReissueAssets;
+        constexpr uint64_t wrapPartA = 8173372036854775857ULL;
+        constexpr uint64_t wrapPartB = 2100000000000000002ULL;
+        static_assert(wrapPartA + wrapPartA + wrapPartB == 100ULL,
+                      "overflow vector must equal 100 modulo 2^64");
+
+        // Preserve the historical preactivation behavior independently of the
+        // process's prior BIP9 state. These outputs sum mathematically to
+        // 2^64 + 100; consensus explicitly evaluates the modulo result as 100.
+        {
+            CCoinsView base;
+            CCoinsViewCache coins(&base);
+            const COutPoint input(uint256S("01"), 0);
+            AddAssetCoin(coins, input, assetName, 100);
+
+            CMutableTransaction mutableTx;
+            mutableTx.vin.emplace_back(input);
+            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, static_cast<CAmount>(wrapPartA)));
+            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, static_cast<CAmount>(wrapPartA)));
+            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, static_cast<CAmount>(wrapPartB)));
+            const CTransaction tx(mutableTx);
+
+            CValidationState preactivationState;
+            BOOST_REQUIRE_MESSAGE(Consensus::CheckTxAssets(tx, preactivationState, coins, nullptr, false,
+                                                           vReissueAssets, false, true),
+                                  preactivationState.GetRejectReason());
+
+            CValidationState activeState;
+            BOOST_CHECK(!Consensus::CheckTxAssets(tx, activeState, coins, nullptr, false,
+                                                  vReissueAssets, true, true));
+            BOOST_CHECK_EQUAL(activeState.GetRejectReason(), "bad-txns-transfer-asset-amount-toolarge");
+        }
+
+        // Mirror the modulo vector through the input accumulator. This is a
+        // separate consensus path and must be defined under sanitizers too.
+        {
+            CCoinsView base;
+            CCoinsViewCache coins(&base);
+            const COutPoint first(uint256S("06"), 0);
+            const COutPoint second(uint256S("07"), 0);
+            const COutPoint third(uint256S("08"), 0);
+            AddAssetCoin(coins, first, assetName, static_cast<CAmount>(wrapPartA));
+            AddAssetCoin(coins, second, assetName, static_cast<CAmount>(wrapPartA));
+            AddAssetCoin(coins, third, assetName, static_cast<CAmount>(wrapPartB));
+
+            CMutableTransaction mutableTx;
+            mutableTx.vin.emplace_back(first);
+            mutableTx.vin.emplace_back(second);
+            mutableTx.vin.emplace_back(third);
+            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, 100));
+            const CTransaction tx(mutableTx);
+
+            CValidationState preactivationState;
+            BOOST_REQUIRE_MESSAGE(Consensus::CheckTxAssets(tx, preactivationState, coins, nullptr, false,
+                                                           vReissueAssets, false, true),
+                                  preactivationState.GetRejectReason());
+
+            CValidationState activeState;
+            BOOST_CHECK(!Consensus::CheckTxAssets(tx, activeState, coins, nullptr, false,
+                                                  vReissueAssets, true, true));
+            BOOST_CHECK_EQUAL(activeState.GetRejectReason(), "bad-txns-input-asset-amount-toolarge");
+        }
+
+        // An oversized historical UTXO is spendable under preactivation rules
+        // but rejected under ACTIVE rules. Calling ACTIVE first must not latch
+        // the result for the following preactivation check.
+        {
+            CCoinsView base;
+            CCoinsViewCache coins(&base);
+            const COutPoint input(uint256S("02"), 0);
+            AddAssetCoin(coins, input, assetName, MAX_MONEY + 1);
+
+            CMutableTransaction mutableTx;
+            mutableTx.vin.emplace_back(input);
+            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, MAX_MONEY + 1));
+            const CTransaction tx(mutableTx);
+
+            CValidationState activeState;
+            BOOST_CHECK(!Consensus::CheckTxAssets(tx, activeState, coins, nullptr, false,
+                                                  vReissueAssets, true, true));
+            BOOST_CHECK_EQUAL(activeState.GetRejectReason(), "bad-txns-input-asset-amount-toolarge");
+
+            CValidationState preactivationState;
+            BOOST_CHECK_MESSAGE(Consensus::CheckTxAssets(tx, preactivationState, coins, nullptr, false,
+                                                         vReissueAssets, false, true),
+                                preactivationState.GetRejectReason());
+        }
+
+        // Independently exercise the aggregate input and output guards required
+        // by the Ravencoin Core 4.8.0 security baseline.
+        {
+            CCoinsView base;
+            CCoinsViewCache coins(&base);
+            const COutPoint first(uint256S("03"), 0);
+            const COutPoint second(uint256S("04"), 0);
+            AddAssetCoin(coins, first, assetName, MAX_MONEY);
+            AddAssetCoin(coins, second, assetName, 1);
+
+            CMutableTransaction mutableTx;
+            mutableTx.vin.emplace_back(first);
+            mutableTx.vin.emplace_back(second);
+            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, MAX_MONEY));
+
+            CValidationState state;
+            BOOST_CHECK(!Consensus::CheckTxAssets(CTransaction(mutableTx), state, coins, nullptr, false,
+                                                  vReissueAssets, true, true));
+            BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-input-asset-totalInputs-toolarge");
+        }
+
+        {
+            CCoinsView base;
+            CCoinsViewCache coins(&base);
+            const COutPoint input(uint256S("05"), 0);
+            AddAssetCoin(coins, input, assetName, MAX_MONEY);
+
+            CMutableTransaction mutableTx;
+            mutableTx.vin.emplace_back(input);
+            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, MAX_MONEY));
+            mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, 1));
+
+            CValidationState state;
+            BOOST_CHECK(!Consensus::CheckTxAssets(CTransaction(mutableTx), state, coins, nullptr, false,
+                                                  vReissueAssets, true, true));
+            BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-transfer-asset-totalOutputs-toolarge");
+        }
     }
 
     BOOST_AUTO_TEST_CASE(asset_tx_issue_units_test)

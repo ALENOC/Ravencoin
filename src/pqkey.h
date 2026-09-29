@@ -45,8 +45,9 @@ public:
     /** Compute witness v2 program: SHA256(mldsa_pubkey) */
     uint256 GetWitnessProgram() const;
 
-    /** Verify an ML-DSA-44 signature over a 32-byte hash */
-    bool Verify(const uint256& hash, const std::vector<unsigned char>& sig) const;
+    /** Verify an ML-DSA-44 signature over a 32-byte hash and explicit context. */
+    bool Verify(const uint256& hash, const std::vector<unsigned char>& sig,
+                const unsigned char* context, size_t contextlen) const;
 
     std::vector<unsigned char> GetVch() const { return vch; }
 
@@ -71,10 +72,15 @@ public:
  */
 class CPQKey
 {
+public:
+    using KeyData = SecureVector;
+
 private:
     bool fValid;
-    std::vector<unsigned char, secure_allocator<unsigned char>> keydata;
+    KeyData keydata;
     CPQPubKey pubkey;
+
+    void Clear();
 
 public:
     CPQKey() : fValid(false), keydata(mldsa::SECRETKEY_BYTES, 0) {}
@@ -95,21 +101,22 @@ public:
 
     CPQPubKey GetPubKey() const { return pubkey; }
 
-    /** Sign a 32-byte hash with ML-DSA-44 */
-    bool Sign(const uint256& hash, std::vector<unsigned char>& sigOut) const;
+    /** Sign a 32-byte hash with ML-DSA-44 and an explicit context. */
+    bool Sign(const uint256& hash, std::vector<unsigned char>& sigOut,
+              const unsigned char* context, size_t contextlen) const;
 
     /** Get raw secret key data (for wallet serialization) */
-    const std::vector<unsigned char, secure_allocator<unsigned char>>& GetKeyData() const { return keydata; }
+    const KeyData& GetKeyData() const { return keydata; }
 
     /**
      * Load raw secret-key bytes. This validates only the secret-key size;
      * callers loading persisted wallet material must subsequently validate the
      * associated public key with MatchesPubKey() or use the two-argument form.
      */
-    bool SetKeyData(const std::vector<unsigned char>& data);
+    bool SetKeyData(const KeyData& data);
 
     /** Load raw secret-key bytes and cryptographically validate/bind pubkey. */
-    bool SetKeyData(const std::vector<unsigned char>& data, const CPQPubKey& pubkeyIn);
+    bool SetKeyData(const KeyData& data, const CPQPubKey& pubkeyIn);
 
     /** Verify that pubkeyIn is the public key corresponding to this secret key. */
     bool MatchesPubKey(const CPQPubKey& pubkeyIn) const;

@@ -8,15 +8,19 @@
 
 #include <set>
 #include <stdint.h>
+#include <memory>
 #include <utility>
 #include <vector>
 
 #include "consensus/validation.h"
 #include "rpc/server.h"
 #include "test/test_raven.h"
+#include "ui_interface.h"
 #include "validation.h"
 #include "wallet/coincontrol.h"
+#include "wallet/db.h"
 #include "wallet/test/wallet_test_fixture.h"
+#include "wallet/walletdb.h"
 
 #include <boost/test/unit_test.hpp>
 #include <univalue.h>
@@ -41,7 +45,99 @@ std::vector<std::unique_ptr<CWalletTx>> wtxn;
 
 typedef std::set<CInputCoin> CoinSet;
 
+namespace {
+
+class FailingOpenDbEnv : public DbEnv
+{
+public:
+    explicit FailingOpenDbEnv(bool& destroyed)
+        : DbEnv(DB_CXX_NO_EXCEPTIONS), destroyed_(destroyed) {}
+
+    ~FailingOpenDbEnv() override { destroyed_ = true; }
+
+    int open(const char*, u_int32_t, int) override { return DB_RUNRECOVERY; }
+
+private:
+    bool& destroyed_;
+};
+
+class ScopedWalletFactoryTestState
+{
+private:
+    const bool rescanWasSet;
+    const bool keypoolWasSet;
+    const std::string oldRescan;
+    const std::string oldKeypool;
+
+public:
+    explicit ScopedWalletFactoryTestState(bool rescan)
+        : rescanWasSet(gArgs.IsArgSet("-rescan")),
+          keypoolWasSet(gArgs.IsArgSet("-keypool")),
+          oldRescan(gArgs.GetArg("-rescan", "")),
+          oldKeypool(gArgs.GetArg("-keypool", ""))
+    {
+        gArgs.ForceSetArg("-rescan", rescan ? "1" : "0");
+        gArgs.ForceSetArg("-keypool", 1);
+    }
+
+    ~ScopedWalletFactoryTestState()
+    {
+        bitdb.Flush(true);
+        bitdb.Reset();
+        if (rescanWasSet)
+            gArgs.ForceSetArg("-rescan", oldRescan);
+        else
+            gArgs.ClearArg("-rescan");
+        if (keypoolWasSet)
+            gArgs.ForceSetArg("-keypool", oldKeypool);
+        else
+            gArgs.ClearArg("-keypool");
+    }
+};
+
+struct RegisteredWalletDeleter
+{
+    void operator()(CWallet* wallet) const
+    {
+        if (!wallet)
+            return;
+        UnregisterValidationInterface(wallet);
+        delete wallet;
+    }
+};
+
+using RegisteredWalletPtr = std::unique_ptr<CWallet, RegisteredWalletDeleter>;
+
+} // namespace
+
 BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
+
+    BOOST_AUTO_TEST_CASE(database_environment_open_failure_renews_handle)
+    {
+        CDBEnv env;
+        delete env.dbenv;
+        bool failedHandleDestroyed = false;
+        env.dbenv = new FailingOpenDbEnv(failedHandleDestroyed);
+
+        BOOST_CHECK(!env.Open(pathTemp / "db-retry"));
+        BOOST_REQUIRE(failedHandleDestroyed);
+        BOOST_CHECK(env.Open(pathTemp / "db-retry"));
+        env.Close();
+    }
+
+    BOOST_AUTO_TEST_CASE(database_mock_negative_open_failure_renews_handle)
+    {
+        CDBEnv env;
+        delete env.dbenv;
+        bool failedHandleDestroyed = false;
+        env.dbenv = new FailingOpenDbEnv(failedHandleDestroyed);
+
+        BOOST_CHECK_THROW(env.MakeMock(), std::runtime_error);
+        BOOST_REQUIRE(failedHandleDestroyed);
+        BOOST_CHECK(!env.IsMock());
+        env.MakeMock();
+        env.Close();
+    }
 
     static const CWallet testWallet;
     static std::vector<COutput> vCoins;
@@ -393,6 +489,19 @@ BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
         // Cap last block file size, and mine new block in a new block file.
         CBlockIndex *const nullBlock = nullptr;
         CBlockIndex *oldTip = chainActive.Tip();
+
+        // Create and close the wallet at the old tip. Reopening it after the
+        // next block exercises the successful-rescan update for a non-first-run
+        // wallet rather than relying on the first-run locator path.
+        const std::string successfulWalletFile =
+            "successful-rescan-wallet.dat";
+        {
+            ScopedWalletFactoryTestState testState(false);
+            RegisteredWalletPtr wallet(
+                CWallet::CreateWalletFromFile(successfulWalletFile));
+            BOOST_REQUIRE(wallet != nullptr);
+        }
+
         GetBlockFileInfo(oldTip->GetBlockPos().nFile)->nSize = MAX_BLOCKFILE_SIZE;
         CreateAndProcessBlock({}, GetScriptForRawPubKey(coinbaseKey.GetPubKey()));
         CBlockIndex *newTip = chainActive.Tip();
@@ -406,6 +515,29 @@ BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
             BOOST_CHECK_EQUAL(wallet.GetImmatureBalance(), 10000 * COIN);
         }
 
+        // A successful factory rescan publishes one wallet and records the
+        // exact tip only after the complete range has been read.
+        {
+            ScopedWalletFactoryTestState testState(true);
+            unsigned int loadNotifications = 0;
+            boost::signals2::scoped_connection loadConnection(
+                uiInterface.LoadWallet.connect(
+                    [&](CWallet*) {
+                        ++loadNotifications;
+                    }));
+            RegisteredWalletPtr wallet(
+                CWallet::CreateWalletFromFile(successfulWalletFile));
+
+            BOOST_REQUIRE(wallet != nullptr);
+            BOOST_CHECK_EQUAL(loadNotifications, 1U);
+            CWalletDBWrapper dbw(&bitdb, successfulWalletFile);
+            CWalletDB walletdb(dbw, "r");
+            CBlockLocator locator;
+            BOOST_REQUIRE(walletdb.ReadBestBlock(locator));
+            BOOST_REQUIRE(!locator.vHave.empty());
+            BOOST_CHECK(locator.vHave.front() == newTip->GetBlockHash());
+        }
+
         // Prune the older block file.
         PruneOneBlockFile(oldTip->GetBlockPos().nFile);
         UnlinkPrunedFiles({oldTip->GetBlockPos().nFile});
@@ -417,6 +549,30 @@ BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
             AddKey(wallet, coinbaseKey);
             BOOST_CHECK_EQUAL(oldTip, wallet.ScanForWalletTransactions(oldTip, nullptr));
             BOOST_CHECK_EQUAL(wallet.GetImmatureBalance(), 5000 * COIN);
+        }
+
+        // A failed startup rescan must not publish a partially synchronized
+        // wallet or persist the current tip past the unreadable range.
+        {
+            ScopedWalletFactoryTestState testState(true);
+            unsigned int loadNotifications = 0;
+            boost::signals2::scoped_connection loadConnection(
+                uiInterface.LoadWallet.connect(
+                    [&](CWallet*) {
+                        ++loadNotifications;
+                    }));
+            const std::string walletFile = "failed-rescan-wallet.dat";
+            RegisteredWalletPtr failedWallet(
+                CWallet::CreateWalletFromFile(walletFile));
+
+            BOOST_CHECK(failedWallet == nullptr);
+            BOOST_CHECK_EQUAL(loadNotifications, 0U);
+            {
+                CWalletDBWrapper dbw(&bitdb, walletFile);
+                CWalletDB walletdb(dbw, "r");
+                CBlockLocator locator;
+                BOOST_CHECK(!walletdb.ReadBestBlock(locator));
+            }
         }
 
         // Verify importmulti RPC returns failure for a key whose creation time is

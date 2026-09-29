@@ -14,7 +14,7 @@ License: MIT
 
 ## Abstract
 
-This RIP proposes adding **ML-DSA-44** (FIPS 204) as a post-quantum digital signature scheme to Ravencoin via a new **witness version 2** program. New PQ addresses use ML-DSA-44 exclusively (no ECDSA). Existing ECDSA addresses (witness v0) continue working unchanged. Users gradually migrate funds from ECDSA to ML-DSA-44 addresses, making the system quantum-resistant before quantum computers can break ECDSA.
+This RIP proposes adding **ML-DSA-44** (FIPS 204) as a post-quantum digital signature scheme to Ravencoin via a new **witness version 2** program. New PQ addresses use ML-DSA-44 exclusively (no ECDSA). Existing ECDSA addresses (witness v0) continue working unchanged. Users can migrate native RVN from ECDSA to ML-DSA-44 addresses before quantum computers can break ECDSA. Ravencoin asset outputs are not covered by this version of RIP-25.
 
 The upgrade is deployed as a **soft fork** following the SegWit extensibility model. A phased block weight increase from 8 MWU to 16 MWU, combined with a PQ witness discount factor, ensures that network throughput remains adequate during and after migration.
 
@@ -131,6 +131,85 @@ address:      rvn1z...  (mainnet, bech32m encoded)
 
 The 32-byte SHA256 hash provides 128-bit collision resistance classically and ~85-bit quantum collision resistance.
 
+#### 3.1.1 Deterministic Wallet Key Derivation
+
+The wallet derivation below is a versioned recovery contract. It does not
+change witness-v2 consensus validation.
+
+The root source is selected by the wallet type:
+
+- source `0x01`: the exact 32-byte legacy HD private seed selected by
+  `CHDChain::seed_id`;
+- source `0x02`: the exact 64-byte BIP39 seed output, after applying the
+  mnemonic passphrase.
+
+The wallet derives every child as hardened using this exact path:
+
+```
+m/25'/coin_type'/0'/0'/index'
+```
+
+`coin_type` is 175 on mainnet and 1 on testnet and regtest. `index` is an
+unsigned 31-bit value. The BIP32 leaf is the canonical 32-byte big-endian
+private scalar returned by `CKey`, with no object dump, host-endian field, or
+text formatting. The final ML-DSA seed is:
+
+```
+pq_seed = SHA256(ASCII("RVN/ML-DSA-44/keygen/v1") || pq_bip32_leaf)
+```
+
+The ASCII domain has no trailing NUL. `pq_seed` is passed to the single
+deterministic ML-DSA-44 key-generation wrapper. Wallet derivation does not
+replace or otherwise modify a process-global random provider.
+
+The wallet stores the next allocation index in the key-critical
+`pqhdchain` record. Version 1 has this exact 45-byte value layout:
+
+```
+uint32_le version
+uint32_le next_external_index
+uint8     seed_source
+uint32_le coin_type
+byte[32]  lineage_id
+```
+
+`lineage_id` contains the raw SHA-256 digest bytes from:
+
+```
+SHA256(ASCII("RVN/ML-DSA-44/lineage/v1") ||
+       seed_source || BE32(coin_type) || exact_wallet_seed)
+```
+
+The domain has no trailing NUL. A persisted record must use version 1, a
+known source, `coin_type < 0x80000000`, a nonzero lineage identifier, and
+`next_external_index <= 0x80000000`. The terminal value `0x80000000` marks
+the branch exhausted. A source, network, or root-seed change starts allocation
+at index zero for the new lineage. Existing PQ key records remain unchanged.
+
+The new private-key record and advanced counter are committed in one
+synchronous wallet-database transaction. For an encrypted wallet the new key
+is persisted only as `cpqkey`; for an unencrypted wallet it is persisted as
+`pqkey`. Failure to write either record leaves neither a published key nor an
+advanced in-memory counter.
+
+Compatibility and recovery rules are explicit:
+
+- PQ keys created before this derivation contract remain valid individual
+  `pqkey` or `cpqkey` records. They cannot be reconstructed from a mnemonic.
+- A wallet-file backup preserves those old records and the new `pqhdchain`
+  state. The text `dumpwallet` and `importwallet` formats do not carry PQ keys
+  and are not PQ backup formats.
+- A clean mnemonic restoration reproduces a deterministic PQ key only after
+  regenerating the same network and index. This implementation has no
+  automatic PQ lookahead or used-index discovery. Recovery therefore requires
+  regenerating enough sequential PQ addresses and rescanning the chain.
+- Encrypting a legacy non-BIP39 HD wallet rotates its classical HD seed.
+  Pre-rotation PQ keys remain recoverable only through their stored wallet
+  records or a wallet-file backup. Later PQ keys begin at index zero under the
+  new lineage.
+- A historical non-HD wallet has no deterministic root for this contract and
+  `getnewpqaddress` fails instead of silently creating another random key.
+
 #### 3.2 Transaction Structure
 
 PQ transactions use the existing SegWit serialization format. The witness stack for a PQ input contains:
@@ -143,6 +222,34 @@ Witness stack (2 elements):
 
 The `scriptSig` is empty (as with all SegWit inputs). The `scriptPubKey` is the compact 34-byte witness program.
 
+Witness-v2 PQ supports exactly one signature hash mode: implicit `SIGHASH_ALL`.
+The 2,420-byte ML-DSA signature is serialized without an appended signature
+hash byte. A 2,421-byte value such as `signature || 0x01`, and requests for
+`SIGHASH_NONE`, `SIGHASH_SINGLE`, or `SIGHASH_ANYONECANPAY`, are invalid.
+
+#### 3.2.1 ML-DSA Network Context
+
+RIP-25 uses the FIPS 204 context-string interface. The context is exactly 81
+bytes and is constructed as:
+
+```
+ASCII("RVN/ML-DSA-44/v1/" || lowercase_hex_64(network_genesis_hash))
+```
+
+The prefix, slash separators, case, and 64-character hash encoding are fixed.
+The terminating C string NUL is not part of the context. Locale-dependent or
+display-oriented hash formatting is not used.
+
+```
+mainnet: RVN/ML-DSA-44/v1/0000006b444bc2f2ffe627be9d9e7e7a0730000870ef6eb6da46c8eae389df90
+testnet: RVN/ML-DSA-44/v1/000000ecfc5e6324a079542221d00e10362bdc894d56500c414060eea8a3ad5a
+regtest: RVN/ML-DSA-44/v1/0b2c703dc93bb63a36c4e33b85be4855ddbca2ac951a7a0a29b8de0408200a3c
+```
+
+Signing and verification must use the context belonging to the selected
+network. A signature made under one of these contexts is invalid under either
+of the other two contexts.
+
 #### 3.3 Witness Validation Rules
 
 When a node encounters a witness version 2 program of length 32 bytes:
@@ -152,8 +259,8 @@ When a node encounters a witness version 2 program of length 32 bytes:
 3. Validate: `mldsa_pk` is exactly 1,312 bytes (ML-DSA-44 public key size)
 4. Validate: `mldsa_sig` is exactly 2,420 bytes (ML-DSA-44 signature size)
 5. Verify: `SHA256(mldsa_pk) == witness_program` (public key binding)
-6. Compute `sighash` using BIP143-style hashing with `SIGVERSION_WITNESS_V2_PQ`
-7. Verify: `ML_DSA_44_Verify(mldsa_pk, sighash, mldsa_sig)` (ML-DSA check)
+6. Compute `sighash` using BIP143-style hashing with `SIGVERSION_WITNESS_V2_PQ` and implicit `SIGHASH_ALL`
+7. Verify: `ML_DSA_44_Verify(mldsa_pk, sighash, network_context, mldsa_sig)` (ML-DSA check)
 8. If all checks pass, the input is valid
 
 For unupgraded nodes, witness version 2 outputs are treated as "anyone-can-spend" per BIP141 rules, which is safe as long as a supermajority of miners enforce the new rules.
@@ -235,7 +342,7 @@ With PQ discount: 3732 / 8 = ~467 weight units
 
 ```
 Deployment parameters:
-  bit:                                    11
+  bit:                                    12
   nStartTime:                             <6 months after release>
   nTimeout:                               <18 months after start>
   nOverrideRuleChangeActivationThreshold: 1714  (85% of 2016 blocks)
@@ -247,6 +354,16 @@ The 85% threshold provides additional safety margin for this cryptographically s
 ### 6. Implementation
 
 #### 6.1 Library Integration
+
+The consensus build pins **liboqs 0.16.0** from the reviewed release archive
+with SHA256
+`162d5b510518ee5f285f82fa1f16402a885176e818bf1b1a4c3c91c9a2f01eae`.
+The archive contains mldsa-native revision
+`9b0ee84f4cf399043eca59eca4e5f8531ca1d61b` (v1.0.0-beta2). The depends
+configuration enables ML-DSA-44 only, disables shared libraries and OpenSSL,
+and records the reviewed source checksum in pkg-config metadata. Production
+configuration requires the exact version and provenance. There is no
+unversioned `-loqs` fallback.
 
 The **liboqs** library (Open Quantum Safe, MIT license) provides the ML-DSA-44 implementation:
 
@@ -263,7 +380,8 @@ class CPQPubKey {
 public:
     bool IsValid() const;  // vch.size() == 1312
     uint256 GetWitnessProgram() const;  // SHA256(vch)
-    bool Verify(const uint256& hash, const std::vector<unsigned char>& sig) const;
+    bool Verify(const uint256& hash, const std::vector<unsigned char>& sig,
+                const unsigned char* context, size_t contextlen) const;
 };
 
 class CPQKey {
@@ -271,7 +389,8 @@ class CPQKey {
 public:
     void MakeNewKey();
     bool SetSeed(const unsigned char* seed);
-    bool Sign(const uint256& hash, std::vector<unsigned char>& sigOut) const;
+    bool Sign(const uint256& hash, std::vector<unsigned char>& sigOut,
+              const unsigned char* context, size_t contextlen) const;
     CPQPubKey GetPubKey() const;
 };
 ```
@@ -280,7 +399,7 @@ public:
 
 | Category | Files | Changes |
 |----------|-------|---------|
-| **Crypto** | `crypto/mldsa.h/cpp` | ML-DSA-44 wrapper around liboqs |
+| **Crypto** | `crypto/mldsa.h/cpp` | ML-DSA-44 wrapper around the pinned liboqs mldsa-native backend |
 | **Keys** | `pqkey.h/cpp` | `CPQKey`/`CPQPubKey` classes |
 | **Script** | `script/interpreter.h` | `SCRIPT_VERIFY_PQ_HYBRID` flag, `SIGVERSION_WITNESS_V2_PQ` |
 | **Script** | `script/interpreter.cpp` | Witness v2 validation (2-element stack), `WitnessSigOps` for v2 |
@@ -294,8 +413,9 @@ public:
 | **Validation** | `validation.cpp/h` | `GetBlockScriptFlags()`, `IsPQHybridDeployed()` |
 | **Validation** | `versionbits.cpp` | `pq_hybrid` deployment info registration |
 | **Wallet** | `wallet/rpcwallet.cpp` | `getnewpqaddress` RPC command |
-| **Wallet** | `wallet/walletdb.h/cpp` | PQ key persistence: `WritePQKey`, `WriteCryptedPQKey`, `ReadKeyValue` handlers for `"pqkey"`/`"cpqkey"` |
-| **Wallet** | `wallet/wallet.h/cpp` | `AddPQKeyPubKey` (disk persist), `AddCryptedPQKey`, `LoadPQKey`/`LoadCryptedPQKey` |
+| **Wallet** | `wallet/pqderivation.h/cpp` | Versioned hardened PQ BIP32 derivation and lineage identification |
+| **Wallet** | `wallet/walletdb.h/cpp` | PQ key persistence and versioned `pqhdchain` allocation state |
+| **Wallet** | `wallet/wallet.h/cpp` | Atomic deterministic generation, encrypted/plain persistence, and legacy record loading |
 | **Wallet** | `wallet/crypter.h/cpp` | PQ key encryption: `mapCryptedPQKeys`, `AddCryptedPQKey`, `EncryptKeys`/`Unlock` for PQ keys |
 | **Keystore** | `keystore.h` | PQ key maps (`PQKeyMap`, `PQPubKeyMap`, `CryptedPQKeyMap`) |
 | **Address** | `bech32.h/cpp` (new) | Bech32m encoding/decoding (BIP350) |
@@ -323,16 +443,30 @@ public:
 
 #### 7.2 Wallet Migration
 
-Users migrate by sending their funds from legacy addresses to new PQ addresses:
+Users migrate native RVN by sending it from legacy addresses to new PQ addresses:
 
 1. Generate new PQ address via `getnewpqaddress` RPC (or wallet UI)
 2. Create transaction spending UTXOs from legacy address to PQ address
 3. Sign with existing ECDSA key (standard legacy transaction)
 4. Broadcast and confirm
 
-After migration, all new change outputs can go to PQ addresses.
+After migration, native RVN change outputs can go to PQ addresses. Asset-bearing change outputs remain limited to the legacy asset destination format.
 
-#### 7.3 Emergency Response Plan
+#### 7.3 Asset Scope
+
+RIP-25 witness-v2 protects native RVN outputs only. It does not change the Ravencoin asset script envelope, which binds spendable asset outputs to legacy P2PKH key identifiers. This limitation applies to:
+
+- normal and reissuable assets;
+- owner tokens such as `ASSET!`;
+- unique assets;
+- restricted assets such as `$ASSET`, whose administration depends on `ASSET!`;
+- qualifier and sub-qualifier assets.
+
+A wallet or raw-transaction RPC must reject a witness-v2 PQ destination when constructing an asset-bearing output. Appending `OP_RVN_ASSET` data to an `OP_2 <32-byte-program>` script does not create a PQ asset output: it makes the script cease to be a witness program, and current consensus rejects the misplaced asset opcode.
+
+Asset owners therefore retain a post-quantum exposure until a separately specified and activated PQ asset extension exists. In particular, theft of `ASSET!` can transfer administrative control and can authorize reissuance where the asset remains reissuable. See [RIP-25 PQ Asset Extension Design Note](RIP-0025-PQ-Assets-Followup.md).
+
+#### 7.4 Emergency Response Plan
 
 If ECDSA is broken before migration completes:
 
@@ -349,8 +483,19 @@ This proposal is a **soft fork**. Backwards compatibility is maintained as follo
 - **Unupgraded nodes**: See witness v2 outputs as "anyone-can-spend" per BIP141 rules
 - **Legacy addresses**: Continue to work indefinitely
 - **Legacy transactions**: Continue to be valid. No existing transaction type is modified
-- **Asset transactions**: All asset operations work with both legacy and PQ addresses
+- **Asset transactions**: Unchanged and outside this RIP. Spendable asset outputs continue to require legacy P2PKH ownership conditions
 - **Migration**: Voluntary. Users migrate funds at their own pace
+
+The network context was added before mainnet RIP-25 activation. Mainnet has no
+valid pre-context RIP-25 history, so the change does not alter an active
+mainnet rule. Testnet and regtest are configured for immediate PQ testing.
+Experimental databases produced by an earlier empty-context build are not
+silently compatible: an old empty-context PQ signature is invalid under the
+network-bound rules. Regtest operators must discard and recreate such chains.
+Before a shared testnet deployment, operators must revalidate its full history
+and prove that it contains no previously accepted empty-context witness-v2 PQ
+spend. If one exists, a separately reviewed activation boundary is required;
+deploying this rule directly over that history would be unsafe.
 
 ---
 
@@ -359,8 +504,10 @@ This proposal is a **soft fork**. Backwards compatibility is maintained as follo
 - **Shor's algorithm** breaks ECDSA in polynomial time on a CRQC. ML-DSA-44 is resistant.
 - **ML-DSA-44 security** rests on the Module Learning With Errors (MLWE) problem, studied since 2005 and surviving 8 years of NIST public cryptanalysis
 - **Consensus determinism**: ML-DSA verification must produce identical results across all platforms. liboqs provides constant-time, platform-independent implementations.
+- **Network replay separation**: FIPS 204 signing and verification use the exact network-genesis context defined above. The full script cache key includes the same context.
 - **DoS resistance**: Larger transactions increase bandwidth. The PQ witness discount and block weight limits provide economic protection.
 - **Side-channel**: ML-DSA signing uses rejection sampling. Constant-time liboqs implementations mitigate timing attacks.
+- **Asset owner-token exposure**: RIP-25 does not protect `ASSET!` or other asset UTXOs. A future activated asset extension is required before asset ownership and administration can be considered quantum-resistant.
 
 ---
 

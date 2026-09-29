@@ -15,6 +15,10 @@
 #include <vector>
 #include <cstring>
 
+namespace {
+const unsigned char TEST_CONTEXT[] = "RVN/ML-DSA-44/unit-test/v1";
+}
+
 BOOST_FIXTURE_TEST_SUITE(pqkey_tests, BasicTestingSetup)
 
 // ============================================================
@@ -67,11 +71,13 @@ BOOST_AUTO_TEST_CASE(mldsa_sign_verify_roundtrip)
 
     unsigned char sig[mldsa::SIGNATURE_BYTES];
     size_t siglen = 0;
-    BOOST_CHECK(mldsa::Sign(sig, &siglen, msg, msglen, sk));
+    BOOST_CHECK(mldsa::Sign(sig, &siglen, msg, msglen,
+                            TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, sk));
     BOOST_CHECK_EQUAL(siglen, mldsa::SIGNATURE_BYTES);
 
     // Verify with correct key and message
-    BOOST_CHECK(mldsa::Verify(sig, siglen, msg, msglen, pk));
+    BOOST_CHECK(mldsa::Verify(sig, siglen, msg, msglen,
+                              TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, pk));
 }
 
 BOOST_AUTO_TEST_CASE(mldsa_verify_wrong_message)
@@ -88,10 +94,12 @@ BOOST_AUTO_TEST_CASE(mldsa_verify_wrong_message)
 
     unsigned char sig[mldsa::SIGNATURE_BYTES];
     size_t siglen = 0;
-    BOOST_CHECK(mldsa::Sign(sig, &siglen, msg1, sizeof(msg1) - 1, sk));
+    BOOST_CHECK(mldsa::Sign(sig, &siglen, msg1, sizeof(msg1) - 1,
+                            TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, sk));
 
     // Must fail with different message
-    BOOST_CHECK(!mldsa::Verify(sig, siglen, msg2, sizeof(msg2) - 1, pk));
+    BOOST_CHECK(!mldsa::Verify(sig, siglen, msg2, sizeof(msg2) - 1,
+                               TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, pk));
 }
 
 BOOST_AUTO_TEST_CASE(mldsa_verify_wrong_key)
@@ -110,13 +118,16 @@ BOOST_AUTO_TEST_CASE(mldsa_verify_wrong_key)
     unsigned char msg[] = "test message";
     unsigned char sig[mldsa::SIGNATURE_BYTES];
     size_t siglen = 0;
-    BOOST_CHECK(mldsa::Sign(sig, &siglen, msg, sizeof(msg) - 1, sk1));
+    BOOST_CHECK(mldsa::Sign(sig, &siglen, msg, sizeof(msg) - 1,
+                            TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, sk1));
 
     // Must succeed with correct key
-    BOOST_CHECK(mldsa::Verify(sig, siglen, msg, sizeof(msg) - 1, pk1));
+    BOOST_CHECK(mldsa::Verify(sig, siglen, msg, sizeof(msg) - 1,
+                              TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, pk1));
 
     // Must fail with wrong key
-    BOOST_CHECK(!mldsa::Verify(sig, siglen, msg, sizeof(msg) - 1, pk2));
+    BOOST_CHECK(!mldsa::Verify(sig, siglen, msg, sizeof(msg) - 1,
+                               TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, pk2));
 }
 
 BOOST_AUTO_TEST_CASE(mldsa_verify_tampered_signature)
@@ -131,12 +142,14 @@ BOOST_AUTO_TEST_CASE(mldsa_verify_tampered_signature)
     unsigned char msg[] = "tamper test";
     unsigned char sig[mldsa::SIGNATURE_BYTES];
     size_t siglen = 0;
-    BOOST_CHECK(mldsa::Sign(sig, &siglen, msg, sizeof(msg) - 1, sk));
+    BOOST_CHECK(mldsa::Sign(sig, &siglen, msg, sizeof(msg) - 1,
+                            TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, sk));
 
     // Tamper with signature
     sig[100] ^= 0xFF;
 
-    BOOST_CHECK(!mldsa::Verify(sig, siglen, msg, sizeof(msg) - 1, pk));
+    BOOST_CHECK(!mldsa::Verify(sig, siglen, msg, sizeof(msg) - 1,
+                               TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, pk));
 }
 
 BOOST_AUTO_TEST_CASE(mldsa_verify_wrong_siglen)
@@ -150,11 +163,14 @@ BOOST_AUTO_TEST_CASE(mldsa_verify_wrong_siglen)
     unsigned char msg[] = "size test";
     unsigned char sig[mldsa::SIGNATURE_BYTES];
     size_t siglen = 0;
-    BOOST_CHECK(mldsa::Sign(sig, &siglen, msg, sizeof(msg) - 1, sk));
+    BOOST_CHECK(mldsa::Sign(sig, &siglen, msg, sizeof(msg) - 1,
+                            TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, sk));
 
     // Wrong signature length must fail
-    BOOST_CHECK(!mldsa::Verify(sig, siglen - 1, msg, sizeof(msg) - 1, pk));
-    BOOST_CHECK(!mldsa::Verify(sig, 0, msg, sizeof(msg) - 1, pk));
+    BOOST_CHECK(!mldsa::Verify(sig, siglen - 1, msg, sizeof(msg) - 1,
+                               TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, pk));
+    BOOST_CHECK(!mldsa::Verify(sig, 0, msg, sizeof(msg) - 1,
+                               TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1, pk));
 }
 
 BOOST_AUTO_TEST_CASE(mldsa_sizes_correct)
@@ -209,10 +225,10 @@ BOOST_AUTO_TEST_CASE(pqkey_sign_verify_roundtrip)
     memset(hash.begin(), 0xAA, 32);
 
     std::vector<unsigned char> sig;
-    BOOST_CHECK(key.Sign(hash, sig));
+    BOOST_CHECK(key.Sign(hash, sig, TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1));
     BOOST_CHECK_EQUAL(sig.size(), mldsa::SIGNATURE_BYTES);
 
-    BOOST_CHECK(pub.Verify(hash, sig));
+    BOOST_CHECK(pub.Verify(hash, sig, TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1));
 }
 
 BOOST_AUTO_TEST_CASE(pqkey_verify_wrong_hash)
@@ -227,10 +243,10 @@ BOOST_AUTO_TEST_CASE(pqkey_verify_wrong_hash)
     memset(hash2.begin(), 0xBB, 32);
 
     std::vector<unsigned char> sig;
-    BOOST_CHECK(key.Sign(hash1, sig));
+    BOOST_CHECK(key.Sign(hash1, sig, TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1));
 
     // Must fail with different hash
-    BOOST_CHECK(!pub.Verify(hash2, sig));
+    BOOST_CHECK(!pub.Verify(hash2, sig, TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1));
 }
 
 BOOST_AUTO_TEST_CASE(pqkey_verify_wrong_pubkey)
@@ -245,10 +261,10 @@ BOOST_AUTO_TEST_CASE(pqkey_verify_wrong_pubkey)
     memset(hash.begin(), 0xCC, 32);
 
     std::vector<unsigned char> sig;
-    BOOST_CHECK(key1.Sign(hash, sig));
+    BOOST_CHECK(key1.Sign(hash, sig, TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1));
 
     // Verify with wrong key must fail
-    BOOST_CHECK(!pub2.Verify(hash, sig));
+    BOOST_CHECK(!pub2.Verify(hash, sig, TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1));
 }
 
 BOOST_AUTO_TEST_CASE(pqkey_witness_program)
@@ -292,8 +308,8 @@ BOOST_AUTO_TEST_CASE(pqkey_multiple_signatures)
         memset(hash.begin(), i, 32);
 
         std::vector<unsigned char> sig;
-        BOOST_CHECK(key.Sign(hash, sig));
-        BOOST_CHECK(pub.Verify(hash, sig));
+        BOOST_CHECK(key.Sign(hash, sig, TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1));
+        BOOST_CHECK(pub.Verify(hash, sig, TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1));
     }
 }
 
@@ -309,7 +325,7 @@ BOOST_AUTO_TEST_CASE(pqkey_set_key_data)
 
     // Create new key from raw data
     CPQKey key2;
-    std::vector<unsigned char> data(keydata.begin(), keydata.end());
+    CPQKey::KeyData data(keydata.begin(), keydata.end());
     BOOST_CHECK(key2.SetKeyData(data));
     BOOST_CHECK(key2.IsValid());
 }
@@ -323,7 +339,7 @@ BOOST_AUTO_TEST_CASE(pqkey_invalid_state)
     memset(hash.begin(), 0x11, 32);
 
     std::vector<unsigned char> sig;
-    BOOST_CHECK(!key.Sign(hash, sig));
+    BOOST_CHECK(!key.Sign(hash, sig, TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1));
 }
 
 BOOST_AUTO_TEST_CASE(pqpubkey_invalid_size)
@@ -349,7 +365,8 @@ BOOST_AUTO_TEST_CASE(pqpubkey_verify_rejects_wrong_sig_size)
 
     // Wrong size signature
     std::vector<unsigned char> bad_sig(100, 0);
-    BOOST_CHECK(!pub.Verify(hash, bad_sig));
+    BOOST_CHECK(!pub.Verify(hash, bad_sig,
+                            TEST_CONTEXT, sizeof(TEST_CONTEXT) - 1));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

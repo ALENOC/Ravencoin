@@ -33,9 +33,13 @@ static const char DB_BLOCK_INDEX = 'b';
 
 static const char DB_BEST_BLOCK = 'B';
 static const char DB_HEAD_BLOCKS = 'H';
+static const char DB_RIP25_CONTEXT_VALIDATED = 'Q';
+static const char DB_RIP25_CONTEXT_PENDING = 'q';
 static const char DB_FLAG = 'F';
 static const char DB_REINDEX_FLAG = 'R';
 static const char DB_LAST_BLOCK = 'l';
+
+static constexpr uint8_t RIP25_CONTEXT_CHAINSTATE_VERSION = 1;
 
 namespace {
 
@@ -88,6 +92,65 @@ std::vector<uint256> CCoinsViewDB::GetHeadBlocks() const {
     return vhashHeadBlocks;
 }
 
+namespace {
+
+uint256 ReadRIP25ContextTip(const CDBWrapper& db, char key)
+{
+    std::pair<uint8_t, uint256> marker;
+    if (!db.Read(key, marker) || marker.first != RIP25_CONTEXT_CHAINSTATE_VERSION) {
+        return uint256();
+    }
+    return marker.second;
+}
+
+std::pair<uint8_t, uint256> MakeRIP25ContextMarker(const uint256& hashBlock)
+{
+    return std::make_pair(RIP25_CONTEXT_CHAINSTATE_VERSION, hashBlock);
+}
+
+} // namespace
+
+uint256 CCoinsViewDB::GetRIP25ContextValidatedTip() const
+{
+    return ReadRIP25ContextTip(db, DB_RIP25_CONTEXT_VALIDATED);
+}
+
+uint256 CCoinsViewDB::GetRIP25ContextPendingTip() const
+{
+    return ReadRIP25ContextTip(db, DB_RIP25_CONTEXT_PENDING);
+}
+
+bool IsRIP25ContextChainstateCurrent(const uint256& bestBlock,
+                                     const std::vector<uint256>& headBlocks,
+                                     const uint256& validatedTip,
+                                     const uint256& pendingTip)
+{
+    if (!bestBlock.IsNull()) {
+        return headBlocks.empty() && validatedTip == bestBlock && pendingTip.IsNull();
+    }
+
+    if (headBlocks.size() != 2 || headBlocks[0].IsNull()) {
+        return false;
+    }
+
+    const uint256& newTip = headBlocks[0];
+    const uint256& oldTip = headBlocks[1];
+    const bool oldTipValidated = oldTip.IsNull() ? validatedTip.IsNull() : validatedTip == oldTip;
+    return oldTipValidated && pendingTip == newTip;
+}
+
+bool RIP25ContextChainstateRequiresRebuild(bool rip25Active,
+                                           const uint256& candidateTip,
+                                           const uint256& bestBlock,
+                                           const std::vector<uint256>& headBlocks,
+                                           const uint256& validatedTip,
+                                           const uint256& pendingTip)
+{
+    return rip25Active && !candidateTip.IsNull() &&
+           !IsRIP25ContextChainstateCurrent(
+                   bestBlock, headBlocks, validatedTip, pendingTip);
+}
+
 bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) {
     CDBBatch batch(db);
     size_t count = 0;
@@ -112,6 +175,12 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) {
     // interrupting after partial writes from multiple independent reorgs.
     batch.Erase(DB_BEST_BLOCK);
     batch.Write(DB_HEAD_BLOCKS, std::vector<uint256>{hashBlock, old_tip});
+    if (old_tip.IsNull()) {
+        batch.Erase(DB_RIP25_CONTEXT_VALIDATED);
+    } else {
+        batch.Write(DB_RIP25_CONTEXT_VALIDATED, MakeRIP25ContextMarker(old_tip));
+    }
+    batch.Write(DB_RIP25_CONTEXT_PENDING, MakeRIP25ContextMarker(hashBlock));
 
     for (CCoinsMap::iterator it = mapCoins.begin(); it != mapCoins.end();) {
         if (it->second.flags & CCoinsCacheEntry::DIRTY) {
@@ -141,7 +210,9 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) {
 
     // In the last batch, mark the database as consistent with hashBlock again.
     batch.Erase(DB_HEAD_BLOCKS);
+    batch.Erase(DB_RIP25_CONTEXT_PENDING);
     batch.Write(DB_BEST_BLOCK, hashBlock);
+    batch.Write(DB_RIP25_CONTEXT_VALIDATED, MakeRIP25ContextMarker(hashBlock));
 
     LogPrint(BCLog::COINDB, "Writing final batch of %.2f MiB\n", batch.SizeEstimate() * (1.0 / 1048576.0));
     bool ret = db.WriteBatch(batch);
