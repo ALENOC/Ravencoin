@@ -291,6 +291,140 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
     }
 
+    BOOST_AUTO_TEST_CASE(pq_asset_program_research_parser_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        const uint256 expected = uint256S("03");
+        const std::vector<unsigned char> program = ToByteVector(expected);
+        const CScript destination = GetScriptForDestination(
+            DecodeDestination(GetParams().GlobalBurnAddress()));
+        const auto addProgram = [&program](CScript script) {
+            BOOST_REQUIRE_EQUAL(script.back(), OP_DROP);
+            script.pop_back();
+            script.insert(script.end(), program.begin(), program.end());
+            return script;
+        };
+        const auto checkProgram = [&expected](const CScript& script) {
+            uint256 parsed;
+            BOOST_REQUIRE(GetPQAssetProgram(script, parsed));
+            BOOST_CHECK(parsed == expected);
+        };
+
+        CScript transfer = destination;
+        CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(transfer);
+        uint256 parsed;
+        BOOST_CHECK(!GetPQAssetProgram(transfer, parsed));
+        transfer = addProgram(transfer);
+        checkProgram(transfer);
+
+        for (const std::string& name : {"RAVENTEST!", "RAVENTEST#ONE",
+                                         "$RAVENTEST", "#RAVENTEST"}) {
+            CScript assetTransfer = destination;
+            CAssetTransfer(name, COIN).ConstructTransaction(assetTransfer);
+            checkProgram(addProgram(assetTransfer));
+        }
+
+        CScript issue = destination;
+        CNewAsset("RAVENTEST", COIN, 0, 1, 0, "").ConstructTransaction(issue);
+        checkProgram(addProgram(issue));
+        CScript owner = destination;
+        CNewAsset("RAVENTEST", COIN, 0, 1, 0, "").ConstructOwnerTransaction(owner);
+        checkProgram(addProgram(owner));
+        CScript reissue = destination;
+        CReissueAsset("RAVENTEST", COIN, 0, 1, "").ConstructTransaction(reissue);
+        checkProgram(addProgram(reissue));
+
+        const std::string ipfs = std::string("\x12\x20", 2) + std::string(32, 'h');
+        CScript ipfsTransfer = destination;
+        CAssetTransfer("RAVENTEST", COIN, ipfs, 7).ConstructTransaction(ipfsTransfer);
+        ipfsTransfer = addProgram(ipfsTransfer);
+        checkProgram(ipfsTransfer);
+        CAssetTransfer legacyIpfsTransfer;
+        std::string address;
+        BOOST_REQUIRE(TransferAssetFromScript(ipfsTransfer, legacyIpfsTransfer, address));
+        BOOST_CHECK_EQUAL(legacyIpfsTransfer.message, ipfs);
+        BOOST_CHECK_EQUAL(legacyIpfsTransfer.nExpireTime, 7);
+        CScript ipfsIssue = destination;
+        CNewAsset(std::string(30, 'A'), COIN, 0, 1, 1, ipfs)
+            .ConstructTransaction(ipfsIssue);
+        BOOST_REQUIRE_EQUAL(ipfsIssue[26], OP_PUSHDATA1);
+        ipfsIssue = addProgram(ipfsIssue);
+        checkProgram(ipfsIssue);
+        CNewAsset legacyIpfsIssue;
+        BOOST_REQUIRE(AssetFromScript(ipfsIssue, legacyIpfsIssue, address));
+        BOOST_CHECK_EQUAL(legacyIpfsIssue.strIPFSHash, ipfs);
+        CScript ipfsReissue = destination;
+        CReissueAsset("RAVENTEST", COIN, 0, 1, ipfs).ConstructTransaction(ipfsReissue);
+        ipfsReissue = addProgram(ipfsReissue);
+        checkProgram(ipfsReissue);
+        CReissueAsset legacyIpfsReissue;
+        BOOST_REQUIRE(ReissueAssetFromScript(ipfsReissue, legacyIpfsReissue, address));
+        BOOST_CHECK_EQUAL(legacyIpfsReissue.strIPFSHash, ipfs);
+
+        CScript message = destination;
+        CAssetTransfer("RAVENTEST", COIN, std::string(32, 'x')).ConstructTransaction(message);
+        CScript noExpiry = addProgram(message);
+        BOOST_CHECK(!GetPQAssetProgram(noExpiry, parsed));
+        CAssetTransfer legacyNoExpiry;
+        BOOST_REQUIRE(TransferAssetFromScript(noExpiry, legacyNoExpiry, address));
+        BOOST_CHECK_EQUAL(legacyNoExpiry.nExpireTime, 3);
+        BOOST_REQUIRE_EQUAL(message[26], message.size() - 28);
+        message[26] += 8;
+        const std::vector<unsigned char> zeroExpiry(8, 0);
+        message.insert(message.end() - 1, zeroExpiry.begin(), zeroExpiry.end());
+        message = addProgram(message);
+        checkProgram(message);
+        CAssetTransfer legacyMessage;
+        BOOST_REQUIRE(TransferAssetFromScript(message, legacyMessage, address));
+        BOOST_CHECK_EQUAL(legacyMessage.message, std::string(32, 'x'));
+        BOOST_CHECK_EQUAL(legacyMessage.nExpireTime, 0);
+
+        CScript expiry = destination;
+        CAssetTransfer("RAVENTEST", COIN, std::string(32, 'x'), 123456789)
+            .ConstructTransaction(expiry);
+        checkProgram(addProgram(expiry));
+
+        CScript tooShort = transfer;
+        tooShort.pop_back();
+        BOOST_CHECK(!GetPQAssetProgram(tooShort, parsed));
+        CScript tooLong = transfer;
+        tooLong.push_back(0);
+        BOOST_CHECK(!GetPQAssetProgram(tooLong, parsed));
+        CScript overlongPush = transfer;
+        ++overlongPush[26];
+        BOOST_CHECK(!GetPQAssetProgram(overlongPush, parsed));
+        CScript wrongPrefix = transfer;
+        wrongPrefix[0] = OP_0;
+        BOOST_CHECK(!GetPQAssetProgram(wrongPrefix, parsed));
+        CScript nonMinimalPush = transfer;
+        const unsigned char oldLength = nonMinimalPush[26];
+        BOOST_REQUIRE(oldLength < OP_PUSHDATA1);
+        nonMinimalPush[26] = OP_PUSHDATA1;
+        nonMinimalPush.insert(nonMinimalPush.begin() + 27, oldLength);
+        BOOST_CHECK(!GetPQAssetProgram(nonMinimalPush, parsed));
+        CScript nonMinimalPush2 = transfer;
+        nonMinimalPush2[26] = OP_PUSHDATA2;
+        const std::vector<unsigned char> declaredLength{oldLength, 0};
+        nonMinimalPush2.insert(nonMinimalPush2.begin() + 27,
+                               declaredLength.begin(), declaredLength.end());
+        BOOST_CHECK(!GetPQAssetProgram(nonMinimalPush2, parsed));
+        CScript malformedName = transfer;
+        malformedName[31] = 0xff;
+        BOOST_CHECK(!GetPQAssetProgram(malformedName, parsed));
+        CScript wrongPushLength = ipfsIssue;
+        --wrongPushLength[27];
+        BOOST_CHECK(!GetPQAssetProgram(wrongPushLength, parsed));
+
+        // This old-valid lookalike proves that any future spend rule needs a
+        // creation-height gate. Script bytes alone cannot establish intent.
+        CScript historical = destination;
+        CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(historical);
+        const std::vector<unsigned char> filler(31, 0);
+        historical.insert(historical.end(), filler.begin(), filler.end());
+        BOOST_CHECK(GetPQAssetProgram(historical, parsed));
+        BOOST_CHECK_EQUAL(parsed.begin()[0], OP_DROP);
+    }
+
     BOOST_AUTO_TEST_CASE(asset_tx_valid_test)
     {
         BOOST_TEST_MESSAGE("Running Asset TX Valid Test");

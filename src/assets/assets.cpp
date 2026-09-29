@@ -3573,6 +3573,84 @@ bool GetAssetData(const CScript& script, CAssetOutputEntry& data)
     return false;
 }
 
+bool GetPQAssetProgram(const CScript& script, uint256& program)
+{
+    // Research parser only. No consensus or wallet path calls this function.
+    // Keep the classical envelope intact so legacy nodes see the same asset.
+    if (script.size() < 26 + 1 + 4 + 32 ||
+        script[0] != OP_DUP || script[1] != OP_HASH160 || script[2] != 20 ||
+        script[23] != OP_EQUALVERIFY || script[24] != OP_CHECKSIG ||
+        script[25] != OP_RVN_ASSET) {
+        return false;
+    }
+
+    size_t payloadStart = 27;
+    size_t payloadSize = script[26];
+    if (script[26] == OP_PUSHDATA1) {
+        if (script.size() < 28)
+            return false;
+        payloadSize = script[27];
+        payloadStart = 28;
+        if (payloadSize < OP_PUSHDATA1)
+            return false;
+    } else if (payloadSize == 0 || payloadSize >= OP_PUSHDATA1) {
+        return false;
+    }
+
+    if (payloadSize < 4 || payloadStart + payloadSize + 32 != script.size())
+        return false;
+    if (script[payloadStart] != RVN_R || script[payloadStart + 1] != RVN_V ||
+        script[payloadStart + 2] != RVN_N)
+        return false;
+
+    int type = 0;
+    bool isOwner = false;
+    if (!script.IsAssetScript(type, isOwner))
+        return false;
+
+    const unsigned char marker = script[payloadStart + 3];
+    std::vector<unsigned char> bytes(script.begin() + payloadStart + 4,
+                                     script.begin() + payloadStart + payloadSize);
+    CDataStream stream(bytes, SER_NETWORK, PROTOCOL_VERSION);
+    try {
+        if (marker == RVN_T && type == TX_TRANSFER_ASSET) {
+            CDataStream shape(bytes, SER_NETWORK, PROTOCOL_VERSION);
+            std::string name;
+            CAmount amount;
+            shape >> name;
+            shape >> amount;
+            // With a message, legacy deserialization would consume the first
+            // eight program bytes as expiry unless that field is explicit.
+            if (!shape.empty() &&
+                (shape.size() != 42 ||
+                 (shape[0] != IPFS_SHA2_256 && shape[0] != TXID_NOTIFIER) ||
+                 shape[1] != IPFS_SHA2_256_LEN)) {
+                return false;
+            }
+            CAssetTransfer transfer;
+            stream >> transfer;
+        } else if (marker == RVN_Q && type == TX_NEW_ASSET && !isOwner) {
+            CNewAsset asset;
+            stream >> asset;
+        } else if (marker == RVN_O && type == TX_NEW_ASSET && isOwner) {
+            std::string ownerName;
+            stream >> ownerName;
+        } else if (marker == RVN_R && type == TX_REISSUE_ASSET) {
+            CReissueAsset asset;
+            stream >> asset;
+        } else {
+            return false;
+        }
+    } catch (const std::exception&) {
+        return false;
+    }
+    if (!stream.empty())
+        return false;
+
+    std::copy(script.end() - 32, script.end(), program.begin());
+    return true;
+}
+
 #ifdef ENABLE_WALLET
 void GetAllAdministrativeAssets(CWallet *pwallet, std::vector<std::string> &names, int nMinConf)
 {
