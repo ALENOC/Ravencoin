@@ -120,7 +120,7 @@ PY
 
     make osx_volname
 
-    make deploydir
+    make PYTHONPATH="${PYTHONPATH}" deploydir
 
     if [[ -e ${GITHUB_WORKSPACE}/dist/Raven-Qt.app/Contents/MacOS/install_cli.sh ]]; then
         chmod +x ${GITHUB_WORKSPACE}/dist/Raven-Qt.app/Contents/MacOS/install_cli.sh
@@ -140,7 +140,7 @@ PY
 
     cd ${GITHUB_WORKSPACE}
 
-    make deploy
+    make PYTHONPATH="${PYTHONPATH}" deploy
 
     ${GITHUB_WORKSPACE}/depends/x86_64-apple-darwin14/native/bin/dmg dmg "Raven-Core.dmg" ${RELEASE_LOCATION}/${DISTNAME}-osx-unsigned.dmg
 
