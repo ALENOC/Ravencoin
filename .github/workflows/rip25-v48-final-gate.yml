@@ -223,7 +223,16 @@ jobs:
         name: Run native tests
         if: matrix.run_tests
         shell: bash
-        run: make check
+        run: |
+          if ! make check; then
+            if test -f src/test-suite.log; then
+              tail -n 300 src/test-suite.log
+            fi
+            if test -f src/test/test_raven.log; then
+              tail -n 300 src/test/test_raven.log
+            fi
+            exit 1
+          fi
 
       - id: postbuild_integrity
         name: Verify built source still matches checkout
