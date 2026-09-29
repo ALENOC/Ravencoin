@@ -115,6 +115,9 @@ RAVEN_TESTS += \
   wallet/test/wallet_tests.cpp \
   wallet/test/pq_wallet_tests.cpp \
   wallet/test/crypto_tests.cpp
+else
+# The always-on full-chain PQ KAT uses this derivation without linking wallet.
+RAVEN_TESTS += wallet/pqderivation.cpp
 endif
 
 test_test_raven_SOURCES = $(RAVEN_TESTS) $(JSON_TEST_FILES) $(RAW_TEST_FILES)
