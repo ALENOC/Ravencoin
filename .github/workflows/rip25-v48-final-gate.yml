@@ -103,7 +103,7 @@ jobs:
         run: |
           python3 contrib/devtools/test-required-functional-gate.py
           python3 test/functional/test_runner.py --require-tests --jobs=2 \
-            wallet_encryption_rewrite.py rpc_assettransfer.py feature_chainstate_ahead.py
+            wallet_encryption_rewrite.py wallet_asset_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py
 
       - id: posttest_integrity
         name: Verify tested source still matches checkout
