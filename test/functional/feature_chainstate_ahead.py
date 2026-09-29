@@ -9,7 +9,7 @@ import os
 import shutil
 
 from test_framework.test_framework import RavenTestFramework
-from test_framework.util import assert_equal, connect_nodes_bi
+from test_framework.util import assert_equal, connect_nodes_bi, wait_until
 
 
 class ChainstateAheadTest(RavenTestFramework):
@@ -68,6 +68,10 @@ class ChainstateAheadTest(RavenTestFramework):
             log_file.seek(log_offset)
             recovery_log = log_file.read()
         assert 'rebuilding chainstate' in recovery_log
+        # RPC warmup can finish before ThreadImport connects the rebuilt chain.
+        wait_until(lambda: observer.getbestblockhash() == checkpoint_tip,
+                   err_msg='chainstate rebuild did not reach the checkpoint tip',
+                   timeout=60)
         assert_equal(observer.getbestblockhash(), checkpoint_tip)
         assert_equal(observer.getblockcount(), 432)
         assert_equal(observer.getassetdata(asset_name), None)
