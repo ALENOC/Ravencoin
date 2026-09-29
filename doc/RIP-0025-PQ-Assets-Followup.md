@@ -180,3 +180,58 @@ The follow-up implementation should not be proposed for activation without:
 ## 12. Current Decision
 
 The current RIP-25 remediation deliberately does not implement a PQ asset consensus extension. It documents assets as out of scope, rejects witness-v2 destinations in asset construction paths, and preserves the existing consensus rules. A separate RIP and independent adversarial review are required for any future PQ asset design.
+
+## 13. Experimental Compatibility Direction
+
+The following is a research direction for a separate extension. It is not an
+activated rule and must not be described as protecting assets in the current
+RIP-25 implementation.
+
+Directly appending a witness-v2 program or witness to a legacy P2PKH asset
+output does not work as a compatible soft fork. The complete script is not a
+native witness program, while existing witness validation rejects nonempty
+witness data for a non-witness prevout as unexpected. Merely recognizing a
+different `OP_RVN_ASSET` offset would not solve spending, and a bare
+`OP_2 <hash> OP_RVN_ASSET` output is anyone-can-spend to older script engines.
+
+A first suffix candidate was falsified by a unit test: an opaque
+`OP_2 <32-byte program>` after `OP_DROP` is included in the old transfer
+deserializer stream. The old parser mistakes it for an asset message and
+rejects the output. It must not be implemented.
+
+A second candidate encodes the program in the optional transfer-message slot
+using a distinct raw marker byte, canonical CompactSize 32, and the program.
+The experimental marker `0x50` is not a protocol assignment. Although the old
+parser accepts this form, it consumes the genuine message field, can emit
+unwanted owner-token messages, and does not cover issuance or reissuance well.
+It is a compatibility probe, not the preferred extension.
+
+A third candidate replaces the final `OP_DROP` byte of a canonical P2PKH asset
+output with exactly 32 raw bytes containing the PQ program. The old script
+engine treats all bytes after `OP_RVN_ASSET` as opaque. Old transfer and reissue
+deserializers ignore exactly 32 residual bytes when no optional message or
+metadata hash exists. When a genuine transfer message exists, the protected
+form must serialize an explicit eight-byte expiry (zero if absent) before the
+32-byte tail; the old parser then retains the original message and expiry and
+ignores the tail. Initial issuance and owner-token parsers also ignore the
+tail. Local unit tests prove parsing and existing transaction/asset checks for
+representative transfer, issue, owner, and reissue scripts, including normal,
+unique, restricted, and qualifier transfer names. This is evidence of parser
+compatibility, not evidence that the proposed new consensus rule is safe.
+
+The proposed new rule would not put an unexpected witness on the asset input.
+Instead, the spending transaction would also consume a native RIP-25
+witness-v2 UTXO whose program equals the program committed in the asset output.
+Its fixed `SIGHASH_ALL` ML-DSA signature commits to every asset input and
+output in the same transaction. A quantum attacker with only the P2PKH
+private key could not create the required PQ input.
+
+This construction is a candidate, not yet a specification. Before activation
+it needs an exact per-type canonical parser, protection against
+historical lookalike scripts, explicit creation-height semantics, a separate
+activation decision, asset-change and owner-token no-downgrade rules, anchor
+UTXO funding and refresh behavior, wallet coin selection, restricted-address
+checks, miner and mempool equivalence, sigop and weight accounting, and
+cross-network and reorg vectors. A separate BIP9 bit must not be assigned or
+enabled on mainnet without protocol-owner review. Until these are proved, the
+current native-RVN-only security claim remains unchanged.

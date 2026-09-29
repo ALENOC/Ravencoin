@@ -13,6 +13,11 @@
 #include <base58.h>
 #include <consensus/validation.h>
 #include <consensus/tx_verify.h>
+#include <key.h>
+#include <keystore.h>
+#include <policy/policy.h>
+#include <script/interpreter.h>
+#include <script/sign.h>
 #include <validation.h>
 #ifdef ENABLE_WALLET
 #include <wallet/db.h>
@@ -31,6 +36,22 @@ CTxOut MakeAssetTransferOutput(const std::string& assetName, CAmount amount)
 void AddAssetCoin(CCoinsViewCache& coins, const COutPoint& outpoint, const std::string& assetName, CAmount amount)
 {
     coins.AddCoin(outpoint, Coin(MakeAssetTransferOutput(assetName, amount), 10, false), true);
+}
+
+CScript MakeTaggedAssetTransferScript(const std::string& assetName, CAmount amount,
+                                      const std::vector<unsigned char>& program)
+{
+    CDataStream payload(SER_NETWORK, PROTOCOL_VERSION);
+    payload << assetName;
+    payload << amount;
+    payload << static_cast<unsigned char>(0x50);
+    payload << std::string(program.begin(), program.end());
+
+    std::vector<unsigned char> assetData{RVN_R, RVN_V, RVN_N, RVN_T};
+    assetData.insert(assetData.end(), payload.begin(), payload.end());
+    CScript script = GetScriptForDestination(DecodeDestination(GetParams().GlobalBurnAddress()));
+    script << OP_RVN_ASSET << assetData << OP_DROP;
+    return script;
 }
 
 } // namespace
@@ -81,6 +102,193 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         CValidationState state;
         BOOST_CHECK(!CheckTransaction(tx, state));
         BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-op-rvn-asset-not-in-right-script-location");
+    }
+
+    BOOST_AUTO_TEST_CASE(legacy_asset_parser_accepts_tagged_program_message_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+
+        const std::vector<unsigned char> program = ToByteVector(uint256S("03"));
+        CScript script = MakeTaggedAssetTransferScript("RAVENTEST", COIN, program);
+
+        int assetType = 0;
+        bool isOwner = false;
+        BOOST_REQUIRE(script.IsAssetScript(assetType, isOwner));
+        BOOST_CHECK_EQUAL(assetType, TX_TRANSFER_ASSET);
+        BOOST_CHECK(!isOwner);
+
+        CAssetOutputEntry data;
+        BOOST_REQUIRE(GetAssetData(script, data));
+        BOOST_CHECK_EQUAL(data.assetName, "RAVENTEST");
+        BOOST_CHECK_EQUAL(data.nAmount, COIN);
+        BOOST_CHECK_EQUAL(EncodeDestination(data.destination), GetParams().GlobalBurnAddress());
+
+        CAssetTransfer transfer;
+        std::string address;
+        BOOST_REQUIRE(TransferAssetFromScript(script, transfer, address));
+        BOOST_CHECK_EQUAL(transfer.message.size(), program.size());
+        BOOST_CHECK_EQUAL_COLLECTIONS(transfer.message.begin(), transfer.message.end(), program.begin(), program.end());
+        std::string error;
+        BOOST_CHECK(ContextualCheckTransferAsset(nullptr, transfer, address, error));
+
+        CCoinsView view;
+        CCoinsViewCache coins(&view);
+        const COutPoint source(uint256S("04"), 0);
+        AddAssetCoin(coins, source, "RAVENTEST", COIN);
+
+        CMutableTransaction mutableTx;
+        mutableTx.vin.emplace_back(source);
+        mutableTx.vout.emplace_back(0, script);
+        CValidationState state;
+        BOOST_CHECK(CheckTransaction(CTransaction(mutableTx), state));
+        std::vector<std::pair<std::string, uint256>> reissues;
+        BOOST_CHECK_MESSAGE(Consensus::CheckTxAssets(CTransaction(mutableTx), state, coins,
+                            nullptr, false, reissues, true, true), state.GetDebugMessage());
+
+        int witnessVersion = -1;
+        std::vector<unsigned char> witnessProgram;
+        BOOST_CHECK(!script.IsWitnessProgram(witnessVersion, witnessProgram));
+    }
+
+    BOOST_AUTO_TEST_CASE(legacy_asset_parser_32_byte_tail_class_matrix_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        const std::vector<unsigned char> program = ToByteVector(uint256S("03"));
+        const std::vector<std::string> names = {
+            "RAVENTEST", "RAVENTEST!", "RAVENTEST#ONE",
+            "$RAVENTEST", "#RAVENTEST"
+        };
+        for (const std::string& name : names) {
+            BOOST_TEST_CONTEXT(name) {
+                CScript script = MakeAssetTransferOutput(name, COIN).scriptPubKey;
+                BOOST_REQUIRE_EQUAL(script.back(), OP_DROP);
+                script.pop_back();
+                script.insert(script.end(), program.begin(), program.end());
+                CAssetOutputEntry data;
+                BOOST_REQUIRE(GetAssetData(script, data));
+                BOOST_CHECK_EQUAL(data.assetName, name);
+                BOOST_CHECK_EQUAL(data.nAmount, COIN);
+                CAssetTransfer transfer;
+                std::string address;
+                BOOST_REQUIRE(TransferAssetFromScript(script, transfer, address));
+                BOOST_CHECK(transfer.message.empty());
+                BOOST_CHECK_EQUAL(transfer.nExpireTime, 0);
+            }
+        }
+    }
+
+    BOOST_AUTO_TEST_CASE(legacy_asset_parsers_accept_32_byte_tail_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        const std::vector<unsigned char> program = ToByteVector(uint256S("03"));
+        const CScript destination = GetScriptForDestination(
+            DecodeDestination(GetParams().GlobalBurnAddress()));
+        const auto replaceDropWithProgram = [&program](CScript& script) {
+            BOOST_REQUIRE_EQUAL(script.back(), OP_DROP);
+            script.pop_back();
+            script.insert(script.end(), program.begin(), program.end());
+        };
+
+        CScript transferScript = destination;
+        CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(transferScript);
+        replaceDropWithProgram(transferScript);
+        CAssetTransfer transfer;
+        std::string address;
+        BOOST_REQUIRE(TransferAssetFromScript(transferScript, transfer, address));
+        BOOST_CHECK(transfer.message.empty());
+        BOOST_CHECK_EQUAL(transfer.nExpireTime, 0);
+        CAssetOutputEntry transferData;
+        BOOST_REQUIRE(GetAssetData(transferScript, transferData));
+        BOOST_CHECK_EQUAL(transferData.assetName, "RAVENTEST");
+        txnouttype standardType = TX_NONSTANDARD;
+        BOOST_CHECK(IsStandard(transferScript, standardType, true));
+        BOOST_CHECK_EQUAL(standardType, TX_TRANSFER_ASSET);
+        CCoinsView view;
+        CCoinsViewCache coins(&view);
+        const COutPoint source(uint256S("05"), 0);
+        AddAssetCoin(coins, source, "RAVENTEST", COIN);
+        CMutableTransaction mutableTx;
+        mutableTx.vin.emplace_back(source);
+        mutableTx.vout.emplace_back(0, transferScript);
+        const CTransaction tx(mutableTx);
+        CValidationState state;
+        BOOST_REQUIRE(CheckTransaction(tx, state));
+        std::vector<std::pair<std::string, uint256>> reissues;
+        BOOST_CHECK_MESSAGE(Consensus::CheckTxAssets(tx, state, coins, nullptr,
+                            false, reissues, true, true), state.GetDebugMessage());
+
+        const std::string message(32, 'x');
+        CScript messageScript = destination;
+        CAssetTransfer("RAVENTEST", COIN, message).ConstructTransaction(messageScript);
+        BOOST_REQUIRE_EQUAL(messageScript.back(), OP_DROP);
+        messageScript.pop_back();
+        for (int i = 0; i < 8; ++i)
+            messageScript.push_back(0);
+        messageScript.insert(messageScript.end(), program.begin(), program.end());
+        CAssetTransfer parsedMessage;
+        BOOST_REQUIRE(TransferAssetFromScript(messageScript, parsedMessage, address));
+        BOOST_CHECK_EQUAL(parsedMessage.message, message);
+        BOOST_CHECK_EQUAL(parsedMessage.nExpireTime, 0);
+
+        CScript expiryScript = destination;
+        CAssetTransfer("RAVENTEST", COIN, message, 123456789).ConstructTransaction(expiryScript);
+        replaceDropWithProgram(expiryScript);
+        CAssetTransfer parsedExpiry;
+        BOOST_REQUIRE(TransferAssetFromScript(expiryScript, parsedExpiry, address));
+        BOOST_CHECK_EQUAL(parsedExpiry.message, message);
+        BOOST_CHECK_EQUAL(parsedExpiry.nExpireTime, 123456789);
+
+        CScript reissueScript = destination;
+        CReissueAsset("RAVENTEST", COIN, 0, 1, "").ConstructTransaction(reissueScript);
+        replaceDropWithProgram(reissueScript);
+        CReissueAsset reissue;
+        BOOST_REQUIRE(ReissueAssetFromScript(reissueScript, reissue, address));
+        BOOST_CHECK(reissue.strIPFSHash.empty());
+
+        CScript newAssetScript = destination;
+        CNewAsset("RAVENTEST", COIN, 0, 1, 0, "").ConstructTransaction(newAssetScript);
+        replaceDropWithProgram(newAssetScript);
+        CNewAsset newAsset;
+        BOOST_REQUIRE(AssetFromScript(newAssetScript, newAsset, address));
+        BOOST_CHECK_EQUAL(newAsset.strName, "RAVENTEST");
+
+        CScript ownerScript = destination;
+        CNewAsset("RAVENTEST", COIN, 0, 1, 0, "").ConstructOwnerTransaction(ownerScript);
+        replaceDropWithProgram(ownerScript);
+        std::string ownerName;
+        BOOST_REQUIRE(OwnerAssetFromScript(ownerScript, ownerName, address));
+        BOOST_CHECK_EQUAL(ownerName, "RAVENTEST!");
+    }
+
+    BOOST_AUTO_TEST_CASE(legacy_p2pkh_asset_script_accepts_32_byte_tail_spend_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        CKey key;
+        key.MakeNewKey(true);
+        CBasicKeyStore keystore;
+        BOOST_REQUIRE(keystore.AddKey(key));
+
+        CScript assetScript = GetScriptForDestination(key.GetPubKey().GetID());
+        CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(assetScript);
+        BOOST_REQUIRE_EQUAL(assetScript.back(), OP_DROP);
+        assetScript.pop_back();
+        const std::vector<unsigned char> program = ToByteVector(uint256S("03"));
+        assetScript.insert(assetScript.end(), program.begin(), program.end());
+
+        CMutableTransaction funding;
+        funding.vin.emplace_back(COutPoint(uint256S("06"), 0));
+        funding.vout.emplace_back(0, assetScript);
+        const CTransaction funded(funding);
+
+        CMutableTransaction spending;
+        spending.vin.emplace_back(COutPoint(funded.GetHash(), 0));
+        spending.vout.emplace_back(0, MakeAssetTransferOutput("RAVENTEST", COIN).scriptPubKey);
+        BOOST_REQUIRE(SignSignature(keystore, funded, spending, 0, SIGHASH_ALL));
+        ScriptError error = SCRIPT_ERR_UNKNOWN_ERROR;
+        BOOST_CHECK(VerifyScript(spending.vin[0].scriptSig, assetScript,
+                    &spending.vin[0].scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS,
+                    MutableTransactionSignatureChecker(&spending, 0, 0), &error));
+        BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
     }
 
     BOOST_AUTO_TEST_CASE(asset_tx_valid_test)
