@@ -219,6 +219,16 @@ representative transfer, issue, owner, and reissue scripts, including normal,
 unique, restricted, and qualifier transfer names. This is evidence of parser
 compatibility, not evidence that the proposed new consensus rule is safe.
 
+A research-only helper recognizes the narrow canonical envelope and rejects
+short/long tails, nonminimal pushes, malformed payloads, and transfer messages
+without an explicit expiry field. Its classification is deliberately not used
+by consensus. An old-valid script ending in `OP_DROP` plus 31 arbitrary bytes
+is byte-identical to a candidate with a 32-byte program beginning `OP_DROP`.
+The helper necessarily classifies it as a candidate. Any later spend rule
+must therefore check the creating UTXO's height against the asset extension's
+activation height. Applying the rule only at spending height would retroactively
+lock historical coins and could split nodes after reorg or reindex.
+
 The proposed new rule would not put an unexpected witness on the asset input.
 Instead, the spending transaction would also consume a native RIP-25
 witness-v2 UTXO whose program equals the program committed in the asset output.
