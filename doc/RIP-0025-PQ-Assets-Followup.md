@@ -245,3 +245,41 @@ checks, miner and mempool equivalence, sigop and weight accounting, and
 cross-network and reorg vectors. A separate BIP9 bit must not be assigned or
 enabled on mainnet without protocol-owner review. Until these are proved, the
 current native-RVN-only security claim remains unchanged.
+
+## 14. Contextual Enforcement Map (Research, Not Activated)
+
+The current code offers a UTXO-aware block hook in `ConnectBlock` before
+`UpdateCoins`: `CheckTxInputs` and `Consensus::CheckTxAssets` run with the
+candidate block's coins view. `Coin::nHeight` is available there. Mempool
+admission has a separate `CCoinsViewMemPool` path, where an unconfirmed parent
+uses `MEMPOOL_HEIGHT`. A future rule must define that sentinel's behavior and
+must mirror block checks in mempool policy without making consensus depend on
+mempool state.
+
+The block script flags come from the candidate block's `pindex->pprev`, while
+mempool flags come from `chainActive.Tip()`. A future asset deployment must use
+the candidate context in `ConnectBlock`; using the global active tip would
+permit two nodes validating the same side chain to apply different rules.
+The parser's historical `OP_DROP` lookalike requires a creation-height check
+against the asset extension activation height, not merely a spend-height
+check. Reorgs across activation must evict or revalidate affected mempool
+transactions. Reusing the existing RIP-25 bit 12 would be unsafe because it
+would make the newly upgraded nodes enforce a rule older RIP-25 nodes do not.
+
+`CheckInputs` may skip ordinary script checks under assumevalid or return from
+its script cache. Existing code selectively verifies native witness-v2
+scripts even when ordinary checks are skipped. Any anchor construction must
+prove that this protection applies to every matching native witness-v2 input,
+and must enforce the asset-to-anchor relationship in a UTXO-aware path outside
+any script-cache early return. `TestBlockValidity` is the miner's final
+template check, but direct template selection and package policy still need
+boundary tests. `Consensus::CheckTxAssets` is also called during mempool
+revalidation and consistency checks; a new parameter defaulting to inactive
+could silently omit the rule at those sites.
+
+The precise matching rule remains undecided: whether one matching native
+witness-v2 anchor input can authorize several tagged asset inputs with the
+same program, and whether creating an asset output must create a funded anchor
+output. Those choices affect wallet funding, UTXO availability, migration,
+fee estimation, and duplicate-program resource limits. They require a protocol
+decision before any consensus patch. No BIP9 bit is assigned by this research.
