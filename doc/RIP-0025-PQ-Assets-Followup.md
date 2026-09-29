@@ -283,3 +283,51 @@ same program, and whether creating an asset output must create a funded anchor
 output. Those choices affect wallet funding, UTXO availability, migration,
 fee estimation, and duplicate-program resource limits. They require a protocol
 decision before any consensus patch. No BIP9 bit is assigned by this research.
+
+## 15. 4.8.1 Integration Candidate and Release Gate
+
+The 4.8.1 integration request expands RIP-25 to assets. The native-RVN
+implementation and its bit 12 deployment must remain unchanged. This section
+records a candidate for review, not a consensus rule already in force.
+
+Let `H` be the first height at which a separate, dependent PQ asset deployment
+is active on the candidate chain. A safe soft-fork direction requires both:
+
+1. Every spendable asset output created at height `h >= H`, including an owner
+   token, has one canonical 32-byte PQ program in the validated legacy-compatible
+   envelope. Null asset metadata outputs remain governed by their existing
+   rules. An asset output without the canonical program is invalid at `h >= H`.
+2. A transaction spending an asset UTXO created at `h >= H` must also spend a
+   native RIP-25 witness-v2 UTXO whose 32-byte program equals that asset
+   output's committed program. One valid anchor input may authorize several
+   tagged asset inputs only when their programs match. The native witness-v2
+   fixed `SIGHASH_ALL` signature then binds every input and output of the
+   transaction. Classical asset-script authorization remains required too.
+
+The candidate block's previous index, not the global active tip, must select
+the BIP9 state. Mempool admission uses the current tip and treats an unconfirmed
+parent as created after activation. The check must run outside script-cache and
+assumevalid shortcuts. Native witness-v2 signature verification must still run
+under assumevalid when the asset anchor is needed. A transaction may not remove
+the PQ condition by sending its asset to a legacy-only output after activation.
+
+The creation-height rule is essential. A pre-activation script ending in
+`OP_DROP` plus 31 bytes can be byte-identical to a tagged candidate. Requiring
+an anchor from such a historical coin would retroactively make old-valid
+spends invalid. Conversely, a pre-activation tagged-looking output cannot be
+advertised as PQ-protected merely because its spend happens after activation.
+
+This construction still does not retroactively secure existing owner tokens.
+Their classical key holder must authorize a migration into a newly tagged
+output before that classical key is compromised. A quantum attacker who obtains
+the old key can race that migration. Software cannot distinguish the rightful
+holder from the attacker using the old signature alone.
+
+The following decisions remain release-blocking and must be proved before
+assigning mainnet activation parameters or publishing a 4.8.1 artifact as
+asset-PQ-qualified: exact hybrid asset address encoding, wallet ownership and
+coin selection, anchor funding and refresh, restricted/qualifier address
+identity and indexes, same-block and mempool-parent creation heights, all
+asset-class vectors, miner and mempool equivalence, BIP9 reorgs, and migration
+of existing holdings. Reusing bit 12 would change the meaning of an already
+active deployment on testnet/regtest and is excluded from this candidate.
