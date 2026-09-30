@@ -4,7 +4,12 @@
 
 #include "chain.h"
 #include "chainparams.h"
+#include "assets/assets.h"
+#include "base58.h"
 #include "consensus/params.h"
+#include "consensus/validation.h"
+#include "primitives/block.h"
+#include "script/standard.h"
 #include "test/test_raven.h"
 #include "validation.h"
 #include "versionbits.h"
@@ -278,6 +283,64 @@ BOOST_FIXTURE_TEST_CASE(asset_deployment_queries_rewind_after_active_tip, Transf
         BOOST_CHECK_MESSAGE(activeResult, check.name << " did not activate");
         BOOST_CHECK_MESSAGE(!rewoundResult, check.name << " remained active after rewind");
     }
+}
+
+BOOST_FIXTURE_TEST_CASE(checkblock_asset_result_does_not_depend_on_unrelated_tip, TransferOverflowRegtestSetup)
+{
+    const Consensus::Params& params = GetParams().GetConsensus();
+    const auto& deployment = params.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS];
+    const unsigned int period = deployment.nOverrideMinerConfirmationWindow;
+    const unsigned int threshold = deployment.nOverrideRuleChangeActivationThreshold;
+    BOOST_REQUIRE(period > 0);
+    BOOST_REQUIRE(threshold > 0);
+    BOOST_REQUIRE(threshold <= period);
+
+    SyntheticVersionBitsChain common;
+    common.Mine(period, VERSIONBITS_TOP_BITS);
+    SyntheticVersionBitsChain activeBranch(common.Tip());
+    activeBranch.Mine(threshold, VERSIONBITS_TOP_BITS | VersionBitsMask(params, Consensus::DEPLOYMENT_COINBASE_ASSETS));
+    activeBranch.Mine(period - threshold, VERSIONBITS_TOP_BITS);
+    activeBranch.Mine(period, VERSIONBITS_TOP_BITS);
+    SyntheticVersionBitsChain startedBranch(common.Tip());
+    startedBranch.Mine(2 * period, VERSIONBITS_TOP_BITS);
+
+    CScript assetScript = GetScriptForDestination(DecodeDestination(GetParams().GlobalBurnAddress()));
+    CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(assetScript);
+    BOOST_REQUIRE(assetScript.IsAssetScript());
+
+    CMutableTransaction coinbase;
+    coinbase.vin.resize(1);
+    coinbase.vin[0].prevout.SetNull();
+    coinbase.vin[0].scriptSig = CScript() << OP_1 << OP_1;
+    coinbase.vout.emplace_back(0, assetScript);
+    CBlock candidate;
+    candidate.vtx.emplace_back(MakeTransactionRef(coinbase));
+
+    SetEnforcedCoinbase(false);
+    CBlockIndex* originalTip = nullptr;
+    {
+        LOCK(cs_main);
+        originalTip = chainActive.Tip();
+        versionbitscache.Clear();
+        chainActive.SetTip(activeBranch.Tip());
+    }
+    CValidationState activeState;
+    const bool activeResult = CheckBlock(candidate, activeState, params, false, false);
+
+    {
+        LOCK(cs_main);
+        chainActive.SetTip(startedBranch.Tip());
+    }
+    CValidationState startedState;
+    const bool startedResult = CheckBlock(candidate, startedState, params, false, false);
+
+    {
+        LOCK(cs_main);
+        chainActive.SetTip(originalTip);
+        versionbitscache.Clear();
+    }
+    BOOST_CHECK_MESSAGE(activeResult == startedResult,
+                        "CheckBlock judged the same candidate differently after the active tip changed");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
