@@ -50,8 +50,6 @@ static const size_t MAX_BLOCK_TRANSACTION_COUNT = MAX_BLOCK_WEIGHT_RIP25_PHASE2 
 //! This variable needs to in this class because undo.h uses it. However because it is in this class
 //! it causes unused variable warnings when compiling. This UNUSED_VAR removes the unused warnings
 UNUSED_VAR static bool fAssetsIsActive = false;
-UNUSED_VAR static bool fRip5IsActive = false;
-UNUSED_VAR static bool fTransferScriptIsActive = false;
 UNUSED_VAR static bool fEnforcedValuesIsActive = false;
 UNUSED_VAR static bool fCheckCoinbaseAssetsIsActive = false;
 

@@ -6053,14 +6053,8 @@ void SetAssetsDeployed(bool value)
 
 bool IsRip5Active()
 {
-    if (fRip5IsActive)
-        return true;
-
     const ThresholdState thresholdState = VersionBitsTipState(GetParams().GetConsensus(), Consensus::DEPLOYMENT_MSG_REST_ASSETS);
-    if (thresholdState == THRESHOLD_ACTIVE)
-        fRip5IsActive = true;
-
-    return fRip5IsActive;
+    return thresholdState == THRESHOLD_ACTIVE;
 }
 
 bool AreMessagesDeployed() {

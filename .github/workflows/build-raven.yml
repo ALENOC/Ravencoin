@@ -81,7 +81,8 @@ jobs:
         run: |
           python3 contrib/devtools/test-required-functional-gate.py
           python3 test/functional/test_runner.py --require-tests --jobs=2 \
-            wallet_encryption_rewrite.py wallet_asset_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py
+            wallet_encryption_rewrite.py wallet_asset_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py \
+            feature_asset_activation_reorg.py feature_transfer_script_reorg.py feature_rip5_activation_reorg.py
 
       - name: Verify tested source and commit
         shell: bash
