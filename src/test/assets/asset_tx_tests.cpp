@@ -19,9 +19,9 @@
 #include <script/interpreter.h>
 #include <script/sign.h>
 #include <validation.h>
+#include <wallet/wallet.h>
 #ifdef ENABLE_WALLET
 #include <wallet/db.h>
-#include <wallet/wallet.h>
 #endif
 
 namespace {
