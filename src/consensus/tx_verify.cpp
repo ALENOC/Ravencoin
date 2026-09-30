@@ -207,6 +207,9 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
                 if (!AssetNullDataFromScript(txout.scriptPubKey, data, address))
                     return state.DoS(100, false, REJECT_INVALID, "bad-txns-null-asset-data-serialization");
 
+                if (data.asset_name.empty())
+                    return state.DoS(100, false, REJECT_INVALID, "bad-txns-null-data-asset-name-empty");
+
                 if (!VerifyNullAssetDataFlag(data.flag, strError))
                     return state.DoS(100, false, REJECT_INVALID, strError);
 
