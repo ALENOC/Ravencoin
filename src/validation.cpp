@@ -6037,15 +6037,12 @@ bool AreCoinbaseCheckAssetsDeployed()
 
 bool AreAssetsDeployed()
 {
-
+    // Unit tests can explicitly enable the asset rules without a chain.
     if (fAssetsIsActive)
         return true;
 
     const ThresholdState thresholdState = VersionBitsTipState(GetParams().GetConsensus(), Consensus::DEPLOYMENT_ASSETS);
-    if (thresholdState == THRESHOLD_ACTIVE)
-        fAssetsIsActive = true;
-
-    return fAssetsIsActive;
+    return thresholdState == THRESHOLD_ACTIVE;
 }
 
 // Only used by test framework
@@ -6072,15 +6069,8 @@ bool AreMessagesDeployed() {
 }
 
 bool AreTransferScriptsSizeDeployed() {
-
-    if (fTransferScriptIsActive)
-        return true;
-
     const ThresholdState thresholdState = VersionBitsTipState(GetParams().GetConsensus(), Consensus::DEPLOYMENT_TRANSFER_SCRIPT_SIZE);
-    if (thresholdState == THRESHOLD_ACTIVE)
-        fTransferScriptIsActive = true;
-
-    return fTransferScriptIsActive;
+    return thresholdState == THRESHOLD_ACTIVE;
 }
 
 bool AreRestrictedAssetsDeployed() {
