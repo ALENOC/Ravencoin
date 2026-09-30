@@ -6013,26 +6013,22 @@ void SetEnforcedCoinbase(bool value)
 
 bool AreEnforcedValuesDeployed()
 {
+    // Unit tests can explicitly enable this deployment without a chain.
     if (fEnforcedValuesIsActive)
         return true;
 
     const ThresholdState thresholdState = VersionBitsTipState(GetParams().GetConsensus(), Consensus::DEPLOYMENT_ENFORCE_VALUE);
-    if (thresholdState == THRESHOLD_ACTIVE || thresholdState == THRESHOLD_LOCKED_IN)
-        fEnforcedValuesIsActive = true;
-
-    return fEnforcedValuesIsActive;
+    return thresholdState == THRESHOLD_ACTIVE || thresholdState == THRESHOLD_LOCKED_IN;
 }
 
 bool AreCoinbaseCheckAssetsDeployed()
 {
+    // Unit tests can explicitly enable this deployment without a chain.
     if (fCheckCoinbaseAssetsIsActive)
         return true;
 
     const ThresholdState thresholdState = VersionBitsTipState(GetParams().GetConsensus(), Consensus::DEPLOYMENT_COINBASE_ASSETS);
-    if (thresholdState == THRESHOLD_ACTIVE)
-        fCheckCoinbaseAssetsIsActive = true;
-
-    return fCheckCoinbaseAssetsIsActive;
+    return thresholdState == THRESHOLD_ACTIVE;
 }
 
 bool AreAssetsDeployed()
