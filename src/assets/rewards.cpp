@@ -20,26 +20,35 @@
 #include "wallet/wallet.h"
 
 std::map<uint256, CRewardSnapshot> mapRewardSnapshots;
+#ifdef ENABLE_WALLET
+static std::map<uint256, std::string> mapRewardWalletNames;
+#endif
 
 uint256 CRewardSnapshot::GetHash() const
 {
     return SerializeHash(*this, SER_GETHASH);
 }
 
-bool AddDistributeRewardSnapshot(CRewardSnapshot& p_rewardSnapshot)
+#ifdef ENABLE_WALLET
+bool AddDistributeRewardSnapshot(CWallet* p_wallet, CRewardSnapshot& p_rewardSnapshot)
 {
+    AssertLockHeld(cs_main);
+    if (!p_wallet || !pDistributeSnapshotDb)
+        return false;
     auto hash = p_rewardSnapshot.GetHash();
     CRewardSnapshot temp;
     if (pDistributeSnapshotDb->RetrieveDistributeSnapshotRequest(hash, temp)) {
         return false;
     }
 
-    if (pDistributeSnapshotDb->AddDistributeSnapshot(hash, p_rewardSnapshot)) {
-        mapRewardSnapshots[hash] = p_rewardSnapshot;
-    }
+    if (!pDistributeSnapshotDb->AddDistributeSnapshot(hash, p_rewardSnapshot))
+        return false;
 
+    mapRewardWalletNames[hash] = p_wallet->GetName();
+    mapRewardSnapshots[hash] = p_rewardSnapshot;
     return true;
 }
+#endif
 
 bool GenerateDistributionList(const CRewardSnapshot& p_rewardSnapshot, std::vector<OwnerAndAmount>& vecDistributionList)
 {
@@ -382,13 +391,35 @@ bool BuildTransaction(
     return true;
 }
 
-void CheckRewardDistributions(CWallet * p_wallet)
+void CheckRewardDistributions()
 {
-    for (auto item : mapRewardSnapshots) {
-        DistributeRewardSnapshot(p_wallet, item.second);
+    AssertLockHeld(cs_main);
+    for (const auto& item : mapRewardSnapshots) {
+        const auto owner = mapRewardWalletNames.find(item.first);
+        if (owner == mapRewardWalletNames.end()) {
+            LogPrint(BCLog::REWARDS, "Skipping reward %s without a wallet binding\n",
+                     item.first.GetHex());
+            continue;
+        }
+
+        CWallet* wallet = nullptr;
+        bool ambiguous = false;
+        for (const CWalletRef& loaded : vpwallets) {
+            if (loaded && loaded->GetName() == owner->second) {
+                if (wallet) {
+                    ambiguous = true;
+                    break;
+                }
+                wallet = loaded;
+            }
+        }
+        if (!wallet || ambiguous) {
+            LogPrint(BCLog::REWARDS, "Skipping reward %s without a unique loaded wallet\n",
+                     item.first.GetHex());
+            continue;
+        }
+        DistributeRewardSnapshot(wallet, item.second);
     }
 }
 
 #endif //ENABLE_WALLET
-
-

@@ -409,7 +409,7 @@ UniValue distributereward(const JSONRPCRequest& request) {
         throw JSONRPCError(RPC_INVALID_REQUEST, std::string("Snapshot request not found"));
 
     CRewardSnapshot distribRewardSnapshotData(asset_name, distribution_asset_name, exception_addresses, distribution_amount, snapshot_height);
-    if (!AddDistributeRewardSnapshot(distribRewardSnapshotData))
+    if (!AddDistributeRewardSnapshot(walletPtr, distribRewardSnapshotData))
         throw JSONRPCError(RPC_INVALID_REQUEST, std::string("Distribution of reward has already be created. You must remove the distribution before creating another one"));
 
     // Trigger the distribution
@@ -499,4 +499,3 @@ void RegisterRewardsRPCCommands(CRPCTable &t)
     for (unsigned int vcidx = 0; vcidx < ARRAYLEN(commands); vcidx++)
         t.appendCommand(commands[vcidx].name, &commands[vcidx]);
 }
-
