@@ -183,6 +183,8 @@ BOOST_FIXTURE_TEST_CASE(transfer_overflow_active_tip_policy_is_not_sticky, Trans
     {
         LOCK(cs_main);
         originalTip = chainActive.Tip();
+        // Synthetic indices from earlier tests may have reused addresses.
+        versionbitscache.Clear();
         chainActive.SetTip(activeBranch.Tip());
     }
     BOOST_REQUIRE(IsTransferOverflowCheckDeployed());
@@ -196,6 +198,85 @@ BOOST_FIXTURE_TEST_CASE(transfer_overflow_active_tip_policy_is_not_sticky, Trans
     {
         LOCK(cs_main);
         chainActive.SetTip(originalTip);
+        versionbitscache.Clear();
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(asset_deployment_queries_rewind_after_active_tip, TransferOverflowRegtestSetup)
+{
+    struct DeploymentQuery {
+        Consensus::DeploymentPos deployment;
+        bool (*query)();
+        const char* name;
+    };
+    const DeploymentQuery queries[] = {
+        {Consensus::DEPLOYMENT_ASSETS, AreAssetsDeployed, "assets"},
+        {Consensus::DEPLOYMENT_MSG_REST_ASSETS, IsRip5Active, "restricted assets"},
+        {Consensus::DEPLOYMENT_TRANSFER_SCRIPT_SIZE, AreTransferScriptsSizeDeployed, "transfer script size"},
+        {Consensus::DEPLOYMENT_ENFORCE_VALUE, AreEnforcedValuesDeployed, "enforced values"},
+        {Consensus::DEPLOYMENT_COINBASE_ASSETS, AreCoinbaseCheckAssetsDeployed, "coinbase assets"},
+    };
+    const Consensus::Params& params = GetParams().GetConsensus();
+
+    for (const DeploymentQuery& check : queries) {
+        const auto& deployment = params.vDeployments[check.deployment];
+        const unsigned int period = deployment.nOverrideMinerConfirmationWindow;
+        const unsigned int threshold = deployment.nOverrideRuleChangeActivationThreshold;
+        BOOST_REQUIRE(period > 0);
+        BOOST_REQUIRE(threshold > 0);
+        BOOST_REQUIRE(threshold <= period);
+
+        SyntheticVersionBitsChain common;
+        common.Mine(period, VERSIONBITS_TOP_BITS);
+
+        SyntheticVersionBitsChain lockedBranch(common.Tip());
+        lockedBranch.Mine(threshold, VERSIONBITS_TOP_BITS | VersionBitsMask(params, check.deployment));
+        lockedBranch.Mine(period - threshold, VERSIONBITS_TOP_BITS);
+
+        SyntheticVersionBitsChain activeBranch(lockedBranch.Tip());
+        activeBranch.Mine(period, VERSIONBITS_TOP_BITS);
+
+        SyntheticVersionBitsChain startedBranch(common.Tip());
+        startedBranch.Mine(2 * period, VERSIONBITS_TOP_BITS);
+
+        VersionBitsCache expectedCache;
+        BOOST_REQUIRE_EQUAL(VersionBitsState(lockedBranch.Tip(), params, check.deployment, expectedCache), THRESHOLD_LOCKED_IN);
+        BOOST_REQUIRE_EQUAL(VersionBitsState(activeBranch.Tip(), params, check.deployment, expectedCache), THRESHOLD_ACTIVE);
+        BOOST_REQUIRE_EQUAL(VersionBitsState(startedBranch.Tip(), params, check.deployment, expectedCache), THRESHOLD_STARTED);
+
+        SetAssetsDeployed(false);
+        SetEnforcedValues(false);
+        SetEnforcedCoinbase(false);
+        CBlockIndex* originalTip = nullptr;
+        {
+            LOCK(cs_main);
+            originalTip = chainActive.Tip();
+            versionbitscache.Clear();
+            chainActive.SetTip(lockedBranch.Tip());
+        }
+        const bool lockedResult = check.query();
+
+        {
+            LOCK(cs_main);
+            chainActive.SetTip(activeBranch.Tip());
+        }
+        const bool activeResult = check.query();
+
+        {
+            LOCK(cs_main);
+            chainActive.SetTip(startedBranch.Tip());
+        }
+        const bool rewoundResult = check.query();
+
+        {
+            LOCK(cs_main);
+            chainActive.SetTip(originalTip);
+            versionbitscache.Clear();
+        }
+        const bool expectedLocked = check.deployment == Consensus::DEPLOYMENT_ENFORCE_VALUE;
+        BOOST_CHECK_MESSAGE(lockedResult == expectedLocked, check.name << " has the wrong LOCKED_IN rule");
+        BOOST_CHECK_MESSAGE(activeResult, check.name << " did not activate");
+        BOOST_CHECK_MESSAGE(!rewoundResult, check.name << " remained active after rewind");
     }
 }
 
