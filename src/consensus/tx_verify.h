@@ -25,8 +25,14 @@ class CNullAssetTxData;
 
 /** Transaction validation functions */
 
-/** Context-independent validity checks */
-bool CheckTransaction(const CTransaction& tx, CValidationState& state, bool fCheckDuplicateInputs=true, bool fMempoolCheck = false, bool fBlockCheck = false);
+struct TxAssetDeploymentContext {
+    bool fTransferScriptsSizeDeployed;
+    bool fEnforcedValuesDeployed;
+    bool fCoinbaseCheckAssetsDeployed;
+};
+
+/** Structural checks; candidate-block prechecks defer deployment-sensitive asset rules. */
+bool CheckTransaction(const CTransaction& tx, CValidationState& state, bool fCheckDuplicateInputs=true, bool fMempoolCheck = false, bool fBlockCheck = false, const TxAssetDeploymentContext* pAssetContext = nullptr, bool fContextFreeBlockCheck = false);
 
 namespace Consensus {
 /**

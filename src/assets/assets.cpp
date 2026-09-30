@@ -662,6 +662,11 @@ bool OwnerFromTransaction(const CTransaction& tx, std::string& ownerName, std::s
 
 bool TransferAssetFromScript(const CScript& scriptPubKey, CAssetTransfer& assetTransfer, std::string& strAddress)
 {
+    return TransferAssetFromScript(scriptPubKey, assetTransfer, strAddress, AreTransferScriptsSizeDeployed());
+}
+
+bool TransferAssetFromScript(const CScript& scriptPubKey, CAssetTransfer& assetTransfer, std::string& strAddress, bool fTransferScriptsSizeDeployed)
+{
     int nStartingIndex = 0;
     if (!IsScriptTransferAsset(scriptPubKey, nStartingIndex)) {
         return false;
@@ -674,7 +679,7 @@ bool TransferAssetFromScript(const CScript& scriptPubKey, CAssetTransfer& assetT
 
     std::vector<unsigned char> vchTransferAsset;
 
-    if (AreTransferScriptsSizeDeployed()) {
+    if (fTransferScriptsSizeDeployed) {
         // Before kawpow activation we used the hardcoded 31 to find the data
         // This created a bug where large transfers scripts would fail to serialize.
         // This fixes that issue (https://github.com/RavenProject/Ravencoin/issues/752)
@@ -954,6 +959,11 @@ bool CTransaction::IsNewUniqueAsset() const
 //! Call this function after IsNewUniqueAsset
 bool CTransaction::VerifyNewUniqueAsset(std::string& strError) const
 {
+    return VerifyNewUniqueAsset(strError, AreTransferScriptsSizeDeployed());
+}
+
+bool CTransaction::VerifyNewUniqueAsset(std::string& strError, bool fTransferScriptsSizeDeployed) const
+{
     // Must contain at least 3 outpoints (RVN burn, owner change and one or more new unique assets that share a root (should be in trailing position))
     if (vout.size() < 3) {
         strError  = "bad-txns-unique-vout-size-to-small";
@@ -1016,7 +1026,7 @@ bool CTransaction::VerifyNewUniqueAsset(std::string& strError) const
     for (auto out : vout) {
         CAssetTransfer transfer;
         std::string transferAddress;
-        if (TransferAssetFromScript(out.scriptPubKey, transfer, transferAddress)) {
+        if (TransferAssetFromScript(out.scriptPubKey, transfer, transferAddress, fTransferScriptsSizeDeployed)) {
             if (assetRoot + OWNER_TAG == transfer.strName) {
                 fOwnerOutFound = true;
                 break;
@@ -1046,6 +1056,10 @@ bool CTransaction::VerifyNewUniqueAsset(std::string& strError) const
 
 //! To be called on CTransactions where IsNewAsset returns true
 bool CTransaction::VerifyNewAsset(std::string& strError) const {
+    return VerifyNewAsset(strError, AreTransferScriptsSizeDeployed());
+}
+
+bool CTransaction::VerifyNewAsset(std::string& strError, bool fTransferScriptsSizeDeployed) const {
     // Issuing an Asset must contain at least 3 CTxOut( Raven Burn Tx, Any Number of other Outputs ..., Owner Asset Tx, New Asset Tx)
     if (vout.size() < 3) {
         strError = "bad-txns-issue-vout-size-to-small";
@@ -1106,7 +1120,7 @@ bool CTransaction::VerifyNewAsset(std::string& strError) const {
         for (auto out : this->vout) {
             CAssetTransfer transfer;
             std::string transferAddress;
-            if (TransferAssetFromScript(out.scriptPubKey, transfer, transferAddress)) {
+            if (TransferAssetFromScript(out.scriptPubKey, transfer, transferAddress, fTransferScriptsSizeDeployed)) {
                 if (root + OWNER_TAG == transfer.strName) {
                     fOwnerOutFound = true;
                     break;
@@ -1151,6 +1165,11 @@ bool CTransaction::IsNewMsgChannelAsset() const
 //! To be called on CTransactions where IsNewAsset returns true
 bool CTransaction::VerifyNewMsgChannelAsset(std::string &strError) const
 {
+    return VerifyNewMsgChannelAsset(strError, AreTransferScriptsSizeDeployed());
+}
+
+bool CTransaction::VerifyNewMsgChannelAsset(std::string &strError, bool fTransferScriptsSizeDeployed) const
+{
     // Issuing an Asset must contain at least 3 CTxOut( Raven Burn Tx, Any Number of other Outputs ..., Owner Asset Tx, New Asset Tx)
     if (vout.size() < 3) {
         strError  = "bad-txns-issue-msgchannel-vout-size-to-small";
@@ -1194,7 +1213,7 @@ bool CTransaction::VerifyNewMsgChannelAsset(std::string &strError) const
     for (auto out : vout) {
         CAssetTransfer transfer;
         std::string transferAddress;
-        if (TransferAssetFromScript(out.scriptPubKey, transfer, transferAddress)) {
+        if (TransferAssetFromScript(out.scriptPubKey, transfer, transferAddress, fTransferScriptsSizeDeployed)) {
             if (root + OWNER_TAG == transfer.strName) {
                 fOwnerOutFound = true;
                 break;
@@ -1237,6 +1256,11 @@ bool CTransaction::IsNewQualifierAsset() const
 
 //! To be called on CTransactions where IsNewQualifierAsset returns true
 bool CTransaction::VerifyNewQualfierAsset(std::string &strError) const
+{
+    return VerifyNewQualfierAsset(strError, AreTransferScriptsSizeDeployed());
+}
+
+bool CTransaction::VerifyNewQualfierAsset(std::string &strError, bool fTransferScriptsSizeDeployed) const
 {
     // Issuing an Asset must contain at least 2 CTxOut( Raven Burn Tx, New Asset Tx, Any Number of other Outputs...)
     if (vout.size() < 2) {
@@ -1282,7 +1306,7 @@ bool CTransaction::VerifyNewQualfierAsset(std::string &strError) const
         for (auto out : vout) {
             CAssetTransfer transfer;
             std::string transferAddress;
-            if (TransferAssetFromScript(out.scriptPubKey, transfer, transferAddress)) {
+            if (TransferAssetFromScript(out.scriptPubKey, transfer, transferAddress, fTransferScriptsSizeDeployed)) {
                 if (root == transfer.strName) {
                     fOwnerOutFound = true;
                     break;
@@ -1326,6 +1350,10 @@ bool CTransaction::IsNewRestrictedAsset() const
 
 //! To be called on CTransactions where IsNewRestrictedAsset returns true
 bool CTransaction::VerifyNewRestrictedAsset(std::string& strError) const {
+    return VerifyNewRestrictedAsset(strError, AreTransferScriptsSizeDeployed());
+}
+
+bool CTransaction::VerifyNewRestrictedAsset(std::string& strError, bool fTransferScriptsSizeDeployed) const {
     // Issuing a restricted asset must cointain at least 4 CTxOut(Raven Burn Tx, Asset Creation, Root Owner Token Transfer, and CNullAssetTxVerifierString)
     if (vout.size() < 4) {
         strError = "bad-txns-issue-restricted-vout-size-to-small";
@@ -1370,7 +1398,7 @@ bool CTransaction::VerifyNewRestrictedAsset(std::string& strError) const {
     for (auto out : vout) {
         CAssetTransfer transfer;
         std::string transferAddress;
-        if (TransferAssetFromScript(out.scriptPubKey, transfer, transferAddress)) {
+        if (TransferAssetFromScript(out.scriptPubKey, transfer, transferAddress, fTransferScriptsSizeDeployed)) {
             if (strippedRoot == transfer.strName) {
                 fRootOwnerOutFound = true;
                 break;
@@ -1455,6 +1483,11 @@ bool CTransaction::IsReissueAsset() const
 //! To be called on CTransactions where IsReissueAsset returns true
 bool CTransaction::VerifyReissueAsset(std::string& strError) const
 {
+    return VerifyReissueAsset(strError, AreTransferScriptsSizeDeployed());
+}
+
+bool CTransaction::VerifyReissueAsset(std::string& strError, bool fTransferScriptsSizeDeployed) const
+{
     // Reissuing an Asset must contain at least 3 CTxOut ( Raven Burn Tx, Any Number of other Outputs ..., Reissue Asset Tx, Owner Asset Change Tx)
     if (vout.size() < 3) {
         strError  = "bad-txns-vout-size-to-small";
@@ -1491,7 +1524,7 @@ bool CTransaction::VerifyReissueAsset(std::string& strError) const
     for (auto out : vout) {
         CAssetTransfer transfer;
         std::string transferAddress;
-        if (TransferAssetFromScript(out.scriptPubKey, transfer, transferAddress)) {
+        if (TransferAssetFromScript(out.scriptPubKey, transfer, transferAddress, fTransferScriptsSizeDeployed)) {
             if (asset_name_to_check + OWNER_TAG == transfer.strName) {
                 fOwnerOutFound = true;
                 break;

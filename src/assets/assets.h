@@ -444,6 +444,7 @@ bool RestrictedAssetFromTransaction(const CTransaction& tx, CNewAsset& asset, st
 
 //! Get specific asset type metadata from the given scripts
 bool TransferAssetFromScript(const CScript& scriptPubKey, CAssetTransfer& assetTransfer, std::string& strAddress);
+bool TransferAssetFromScript(const CScript& scriptPubKey, CAssetTransfer& assetTransfer, std::string& strAddress, bool fTransferScriptsSizeDeployed);
 bool AssetFromScript(const CScript& scriptPubKey, CNewAsset& asset, std::string& strAddress);
 bool OwnerAssetFromScript(const CScript& scriptPubKey, std::string& assetName, std::string& strAddress);
 bool ReissueAssetFromScript(const CScript& scriptPubKey, CReissueAsset& reissue, std::string& strAddress);

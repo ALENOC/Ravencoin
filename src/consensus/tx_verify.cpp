@@ -166,7 +166,7 @@ int64_t GetTransactionSigOpCost(const CTransaction& tx, const CCoinsViewCache& i
     return nSigOps;
 }
 
-bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fCheckDuplicateInputs, bool fMempoolCheck, bool fBlockCheck)
+bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fCheckDuplicateInputs, bool fMempoolCheck, bool fBlockCheck, const TxAssetDeploymentContext* pAssetContext, bool fContextFreeBlockCheck)
 {
     // Basic checks that don't depend on any context
     if (tx.vin.empty())
@@ -267,9 +267,15 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
         if (isAsset) {
             // Get the transfer transaction data from the scriptPubKey
             if (nType == TX_TRANSFER_ASSET) {
+                // The candidate parent is not known in CheckBlock. Defer all
+                // transfer payload checks to ContextualCheckBlock there.
+                if (fContextFreeBlockCheck)
+                    continue;
                 CAssetTransfer transfer;
                 std::string address;
-                if (!TransferAssetFromScript(txout.scriptPubKey, transfer, address))
+                const bool fTransferScriptsSizeDeployed =
+                    pAssetContext ? pAssetContext->fTransferScriptsSizeDeployed : AreTransferScriptsSizeDeployed();
+                if (!TransferAssetFromScript(txout.scriptPubKey, transfer, address, fTransferScriptsSizeDeployed))
                     return state.DoS(100, false, REJECT_INVALID, "bad-txns-transfer-asset-bad-deserialize");
 
                 // insert into set, so that later on we can check asset null data transactions
@@ -313,7 +319,8 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
                     return state.DoS(100, false, REJECT_INVALID, "bad-txns-asset-issued-amount-isn't-zero");
             } else if (nType == TX_REISSUE_ASSET) {
                 // Specific check and error message to go with to make sure the amount is 0
-                if (AreEnforcedValuesDeployed()) {
+                if (!fContextFreeBlockCheck &&
+                    (pAssetContext ? pAssetContext->fEnforcedValuesDeployed : AreEnforcedValuesDeployed())) {
                     // We only want to not accept these txes when checking them from CheckBlock.
                     // We don't want to change the behavior when reading transactions from the database
                     // when AreEnforcedValuesDeployed return true
@@ -342,27 +349,29 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
             return state.DoS(100, false, REJECT_INVALID, "bad-txns-tx-doesn't-contain-required-burn-fee-for-adding-tags");
     }
 
-    for (auto entry: mapNullDataTxCount) {
-        if (entry.first.first.front() == RESTRICTED_CHAR) {
-            std::string ownerToken = entry.first.first.substr(1,  entry.first.first.size()); // $TOKEN into TOKEN
-            if (!setAssetTransferNames.count(ownerToken + OWNER_TAG)) {
-                return state.DoS(100, false, REJECT_INVALID, "bad-txns-tx-contains-restricted-asset-null-tx-without-asset-transfer");
-            }
-        } else { // must be a qualifier asset QUALIFIER_CHAR
-            if (!setAssetTransferNames.count(entry.first.first)) {
-                return state.DoS(100, false, REJECT_INVALID,
-                                 "bad-txns-tx-contains-qualifier-asset-null-tx-without-asset-transfer");
+    if (!fContextFreeBlockCheck) {
+        for (auto entry: mapNullDataTxCount) {
+            if (entry.first.first.front() == RESTRICTED_CHAR) {
+                std::string ownerToken = entry.first.first.substr(1,  entry.first.first.size()); // $TOKEN into TOKEN
+                if (!setAssetTransferNames.count(ownerToken + OWNER_TAG)) {
+                    return state.DoS(100, false, REJECT_INVALID, "bad-txns-tx-contains-restricted-asset-null-tx-without-asset-transfer");
+                }
+            } else { // must be a qualifier asset QUALIFIER_CHAR
+                if (!setAssetTransferNames.count(entry.first.first)) {
+                    return state.DoS(100, false, REJECT_INVALID,
+                                     "bad-txns-tx-contains-qualifier-asset-null-tx-without-asset-transfer");
+                }
             }
         }
-    }
 
-    for (auto name: setNullGlobalAssetChanges) {
-        if (name.size() == 0)
-            return state.DoS(100, false, REJECT_INVALID,"bad-txns-tx-contains-global-asset-null-tx-with-null-asset-name");
+        for (auto name: setNullGlobalAssetChanges) {
+            if (name.size() == 0)
+                return state.DoS(100, false, REJECT_INVALID,"bad-txns-tx-contains-global-asset-null-tx-with-null-asset-name");
 
-        std::string rootName = name.substr(1,  name.size()); // $TOKEN into TOKEN
-        if (!setAssetTransferNames.count(rootName + OWNER_TAG)) {
-            return state.DoS(100, false, REJECT_INVALID, "bad-txns-tx-contains-global-asset-null-tx-without-asset-transfer");
+            std::string rootName = name.substr(1,  name.size()); // $TOKEN into TOKEN
+            if (!setAssetTransferNames.count(rootName + OWNER_TAG)) {
+                return state.DoS(100, false, REJECT_INVALID, "bad-txns-tx-contains-global-asset-null-tx-without-asset-transfer");
+            }
         }
     }
 
@@ -382,7 +391,8 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
         if (tx.vin[0].scriptSig.size() < 2 || tx.vin[0].scriptSig.size() > 100)
             return state.DoS(100, false, REJECT_INVALID, "bad-cb-length");
 
-        if (AreCoinbaseCheckAssetsDeployed()) {
+        if (!fContextFreeBlockCheck &&
+            (pAssetContext ? pAssetContext->fCoinbaseCheckAssetsDeployed : AreCoinbaseCheckAssetsDeployed())) {
             for (auto vout : tx.vout) {
                 if (vout.scriptPubKey.IsAssetScript() || vout.scriptPubKey.IsNullAsset()) {
                     return state.DoS(0, error("%s: coinbase contains asset transaction", __func__),
@@ -398,11 +408,17 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
                 return state.DoS(10, false, REJECT_INVALID, "bad-txns-prevout-null");
     }
 
+    // Asset validity depends on the candidate parent. CheckBlock performs
+    // only structural checks; ContextualCheckBlock repeats this check with
+    // the candidate parent's deployment state.
+    if (fContextFreeBlockCheck)
+        return true;
+
     /** RVN START */
     if (tx.IsNewAsset()) {
         /** Verify the reissue assets data */
         std::string strError = "";
-        if(!tx.VerifyNewAsset(strError))
+        if(!tx.VerifyNewAsset(strError, pAssetContext ? pAssetContext->fTransferScriptsSizeDeployed : AreTransferScriptsSizeDeployed()))
             return state.DoS(100, false, REJECT_INVALID, strError);
 
         CNewAsset asset;
@@ -421,7 +437,7 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
 
         /** Verify the reissue assets data */
         std::string strError;
-        if (!tx.VerifyReissueAsset(strError))
+        if (!tx.VerifyReissueAsset(strError, pAssetContext ? pAssetContext->fTransferScriptsSizeDeployed : AreTransferScriptsSizeDeployed()))
             return state.DoS(100, false, REJECT_INVALID, strError);
 
         CReissueAsset reissue;
@@ -457,7 +473,7 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
 
         /** Verify the unique assets data */
         std::string strError = "";
-        if (!tx.VerifyNewUniqueAsset(strError)) {
+        if (!tx.VerifyNewUniqueAsset(strError, pAssetContext ? pAssetContext->fTransferScriptsSizeDeployed : AreTransferScriptsSizeDeployed())) {
             return state.DoS(100, false, REJECT_INVALID, strError);
         }
 
@@ -478,7 +494,7 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
     } else if (tx.IsNewMsgChannelAsset()) {
         /** Verify the msg channel assets data */
         std::string strError = "";
-        if(!tx.VerifyNewMsgChannelAsset(strError))
+        if(!tx.VerifyNewMsgChannelAsset(strError, pAssetContext ? pAssetContext->fTransferScriptsSizeDeployed : AreTransferScriptsSizeDeployed()))
             return state.DoS(100, false, REJECT_INVALID, strError);
 
         CNewAsset asset;
@@ -492,7 +508,7 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
     } else if (tx.IsNewQualifierAsset()) {
         /** Verify the qualifier channel assets data */
         std::string strError = "";
-        if(!tx.VerifyNewQualfierAsset(strError))
+        if(!tx.VerifyNewQualfierAsset(strError, pAssetContext ? pAssetContext->fTransferScriptsSizeDeployed : AreTransferScriptsSizeDeployed()))
             return state.DoS(100, false, REJECT_INVALID, strError);
 
         CNewAsset asset;
@@ -506,7 +522,7 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
     } else if (tx.IsNewRestrictedAsset()) {
         /** Verify the restricted assets data. */
         std::string strError = "";
-        if(!tx.VerifyNewRestrictedAsset(strError))
+        if(!tx.VerifyNewRestrictedAsset(strError, pAssetContext ? pAssetContext->fTransferScriptsSizeDeployed : AreTransferScriptsSizeDeployed()))
             return state.DoS(100, false, REJECT_INVALID, strError);
 
         // Get asset data

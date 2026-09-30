@@ -2546,6 +2546,10 @@ static int64_t nTimeCallbacks = 0;
 static int64_t nTimeTotal = 0;
 static int64_t nBlocksTotal = 0;
 
+static bool ContextualCheckBlock(const CBlock& block, CValidationState& state,
+                                 const Consensus::Params& consensusParams,
+                                 const CBlockIndex* pindexPrev, CAssetsCache* assetCache);
+
 /** Apply the effects of this block (with given index) on the UTXO set represented by coins.
  *  Validity checks that depend on the UTXO set are also done; ConnectBlock()
  *  can fail if those validity checks fail (among other reasons). */
@@ -2575,6 +2579,11 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
             view.SetBestBlock(pindex->GetBlockHash());
         return true;
     }
+
+    // Recheck candidate-parent rules when reconnecting a stored block.
+    // CheckBlock's cached structural result is intentionally not sufficient.
+    if (!ContextualCheckBlock(block, state, chainparams.GetConsensus(), pindex->pprev, assetsCache))
+        return error("%s: Consensus::ContextualCheckBlock: %s", __func__, FormatStateMessage(state));
 
     nBlocksTotal++;
 
@@ -4222,7 +4231,7 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
             fCheckBlock = CHECK_BLOCK_TRANSACTION_FALSE;
         }
 
-        if (!CheckTransaction(*tx, state, fCheckDuplicates, fCheckMempool, fCheckBlock)) {
+        if (!CheckTransaction(*tx, state, fCheckDuplicates, fCheckMempool, fCheckBlock, nullptr, true)) {
             state.SetFailedTransaction(tx->GetHash());
             return state.Invalid(false, state.GetRejectCode(), state.GetRejectReason(),
                                  strprintf("Transaction check failed (tx hash %s) %s %s", tx->GetHash().ToString(),
@@ -4381,8 +4390,10 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
     //         return state.Invalid(false, REJECT_OBSOLETE, strprintf("bad-version(0x%08x)", block.nVersion),
     //                              strprintf("rejected nVersion=0x%08x block", block.nVersion));
 
-    // Reject outdated version blocks once assets are active.
-    if (AreAssetsDeployed() && block.nVersion < VERSIONBITS_TOP_BITS_ASSETS)
+    // Reject outdated versions according to this candidate's parent, not
+    // the active tip, which may be on a different branch.
+    const ThresholdState assetsState = VersionBitsState(pindexPrev, consensusParams, Consensus::DEPLOYMENT_ASSETS, versionbitscache);
+    if (assetsState == THRESHOLD_ACTIVE && block.nVersion < VERSIONBITS_TOP_BITS_ASSETS)
         return state.Invalid(false, REJECT_OBSOLETE, strprintf("bad-version(0x%08x)", block.nVersion), strprintf("rejected nVersion=0x%08x block", block.nVersion));
 
     return true;
@@ -4485,6 +4496,21 @@ static bool ContextualCheckBlock(const CBlock& block, CValidationState& state, c
     }
     if (::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION) > GetMaxBlockSerializedSize()) {
         return state.DoS(100, false, REJECT_INVALID, "bad-blk-size", false, strprintf("%s : absolute serialized size limit failed", __func__));
+    }
+
+    const ThresholdState transferState = VersionBitsState(pindexPrev, consensusParams, Consensus::DEPLOYMENT_TRANSFER_SCRIPT_SIZE, versionbitscache);
+    const ThresholdState enforcedValuesState = VersionBitsState(pindexPrev, consensusParams, Consensus::DEPLOYMENT_ENFORCE_VALUE, versionbitscache);
+    const ThresholdState coinbaseAssetsState = VersionBitsState(pindexPrev, consensusParams, Consensus::DEPLOYMENT_COINBASE_ASSETS, versionbitscache);
+    const TxAssetDeploymentContext assetContext{
+        transferState == THRESHOLD_ACTIVE,
+        enforcedValuesState == THRESHOLD_LOCKED_IN || enforcedValuesState == THRESHOLD_ACTIVE,
+        coinbaseAssetsState == THRESHOLD_ACTIVE,
+    };
+    for (const auto& tx : block.vtx) {
+        if (!CheckTransaction(*tx, state, true, false, true, &assetContext)) {
+            state.SetFailedTransaction(tx->GetHash());
+            return false;
+        }
     }
 
     return true;
@@ -5170,6 +5196,9 @@ bool CVerifyDB::VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview,
         const bool fDBCheck = true;
         if (nCheckLevel >= 1 && !CheckBlock(block, state, chainparams.GetConsensus(), fCheckPoW, fCheckMerkleRoot, fDBCheck)) // fCheckAssetDuplicate set to false, because we don't want to fail because the asset exists in our database, when loading blocks from our asset databse
             return error("%s: *** found bad block at %d, hash=%s (%s)\n", __func__,
+                         pindex->nHeight, pindex->GetBlockHash().ToString(), FormatStateMessage(state));
+        if (nCheckLevel >= 1 && !ContextualCheckBlock(block, state, chainparams.GetConsensus(), pindex->pprev, &assetCache))
+            return error("%s: *** found bad contextual block at %d, hash=%s (%s)\n", __func__,
                          pindex->nHeight, pindex->GetBlockHash().ToString(), FormatStateMessage(state));
         // check level 2: verify undo validity
         if (nCheckLevel >= 2 && pindex) {

@@ -7,6 +7,7 @@
 #include "assets/assets.h"
 #include "base58.h"
 #include "consensus/params.h"
+#include "consensus/tx_verify.h"
 #include "consensus/validation.h"
 #include "primitives/block.h"
 #include "script/standard.h"
@@ -341,6 +342,29 @@ BOOST_FIXTURE_TEST_CASE(checkblock_asset_result_does_not_depend_on_unrelated_tip
     }
     BOOST_CHECK_MESSAGE(activeResult == startedResult,
                         "CheckBlock judged the same candidate differently after the active tip changed");
+}
+
+BOOST_FIXTURE_TEST_CASE(transfer_payload_uses_explicit_candidate_context, TransferOverflowRegtestSetup)
+{
+    CScript assetScript = GetScriptForDestination(DecodeDestination(GetParams().GlobalBurnAddress()));
+    CAssetTransfer("LONGASSETNAME12345678901234567", COIN, std::string(32, 'x')).ConstructTransaction(assetScript);
+    BOOST_REQUIRE(assetScript.IsAssetScript());
+
+    CMutableTransaction transfer;
+    transfer.vin.resize(1);
+    transfer.vin[0].prevout.n = 0;
+    transfer.vout.emplace_back(0, assetScript);
+    const CTransaction tx(transfer);
+
+    const TxAssetDeploymentContext before{false, false, false};
+    const TxAssetDeploymentContext after{true, false, false};
+    CValidationState beforeState;
+    CValidationState afterState;
+    CValidationState structuralState;
+    BOOST_CHECK(CheckTransaction(tx, structuralState, true, false, true, nullptr, true));
+    BOOST_CHECK(!CheckTransaction(tx, beforeState, true, false, true, &before));
+    BOOST_CHECK_EQUAL(beforeState.GetRejectReason(), "bad-txns-transfer-asset-bad-deserialize");
+    BOOST_CHECK(CheckTransaction(tx, afterState, true, false, true, &after));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
