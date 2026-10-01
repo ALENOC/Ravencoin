@@ -70,6 +70,15 @@ EXTENDED_SCRIPTS = [
     'feature_asset_dbcrash_transfer.py',
     'feature_asset_db_missing_block.py',
     'feature_restricted_dbcrash.py',
+    'feature_restricted_verifydb.py',
+    'feature_restricted_verifydb_root.py',
+    'feature_restricted_verifydb_freeze.py',
+    'feature_restricted_verifydb_global.py',
+    'feature_restricted_verifydb_verifier.py',
+    'feature_restricted_root_cache.py',
+    'feature_restricted_root_split.py',
+    'feature_restricted_root_prefix_split.py',
+    'feature_reissue_mempool_block_split.py',
 ]
 
 BASE_SCRIPTS= [
