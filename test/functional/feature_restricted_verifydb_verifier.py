@@ -45,9 +45,12 @@ class RestrictedVerifyDBVerifierTest(RavenTestFramework):
         verifier_b_tip = node.generate(1)[0]
         node.reissuerestrictedasset('$VERIFIERCASE', 1, source, True, 'true')
         verifier_true_tip = node.generate(1)[0]
+        pending_reissue = node.getblock(verifier_true_tip)['tx'][-1]
         node.invalidateblock(verifier_true_tip)
         assert_equal(node.getbestblockhash(), verifier_b_tip)
         assert_equal(node.getassetdata('$VERIFIERCASE')['verifier_string'], 'VERIB')
+        assert pending_reissue in node.getrawmempool()
+        # A mempool reissue cannot invalidate a different historical reissue.
         assert_equal(node.verifychain(4, 3), True)
 
 
