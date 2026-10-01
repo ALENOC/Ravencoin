@@ -811,7 +811,9 @@ bool Consensus::CheckTxAssets(const CTransaction& tx, CValidationState& state, c
             if (!ReissueAssetFromScript(txout.scriptPubKey, reissue, address))
                 return state.DoS(100, false, REJECT_INVALID, "bad-tx-asset-reissue-bad-deserialize", false, "", tx.GetHash());
 
-            if (mapReissuedAssets.count(reissue.strName)) {
+            // This map tracks pending reissues, not chain state. It must not
+            // make block validity depend on a node's mempool.
+            if (fCheckMempool && mapReissuedAssets.count(reissue.strName)) {
                 if (mapReissuedAssets.at(reissue.strName) != tx.GetHash())
                     return state.DoS(100, false, REJECT_INVALID, "bad-tx-reissue-chaining-not-allowed", false, "", tx.GetHash());
             } else {
