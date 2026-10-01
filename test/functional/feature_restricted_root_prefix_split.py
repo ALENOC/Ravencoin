@@ -5,7 +5,7 @@
 """Persisted subqualifier lookup must ignore unrelated serialized keys."""
 
 from test_framework.test_framework import RavenTestFramework
-from test_framework.util import assert_equal, sync_blocks
+from test_framework.util import assert_equal, disconnect_nodes, sync_blocks
 
 
 class RestrictedRootPrefixSplitTest(RavenTestFramework):
@@ -44,6 +44,8 @@ class RestrictedRootPrefixSplitTest(RavenTestFramework):
         self.log.info('Root qualification, dirty: %s; flushed: %s',
                       dirty.checkaddresstag(recipient, '#PREFIXROOT'),
                       flushed.checkaddresstag(recipient, '#PREFIXROOT'))
+        disconnect_nodes(dirty, 1)
+        disconnect_nodes(flushed, 0)
 
         txid = dirty.transfer('$PREFIXASSET', 1, recipient)
         dirty.generate(1)
