@@ -7,7 +7,7 @@
 import http.client
 
 from test_framework.test_framework import RavenTestFramework
-from test_framework.util import assert_equal, connect_nodes_bi
+from test_framework.util import assert_equal, connect_nodes_bi, wait_until
 
 
 class RestrictedAssetReplayCrashTest(RavenTestFramework):
@@ -70,6 +70,9 @@ class RestrictedAssetReplayCrashTest(RavenTestFramework):
 
         self.start_node(0, ['-assetindex', '-dbcache=1000'])
         node = self.nodes[0]
+        wait_until(lambda: node.getbestblockhash() == changed_block,
+                   err_msg='restricted asset rebuild did not reach the expected tip',
+                   timeout=60)
         assert_equal(node.getbestblockhash(), changed_block)
         assert_equal(node.getassetdata('$RESTRICTEDCRASH'), expected_asset_data)
         assert_equal(node.getassetdata('#RESTRICTEDCRASH'), expected_qualifier_data)
