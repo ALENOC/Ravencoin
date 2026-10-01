@@ -66,6 +66,7 @@ EXTENDED_SCRIPTS = [
     'feature_fee_estimation.py',
     # vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv Tests less than 5m vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
     'feature_dbcrash.py',
+    'feature_asset_dbcrash.py',
 ]
 
 BASE_SCRIPTS= [
