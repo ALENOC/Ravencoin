@@ -202,5 +202,28 @@ BOOST_FIXTURE_TEST_SUITE(asset_reissue_tests, BasicTestingSetup)
         BOOST_CHECK_MESSAGE(!ContextualCheckReissueAsset(&cache, reissue7, error), "Reissue should have been not valid because messaging isn't active yet, and txid aren't allowed until messaging is active");
     }
 
+    BOOST_AUTO_TEST_CASE(restricted_verifier_same_block_first_wins)
+    {
+        const std::string assetName = "$RESTRICTED";
+        const std::string firstVerifier = "KYC";
+        const std::string secondVerifier = "ACCREDITED";
+
+        CAssetsCache normalCache;
+        CAssetsCache replayCache;
+        replayCache.SetVerifyDBHistoricalReplay(true);
+
+        BOOST_REQUIRE(normalCache.AddRestrictedVerifier(assetName, firstVerifier));
+        BOOST_REQUIRE(replayCache.AddRestrictedVerifier(assetName, firstVerifier));
+        BOOST_REQUIRE(normalCache.AddRestrictedVerifier(assetName, secondVerifier));
+        BOOST_REQUIRE(replayCache.AddRestrictedVerifier(assetName, secondVerifier));
+
+        BOOST_REQUIRE_EQUAL(normalCache.setNewRestrictedVerifierToAdd.size(), 1U);
+        BOOST_REQUIRE_EQUAL(replayCache.setNewRestrictedVerifierToAdd.size(), 1U);
+        const std::string& normalVerifier = normalCache.setNewRestrictedVerifierToAdd.begin()->verifier;
+        const std::string& replayVerifier = replayCache.setNewRestrictedVerifierToAdd.begin()->verifier;
+        BOOST_CHECK_EQUAL(normalVerifier, firstVerifier);
+        BOOST_CHECK_EQUAL(replayVerifier, normalVerifier);
+    }
+
 
 BOOST_AUTO_TEST_SUITE_END()
