@@ -54,6 +54,15 @@ class AssetReplayCrashTest(RavenTestFramework):
         assert 'Replaying blocks' in debug_log
         assert_equal(node.getassetdata(asset_name), asset_data)
 
+        # A second abrupt exit must not erase an issuance already recovered
+        # by replay. The first restart must leave durable asset state.
+        node.process.kill()
+        node.process.wait(timeout=10)
+        self.start_node(0, ['-assetindex', '-dbbatchsize=1', '-dbcache=1000'])
+        node = self.nodes[0]
+        assert_equal(node.getbestblockhash(), asset_block)
+        assert_equal(node.getassetdata(asset_name), asset_data)
+
 
 if __name__ == '__main__':
     AssetReplayCrashTest().main()
