@@ -99,6 +99,9 @@ public:
     std::vector<uint256> GetHeadBlocks() const override;
     uint256 GetRIP25ContextValidatedTip() const;
     uint256 GetRIP25ContextPendingTip() const;
+    bool HasAssetCommitPending() const;
+    uint256 GetAssetCommitValidatedTip() const;
+    bool ClearAssetCommitPending(const uint256& tip);
     bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) override;
     CCoinsViewCursor *Cursor() const override;
 

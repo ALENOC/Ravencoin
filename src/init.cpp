@@ -1748,6 +1748,42 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
                     }
                 }
 
+                // Coins and asset records live in different databases. A
+                // completed coins batch alone does not prove that the asset
+                // database reached the same tip. ReplayBlocks cannot safely
+                // repair an interrupted asset transfer because its spent
+                // input may already have disappeared from the coins database.
+                const bool fAssetStateNeedsRebuild = !fEmptyChainstate &&
+                    (fInterruptedChainstate ||
+                     pcoinsdbview->HasAssetCommitPending() ||
+                     pcoinsdbview->GetAssetCommitValidatedTip() != chainstateBestBlock);
+                if (fAssetStateNeedsRebuild) {
+                    // Do not erase the only copy of a pruned chainstate or a
+                    // chainstate whose block data is not locally available.
+                    if (fHavePruned) {
+                        return InitError(_("Asset database state is not certified at the coins tip. This pruned chainstate cannot be rebuilt safely; retain the data directory and redownload the blockchain."));
+                    }
+                    {
+                        LOCK(cs_main);
+                        const auto tip = mapBlockIndex.find(chainstateCandidate);
+                        if (tip == mapBlockIndex.end()) {
+                            return InitError(_("Asset database state is not certified and the chainstate tip is unknown. Retain the data directory and rebuild the block index before retrying."));
+                        }
+                        for (const CBlockIndex* pindex = tip->second; pindex; pindex = pindex->pprev) {
+                            CBlock block;
+                            if (!(pindex->nStatus & BLOCK_HAVE_DATA) ||
+                                !ReadBlockFromDisk(block, pindex, chainparams.GetConsensus())) {
+                                return InitError(_("Asset database state is not certified and required block data is unavailable. Retain the data directory and redownload the blockchain."));
+                            }
+                        }
+                    }
+                    LogPrintf("Asset database state is interrupted or not certified at coins tip %s; rebuilding chainstate\n",
+                              chainstateCandidate.ToString());
+                    fRetryWithChainStateRebuild = true;
+                    strLoadError = _("Asset database requires a full chainstate rebuild");
+                    break;
+                }
+
                 if (!fChainstateTipsResolved ||
                     RIP25ContextChainstateRequiresRebuild(
                             fRIP25ActiveInChainstate,

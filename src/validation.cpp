@@ -45,6 +45,7 @@
 #include "net.h"
 
 #include <atomic>
+#include <cstdlib>
 #include <sstream>
 
 #include <boost/algorithm/string/replace.hpp>
@@ -3131,13 +3132,11 @@ bool static FlushStateToDisk(const CChainParams& chainparams, CValidationState &
         int64_t assetDynamicSize = 0;
         int64_t assetDirtyCacheSize = 0;
         size_t assetMapAmountSize = 0;
-        if (AreAssetsDeployed()) {
-            auto currentActiveAssetCache = GetCurrentAssetCache();
-            if (currentActiveAssetCache) {
-                assetDynamicSize = currentActiveAssetCache->DynamicMemoryUsage();
-                assetDirtyCacheSize = currentActiveAssetCache->GetCacheSizeV2();
-                assetMapAmountSize = currentActiveAssetCache->mapAssetsAddressAmount.size();
-            }
+        auto currentActiveAssetCache = GetCurrentAssetCache();
+        if (currentActiveAssetCache) {
+            assetDynamicSize = currentActiveAssetCache->DynamicMemoryUsage();
+            assetDirtyCacheSize = currentActiveAssetCache->GetCacheSizeV2();
+            assetMapAmountSize = currentActiveAssetCache->mapAssetsAddressAmount.size();
         }
 
         int messageCacheSize = 0;
@@ -3212,16 +3211,19 @@ bool static FlushStateToDisk(const CChainParams& chainparams, CValidationState &
             if (!pcoinsTip->Flush())
                 return AbortNode(state, "Failed to write to coin database");
 
-            /** RVN START */
-            // Flush the assetstate
-            if (AreAssetsDeployed()) {
-                // Flush the assetstate
-                auto currentActiveAssetCache = GetCurrentAssetCache();
-                if (currentActiveAssetCache) {
-                    if (!currentActiveAssetCache->DumpCacheToDatabase())
-                        return AbortNode(state, "Failed to write to asset database");
-                }
+            // Regtest fault injection for the coins/asset database commit gap.
+            if (chainparams.NetworkIDString() == "regtest" &&
+                gArgs.GetArg("-dbcrashaftercoinsflushheight", -1) == chainActive.Height()) {
+                LogPrintf("Simulating a crash after the coins flush. Goodbye.\n");
+                std::_Exit(0);
             }
+
+            /** RVN START */
+            // A reorg can leave asset removals dirty even when its new tip is
+            // before asset activation. Persist them before certifying coins.
+            auto currentActiveAssetCache = GetCurrentAssetCache();
+            if (currentActiveAssetCache && !currentActiveAssetCache->DumpCacheToDatabase())
+                return AbortNode(state, "Failed to write to asset database");
 
             // Write the reissue mempool data to database
             if (passetsdb)
@@ -3240,6 +3242,13 @@ bool static FlushStateToDisk(const CChainParams& chainparams, CValidationState &
                         return AbortNode(state, "Failed to Flush the message channel database");
                 }
             }
+
+            if (passetsdb && !passetsdb->Sync())
+                return AbortNode(state, "Failed to sync asset database");
+            if (prestricteddb && !prestricteddb->Sync())
+                return AbortNode(state, "Failed to sync restricted asset database");
+            if (pcoinsdbview && !pcoinsdbview->ClearAssetCommitPending(pcoinsdbview->GetBestBlock()))
+                return AbortNode(state, "Failed to certify asset database state");
             /** RVN END */
 
             nLastFlush = nNow;
@@ -5351,8 +5360,10 @@ bool ReplayBlocks(const CChainParams& params, CCoinsView* view)
     }
 
     cache.SetBestBlock(pindexNew->GetBlockHash());
-    cache.Flush();
-    assetsCache.Flush();
+    if (!cache.Flush())
+        return error("ReplayBlocks(): Failed to flush recovered coins");
+    if (!assetsCache.Flush())
+        return error("ReplayBlocks(): Failed to flush recovered assets");
     uiInterface.ShowProgress("", 100, false);
     return true;
 }

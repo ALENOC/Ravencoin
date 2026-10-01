@@ -67,6 +67,9 @@ EXTENDED_SCRIPTS = [
     # vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv Tests less than 5m vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
     'feature_dbcrash.py',
     'feature_asset_dbcrash.py',
+    'feature_asset_dbcrash_transfer.py',
+    'feature_asset_db_missing_block.py',
+    'feature_restricted_dbcrash.py',
 ]
 
 BASE_SCRIPTS= [

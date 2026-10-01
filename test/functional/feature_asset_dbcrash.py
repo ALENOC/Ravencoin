@@ -51,7 +51,8 @@ class AssetReplayCrashTest(RavenTestFramework):
         with open(os.path.join(node.datadir, 'regtest', 'debug.log'), encoding='utf-8') as log:
             debug_log = log.read()
         assert 'Simulating a crash. Goodbye.' in debug_log
-        assert 'Replaying blocks' in debug_log
+        assert 'Asset database state is interrupted or not certified' in debug_log
+        assert 'Replaying blocks' not in debug_log
         assert_equal(node.getassetdata(asset_name), asset_data)
 
         # A second abrupt exit must not erase an issuance already recovered
@@ -83,6 +84,30 @@ class AssetReplayCrashTest(RavenTestFramework):
         node = self.nodes[0]
         assert_equal(node.getbestblockhash(), reissue_block)
         assert_equal(node.getassetdata(asset_name), reissue_data)
+
+        # A complete coins batch must not certify a tip before its asset
+        # metadata is durable. Crash at that exact regtest commit boundary.
+        crash_height = node.getblockcount() + 1
+        self.restart_node(0, ['-assetindex', '-dbcache=1000',
+                              '-dbcrashaftercoinsflushheight={}'.format(crash_height)])
+        node = self.nodes[0]
+        later_asset_name = 'POSTCOINCRASHASSET'
+        node.issue(later_asset_name, 11)
+        later_block = node.generate(1)[0]
+        later_asset_data = node.getassetdata(later_asset_name)
+        assert_equal(later_asset_data['amount'], 11)
+        try:
+            node.gettxoutsetinfo()
+        except (http.client.HTTPException, OSError):
+            pass
+        else:
+            raise AssertionError('The post-coins-flush fault hook did not crash')
+        node.wait_until_stopped()
+
+        self.start_node(0, ['-assetindex', '-dbcache=1000'])
+        node = self.nodes[0]
+        assert_equal(node.getbestblockhash(), later_block)
+        assert_equal(node.getassetdata(later_asset_name), later_asset_data)
 
 
 if __name__ == '__main__':

@@ -35,11 +35,14 @@ static const char DB_BEST_BLOCK = 'B';
 static const char DB_HEAD_BLOCKS = 'H';
 static const char DB_RIP25_CONTEXT_VALIDATED = 'Q';
 static const char DB_RIP25_CONTEXT_PENDING = 'q';
+static const char DB_ASSET_COMMIT_PENDING = 'X';
+static const char DB_ASSET_COMMIT_VALIDATED = 'Y';
 static const char DB_FLAG = 'F';
 static const char DB_REINDEX_FLAG = 'R';
 static const char DB_LAST_BLOCK = 'l';
 
 static constexpr uint8_t RIP25_CONTEXT_CHAINSTATE_VERSION = 1;
+static constexpr uint8_t ASSET_COMMIT_MARKER_VERSION = 1;
 
 namespace {
 
@@ -120,6 +123,28 @@ uint256 CCoinsViewDB::GetRIP25ContextPendingTip() const
     return ReadRIP25ContextTip(db, DB_RIP25_CONTEXT_PENDING);
 }
 
+bool CCoinsViewDB::HasAssetCommitPending() const
+{
+    return db.Exists(DB_ASSET_COMMIT_PENDING);
+}
+
+uint256 CCoinsViewDB::GetAssetCommitValidatedTip() const
+{
+    std::pair<uint8_t, uint256> marker;
+    if (!db.Read(DB_ASSET_COMMIT_VALIDATED, marker) || marker.first != ASSET_COMMIT_MARKER_VERSION) {
+        return uint256();
+    }
+    return marker.second;
+}
+
+bool CCoinsViewDB::ClearAssetCommitPending(const uint256& tip)
+{
+    CDBBatch batch(db);
+    batch.Erase(DB_ASSET_COMMIT_PENDING);
+    batch.Write(DB_ASSET_COMMIT_VALIDATED, std::make_pair(ASSET_COMMIT_MARKER_VERSION, tip));
+    return db.WriteBatch(batch, true);
+}
+
 bool IsRIP25ContextChainstateCurrent(const uint256& bestBlock,
                                      const std::vector<uint256>& headBlocks,
                                      const uint256& validatedTip,
@@ -181,6 +206,7 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) {
         batch.Write(DB_RIP25_CONTEXT_VALIDATED, MakeRIP25ContextMarker(old_tip));
     }
     batch.Write(DB_RIP25_CONTEXT_PENDING, MakeRIP25ContextMarker(hashBlock));
+    batch.Write(DB_ASSET_COMMIT_PENDING, ASSET_COMMIT_MARKER_VERSION);
 
     for (CCoinsMap::iterator it = mapCoins.begin(); it != mapCoins.end();) {
         if (it->second.flags & CCoinsCacheEntry::DIRTY) {
@@ -213,6 +239,7 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) {
     batch.Erase(DB_RIP25_CONTEXT_PENDING);
     batch.Write(DB_BEST_BLOCK, hashBlock);
     batch.Write(DB_RIP25_CONTEXT_VALIDATED, MakeRIP25ContextMarker(hashBlock));
+    batch.Write(DB_ASSET_COMMIT_PENDING, ASSET_COMMIT_MARKER_VERSION);
 
     LogPrint(BCLog::COINDB, "Writing final batch of %.2f MiB\n", batch.SizeEstimate() * (1.0 / 1048576.0));
     bool ret = db.WriteBatch(batch);

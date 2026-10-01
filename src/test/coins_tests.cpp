@@ -45,6 +45,11 @@ public:
     {
         BOOST_REQUIRE(view.db.Write('Q', std::make_pair(version, tip)));
     }
+
+    static void SetAssetValidatedMarker(CCoinsViewDB& view, uint8_t version, const uint256& tip)
+    {
+        BOOST_REQUIRE(view.db.Write('Y', std::make_pair(version, tip)));
+    }
 };
 } // namespace txdb_tests
 
@@ -203,6 +208,39 @@ BOOST_AUTO_TEST_CASE(rip25_context_chainstate_markers)
             true, third, view.GetBestBlock(), view.GetHeadBlocks(),
             view.GetRIP25ContextValidatedTip(), view.GetRIP25ContextPendingTip()));
     BOOST_CHECK(!IsRIP25ContextChainstateCurrent(second, {third, second}, second, third));
+}
+
+BOOST_AUTO_TEST_CASE(asset_commit_chainstate_markers)
+{
+    CCoinsViewDB view(1 << 20, true, true);
+    const uint256 first = uint256S("01");
+    const uint256 second = uint256S("02");
+    CCoinsMap changes;
+
+    BOOST_CHECK(!view.HasAssetCommitPending());
+    BOOST_CHECK(view.GetAssetCommitValidatedTip().IsNull());
+
+    BOOST_REQUIRE(view.BatchWrite(changes, first));
+    BOOST_CHECK(view.GetBestBlock() == first);
+    BOOST_CHECK(view.HasAssetCommitPending());
+    BOOST_CHECK(view.GetAssetCommitValidatedTip().IsNull());
+
+    BOOST_REQUIRE(view.ClearAssetCommitPending(first));
+    BOOST_CHECK(!view.HasAssetCommitPending());
+    BOOST_CHECK(view.GetAssetCommitValidatedTip() == first);
+
+    BOOST_REQUIRE(view.BatchWrite(changes, second));
+    BOOST_CHECK(view.GetBestBlock() == second);
+    BOOST_CHECK(view.HasAssetCommitPending());
+    BOOST_CHECK(view.GetAssetCommitValidatedTip() == first);
+
+    BOOST_REQUIRE(view.ClearAssetCommitPending(second));
+    BOOST_CHECK(!view.HasAssetCommitPending());
+    BOOST_CHECK(view.GetAssetCommitValidatedTip() == second);
+
+    // A marker written by an unknown protocol version cannot certify state.
+    txdb_tests::CCoinsViewDBTestAccess::SetAssetValidatedMarker(view, 2, second);
+    BOOST_CHECK(view.GetAssetCommitValidatedTip().IsNull());
 }
 
     static const unsigned int NUM_SIMULATION_ITERATIONS = 40000;
