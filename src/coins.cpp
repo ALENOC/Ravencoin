@@ -6,6 +6,7 @@
 #include "coins.h"
 
 #include "consensus/consensus.h"
+#include "consensus/tx_verify.h"
 #include "memusage.h"
 #include "random.h"
 #include "util.h"
@@ -94,12 +95,12 @@ void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin&& coin, bool possi
     cachedCoinsUsage += it->second.coin.DynamicMemoryUsage();
 }
 
-void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint256 blockHash, bool check, CAssetsCache* assetsCache, std::pair<std::string, CBlockAssetUndo>* undoAssetData) {
+void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint256 blockHash, bool check, CAssetsCache* assetsCache, std::pair<std::string, CBlockAssetUndo>* undoAssetData, const TxAssetDeploymentContext* pAssetContext) {
     bool fCoinbase = tx.IsCoinBase();
     const uint256& txid = tx.GetHash();
 
     /** RVN START */
-    if (AreAssetsDeployed()) {
+    if (pAssetContext ? pAssetContext->fAssetsDeployed : AreAssetsDeployed()) {
         if (assetsCache) {
             if (tx.IsNewAsset()) { // This works are all new root assets, sub asset, and restricted assets
                 CNewAsset asset;
@@ -260,10 +261,11 @@ void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint2
         cache.AddCoin(COutPoint(txid, i), Coin(tx.vout[i], nHeight, fCoinbase), overwrite);
 
         /** RVN START */
-        if (AreAssetsDeployed()) {
+        if (pAssetContext ? pAssetContext->fAssetsDeployed : AreAssetsDeployed()) {
             if (assetsCache) {
                 CAssetOutputEntry assetData;
-                if (GetAssetData(tx.vout[i].scriptPubKey, assetData)) {
+                if (pAssetContext ? GetAssetData(tx.vout[i].scriptPubKey, assetData, pAssetContext)
+                                  : GetAssetData(tx.vout[i].scriptPubKey, assetData)) {
 
                     // If this is a transfer asset, and the amount is greater than zero
                     // We want to make sure it is added to the asset addresses database if (fAssetIndex == true)
@@ -356,7 +358,7 @@ void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint2
     }
 }
 
-bool CCoinsViewCache::SpendCoin(const COutPoint &outpoint, Coin* moveout, CAssetsCache* assetsCache) {
+bool CCoinsViewCache::SpendCoin(const COutPoint &outpoint, Coin* moveout, CAssetsCache* assetsCache, const TxAssetDeploymentContext* pAssetContext) {
 
     CCoinsMap::iterator it = FetchCoin(outpoint);
     if (it == cacheCoins.end())
@@ -378,9 +380,9 @@ bool CCoinsViewCache::SpendCoin(const COutPoint &outpoint, Coin* moveout, CAsset
     }
 
     /** RVN START */
-    if (AreAssetsDeployed()) {
+    if (pAssetContext ? pAssetContext->fAssetsDeployed : AreAssetsDeployed()) {
         if (assetsCache) {
-            if (!assetsCache->TrySpendCoin(outpoint, tempCoin.out)) {
+            if (!assetsCache->TrySpendCoin(outpoint, tempCoin.out, pAssetContext)) {
                 return error("%s : Failed to try and spend the asset. COutPoint : %s", __func__, outpoint.ToString());
             }
         }

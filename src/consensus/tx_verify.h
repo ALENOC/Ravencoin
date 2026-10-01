@@ -29,6 +29,9 @@ struct TxAssetDeploymentContext {
     bool fTransferScriptsSizeDeployed;
     bool fEnforcedValuesDeployed;
     bool fCoinbaseCheckAssetsDeployed;
+    bool fAssetsDeployed;
+    bool fMessagesDeployed;
+    bool fRestrictedAssetsDeployed;
 };
 
 /** Structural checks; candidate-block prechecks defer deployment-sensitive asset rules. */
@@ -41,10 +44,10 @@ namespace Consensus {
  * @param[out] txfee Set to the transaction fee if successful.
  * Preconditions: tx.IsCoinBase() is false.
  */
-bool CheckTxInputs(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, int nSpendHeight, CAmount& txfee);
+bool CheckTxInputs(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, int nSpendHeight, CAmount& txfee, const TxAssetDeploymentContext* pAssetContext = nullptr);
 
 /** RVN START */
-bool CheckTxAssets(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, CAssetsCache* assetCache, bool fCheckMempool, std::vector<std::pair<std::string, uint256> >& vPairReissueAssets, const bool fTransferOverflowActive, const bool fRunningUnitTests = false, std::set<CMessage>* setMessages = nullptr, int64_t nBlocktime = 0,  std::vector<std::pair<std::string, CNullAssetTxData>>* myNullAssetData = nullptr);
+bool CheckTxAssets(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, CAssetsCache* assetCache, bool fCheckMempool, std::vector<std::pair<std::string, uint256> >& vPairReissueAssets, const bool fTransferOverflowActive, const bool fRunningUnitTests = false, std::set<CMessage>* setMessages = nullptr, int64_t nBlocktime = 0,  std::vector<std::pair<std::string, CNullAssetTxData>>* myNullAssetData = nullptr, const TxAssetDeploymentContext* pAssetContext = nullptr);
 /** RVN END */
 } // namespace Consensus
 

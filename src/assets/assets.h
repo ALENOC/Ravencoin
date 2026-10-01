@@ -62,6 +62,7 @@ struct CAssetOutputEntry;
 class CCoinControl;
 struct CBlockAssetUndo;
 class COutput;
+struct TxAssetDeploymentContext;
 
 // 2500 * 82 Bytes == 205 KB (kilobytes) of memory
 #define MAX_CACHE_ASSETS_SIZE 2500
@@ -272,7 +273,7 @@ public :
     bool RemoveTransfer(const CAssetTransfer& transfer, const std::string& address, const COutPoint& out);
     bool RemoveOwnerAsset(const std::string& assetsName, const std::string address);
     bool RemoveReissueAsset(const CReissueAsset& reissue, const std::string address, const COutPoint& out, const std::vector<std::pair<std::string, CBlockAssetUndo> >& vUndoIPFS);
-    bool UndoAssetCoin(const Coin& coin, const COutPoint& out);
+    bool UndoAssetCoin(const Coin& coin, const COutPoint& out, const TxAssetDeploymentContext* pAssetContext = nullptr);
     bool RemoveQualifierAddress(const std::string& assetName, const std::string& address, const QualifierType type);
     bool RemoveRestrictedAddress(const std::string& assetName, const std::string& address, const RestrictedType type);
     bool RemoveGlobalRestricted(const std::string& assetName, const RestrictedType type);
@@ -289,7 +290,7 @@ public :
     bool AddRestrictedVerifier(const std::string& assetName, const std::string& verifier);
 
     //! Cache only validation functions
-    bool TrySpendCoin(const COutPoint& out, const CTxOut& coin);
+    bool TrySpendCoin(const COutPoint& out, const CTxOut& coin, const TxAssetDeploymentContext* pAssetContext = nullptr);
 
     //! Help functions
     bool ContainsAsset(const CNewAsset& asset);
@@ -470,7 +471,7 @@ bool CheckReissueDataTx(const CTxOut& txOut);// OP_RAVEN_ASSET RVNR
 bool CheckTransferOwnerTx(const CTxOut& txOut);// OP_RAVEN_ASSET RVNT
 
 //! Check the Encoded hash and make sure it is either an IPFS hash or a OIP hash
-bool CheckEncoded(const std::string& hash, std::string& strError);
+bool CheckEncoded(const std::string& hash, std::string& strError, const TxAssetDeploymentContext* pAssetContext = nullptr);
 
 //! Checks the amount and units, and makes sure that the amount uses the correct decimals
 bool CheckAmountWithUnits(const CAmount& nAmount, const int8_t nUnits);
@@ -515,7 +516,7 @@ void GetAllMyAssets(CWallet* pwallet, std::vector<std::string>& names, int nMinC
 bool GetAssetInfoFromCoin(const Coin& coin, std::string& strName, CAmount& nAmount);
 bool GetAssetInfoFromScript(const CScript& scriptPubKey, std::string& strName, CAmount& nAmount);
 
-bool GetAssetData(const CScript& script, CAssetOutputEntry& data);
+bool GetAssetData(const CScript& script, CAssetOutputEntry& data, const TxAssetDeploymentContext* pAssetContext = nullptr);
 
 // Experimental PQ asset extension: recognize a canonical 32-byte program
 // tail without changing the legacy asset parser or script evaluator.
@@ -554,7 +555,7 @@ bool VerifyWalletHasAsset(CWallet* pwallet, const std::string& asset_name, std::
 #endif
 
 /** Helper method for extracting address bytes, asset name and amount from an asset script */
-bool ParseAssetScript(CScript scriptPubKey, uint160 &hashBytes, std::string &assetName, CAmount &assetAmount);
+bool ParseAssetScript(CScript scriptPubKey, uint160 &hashBytes, std::string &assetName, CAmount &assetAmount, const TxAssetDeploymentContext* pAssetContext = nullptr);
 
 /** Helper method for extracting #TAGS from a verifier string */
 void ExtractVerifierStringQualifiers(const std::string& verifier, std::set<std::string>& qualifiers);
@@ -577,11 +578,11 @@ bool ContextualCheckNullAssetTxOut(const CTxOut& txout, CAssetsCache* assetCache
 bool ContextualCheckGlobalAssetTxOut(const CTxOut& txout, CAssetsCache* assetCache, std::string& strError);
 bool ContextualCheckVerifierAssetTxOut(const CTxOut& txout, CAssetsCache* assetCache, std::string& strError);
 bool ContextualCheckVerifierString(CAssetsCache* cache, const std::string& verifier, const std::string& check_address, std::string& strError, ErrorReport* errorReport = nullptr);
-bool ContextualCheckNewAsset(CAssetsCache* assetCache, const CNewAsset& asset, std::string& strError, bool fCheckMempool = false);
-bool ContextualCheckTransferAsset(CAssetsCache* assetCache, const CAssetTransfer& transfer, const std::string& address, std::string& strError);
-bool ContextualCheckReissueAsset(CAssetsCache* assetCache, const CReissueAsset& reissue_asset, std::string& strError, const CTransaction& tx);
+bool ContextualCheckNewAsset(CAssetsCache* assetCache, const CNewAsset& asset, std::string& strError, bool fCheckMempool = false, const TxAssetDeploymentContext* pAssetContext = nullptr);
+bool ContextualCheckTransferAsset(CAssetsCache* assetCache, const CAssetTransfer& transfer, const std::string& address, std::string& strError, const TxAssetDeploymentContext* pAssetContext = nullptr);
+bool ContextualCheckReissueAsset(CAssetsCache* assetCache, const CReissueAsset& reissue_asset, std::string& strError, const CTransaction& tx, const TxAssetDeploymentContext* pAssetContext = nullptr);
 bool ContextualCheckReissueAsset(CAssetsCache* assetCache, const CReissueAsset& reissue_asset, std::string& strError);
-bool ContextualCheckUniqueAssetTx(CAssetsCache* assetCache, std::string& strError, const CTransaction& tx);
-bool ContextualCheckUniqueAsset(CAssetsCache* assetCache, const CNewAsset& unique_asset, std::string& strError);
+bool ContextualCheckUniqueAssetTx(CAssetsCache* assetCache, std::string& strError, const CTransaction& tx, const TxAssetDeploymentContext* pAssetContext = nullptr);
+bool ContextualCheckUniqueAsset(CAssetsCache* assetCache, const CNewAsset& unique_asset, std::string& strError, const TxAssetDeploymentContext* pAssetContext = nullptr);
 
 #endif //RAVENCOIN_ASSET_PROTOCOL_H

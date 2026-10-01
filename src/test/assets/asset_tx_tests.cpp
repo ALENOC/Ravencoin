@@ -58,6 +58,93 @@ CScript MakeTaggedAssetTransferScript(const std::string& assetName, CAmount amou
 
 BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
 
+    BOOST_AUTO_TEST_CASE(check_tx_inputs_uses_candidate_enforced_values_state)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+
+        CCoinsView base;
+        CCoinsViewCache coins(&base);
+        const COutPoint input(uint256S("05"), 0);
+        coins.AddCoin(input, Coin(CTxOut(COIN, CScript() << OP_TRUE), 10, false), false);
+
+        CMutableTransaction mutableTx;
+        mutableTx.vin.emplace_back(input);
+        CTxOut assetOutput = MakeAssetTransferOutput("RAVENTEST", COIN);
+        assetOutput.nValue = COIN + 1;
+        mutableTx.vout.emplace_back(assetOutput);
+        const CTransaction tx(mutableTx);
+
+        const TxAssetDeploymentContext before{false, false, false, false, false, false};
+        const TxAssetDeploymentContext after{false, true, false, false, false, false};
+        CAmount fee = -1;
+        CValidationState beforeState;
+        BOOST_REQUIRE(Consensus::CheckTxInputs(tx, beforeState, coins, 20, fee, &before));
+        BOOST_CHECK_EQUAL(fee, COIN);
+
+        CValidationState afterState;
+        BOOST_CHECK(!Consensus::CheckTxInputs(tx, afterState, coins, 20, fee, &after));
+        BOOST_CHECK_EQUAL(afterState.GetRejectReason(), "bad-txns-in-belowout");
+    }
+
+    BOOST_AUTO_TEST_CASE(check_tx_assets_uses_candidate_transfer_parser_state)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        const std::string assetName(30, 'A');
+        CCoinsView base;
+        CCoinsViewCache coins(&base);
+        const COutPoint input(uint256S("06"), 0);
+        AddAssetCoin(coins, input, assetName, COIN);
+
+        CScript script = GetScriptForDestination(DecodeDestination(GetParams().GlobalBurnAddress()));
+        CAssetTransfer(assetName, COIN, std::string(34, 'a')).ConstructTransaction(script);
+        BOOST_REQUIRE(script.size() > 75);
+        CMutableTransaction mutableTx;
+        mutableTx.vin.emplace_back(input);
+        mutableTx.vout.emplace_back(0, script);
+        const CTransaction tx(mutableTx);
+
+        const TxAssetDeploymentContext before{false, false, false, true, false, false};
+        const TxAssetDeploymentContext after{true, false, false, true, false, false};
+        std::vector<std::pair<std::string, uint256>> reissues;
+        CValidationState beforeState;
+        BOOST_CHECK(!Consensus::CheckTxAssets(tx, beforeState, coins, nullptr, false,
+                                              reissues, false, true, nullptr, 0, nullptr, &before));
+        BOOST_CHECK_EQUAL(beforeState.GetRejectReason(), "bad-tx-asset-transfer-bad-deserialize");
+
+        CValidationState afterState;
+        BOOST_CHECK_MESSAGE(Consensus::CheckTxAssets(tx, afterState, coins, nullptr, false,
+                                                    reissues, false, true, nullptr, 0, nullptr, &after),
+                            afterState.GetRejectReason());
+    }
+
+    BOOST_AUTO_TEST_CASE(check_tx_assets_uses_candidate_messaging_state)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        const std::string assetName = "RAVENTEST~CH";
+        CCoinsView base;
+        CCoinsViewCache coins(&base);
+        const COutPoint input(uint256S("07"), 0);
+        AddAssetCoin(coins, input, assetName, COIN);
+
+        CMutableTransaction mutableTx;
+        mutableTx.vin.emplace_back(input);
+        mutableTx.vout.emplace_back(MakeAssetTransferOutput(assetName, COIN));
+        const CTransaction tx(mutableTx);
+
+        const TxAssetDeploymentContext before{false, false, false, true, false, false};
+        const TxAssetDeploymentContext after{false, false, false, true, true, true};
+        std::vector<std::pair<std::string, uint256>> reissues;
+        CValidationState beforeState;
+        BOOST_CHECK(!Consensus::CheckTxAssets(tx, beforeState, coins, nullptr, false,
+                                              reissues, false, true, nullptr, 0, nullptr, &before));
+        BOOST_CHECK_EQUAL(beforeState.GetRejectReason(), "bad-txns-transfer-msgchannel-before-messaging-is-active");
+
+        CValidationState afterState;
+        BOOST_CHECK_MESSAGE(Consensus::CheckTxAssets(tx, afterState, coins, nullptr, false,
+                                                    reissues, false, true, nullptr, 0, nullptr, &after),
+                            afterState.GetRejectReason());
+    }
+
     BOOST_AUTO_TEST_CASE(asset_destination_scope_test)
     {
         SelectParams(CBaseChainParams::MAIN);

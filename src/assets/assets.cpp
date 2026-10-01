@@ -18,6 +18,7 @@
 #include <wallet/wallet.h>
 #include <boost/algorithm/string.hpp>
 #include <consensus/validation.h>
+#include <consensus/tx_verify.h>
 #include <rpc/protocol.h>
 #include <net.h>
 #include "assets.h"
@@ -1726,7 +1727,7 @@ void CAssetsCache::AddToAssetBalance(const std::string& strName, const std::stri
     }
 }
 
-bool CAssetsCache::TrySpendCoin(const COutPoint& out, const CTxOut& txOut)
+bool CAssetsCache::TrySpendCoin(const COutPoint& out, const CTxOut& txOut, const TxAssetDeploymentContext* pAssetContext)
 {
     // Placeholder strings that will get set if you successfully get the transfer or asset from the script
     std::string address = "";
@@ -1747,7 +1748,7 @@ bool CAssetsCache::TrySpendCoin(const COutPoint& out, const CTxOut& txOut)
             }
         } else if (nType == TX_TRANSFER_ASSET) {
             CAssetTransfer transfer;
-            if (TransferAssetFromScript(txOut.scriptPubKey, transfer, address)) {
+            if (TransferAssetFromScript(txOut.scriptPubKey, transfer, address, pAssetContext ? pAssetContext->fTransferScriptsSizeDeployed : AreTransferScriptsSizeDeployed())) {
                 assetName = transfer.strName;
                 nAmount = transfer.nAmount;
             }
@@ -1801,7 +1802,7 @@ bool CAssetsCache::ContainsAsset(const std::string& assetName)
     return CheckIfAssetExists(assetName);
 }
 
-bool CAssetsCache::UndoAssetCoin(const Coin& coin, const COutPoint& out)
+bool CAssetsCache::UndoAssetCoin(const Coin& coin, const COutPoint& out, const TxAssetDeploymentContext* pAssetContext)
 {
     std::string strAddress = "";
     std::string assetName = "";
@@ -1824,7 +1825,7 @@ bool CAssetsCache::UndoAssetCoin(const Coin& coin, const COutPoint& out)
             nAmount = asset.nAmount;
         } else if (nType == TX_TRANSFER_ASSET) {
             CAssetTransfer transfer;
-            if (!TransferAssetFromScript(coin.out.scriptPubKey, transfer, strAddress))
+            if (!TransferAssetFromScript(coin.out.scriptPubKey, transfer, strAddress, pAssetContext ? pAssetContext->fTransferScriptsSizeDeployed : AreTransferScriptsSizeDeployed()))
                 return error(
                         "%s : Failed to get transfer asset from script while trying to undo asset spend. OutPoint : %s",
                         __func__,
@@ -3532,7 +3533,7 @@ bool GetAssetInfoFromCoin(const Coin& coin, std::string& strName, CAmount& nAmou
     return GetAssetInfoFromScript(coin.out.scriptPubKey, strName, nAmount);
 }
 
-bool GetAssetData(const CScript& script, CAssetOutputEntry& data)
+bool GetAssetData(const CScript& script, CAssetOutputEntry& data, const TxAssetDeploymentContext* pAssetContext)
 {
     // Placeholder strings that will get set if you successfully get the transfer or asset from the script
     std::string address = "";
@@ -3573,7 +3574,7 @@ bool GetAssetData(const CScript& script, CAssetOutputEntry& data)
         }
     } else if (type == TX_TRANSFER_ASSET) {
         CAssetTransfer transfer;
-        if (TransferAssetFromScript(script, transfer, address)) {
+        if (TransferAssetFromScript(script, transfer, address, pAssetContext ? pAssetContext->fTransferScriptsSizeDeployed : AreTransferScriptsSizeDeployed())) {
             data.type = TX_TRANSFER_ASSET;
             data.nAmount = transfer.nAmount;
             data.destination = DecodeDestination(address);
@@ -4596,13 +4597,13 @@ bool CheckAmountWithUnits(const CAmount& nAmount, const int8_t nUnits)
     return nAmount % int64_t(pow(10, (MAX_UNIT - nUnits))) == 0;
 }
 
-bool CheckEncoded(const std::string& hash, std::string& strError) {
+bool CheckEncoded(const std::string& hash, std::string& strError, const TxAssetDeploymentContext* pAssetContext) {
     std::string encodedStr = EncodeAssetData(hash);
     if (encodedStr.substr(0, 2) == "Qm" && encodedStr.size() == 46) {
         return true;
     }
 
-    if (AreMessagesDeployed()) {
+    if (pAssetContext ? pAssetContext->fMessagesDeployed : AreMessagesDeployed()) {
         if (IsHex(encodedStr) && encodedStr.length() == 64) {
             return true;
         }
@@ -4631,7 +4632,7 @@ void GetTxOutAssetTypes(const std::vector<CTxOut>& vout, int& issues, int& reiss
     }
 }
 
-bool ParseAssetScript(CScript scriptPubKey, uint160 &hashBytes, std::string &assetName, CAmount &assetAmount) {
+bool ParseAssetScript(CScript scriptPubKey, uint160 &hashBytes, std::string &assetName, CAmount &assetAmount, const TxAssetDeploymentContext* pAssetContext) {
     int nType;
     bool fIsOwner;
     int _nStartingPoint;
@@ -4667,7 +4668,7 @@ bool ParseAssetScript(CScript scriptPubKey, uint160 &hashBytes, std::string &ass
             }
         } else if (nType == TX_TRANSFER_ASSET) {
             CAssetTransfer asset;
-            if (TransferAssetFromScript(scriptPubKey, asset, _strAddress)) {
+            if (TransferAssetFromScript(scriptPubKey, asset, _strAddress, pAssetContext ? pAssetContext->fTransferScriptsSizeDeployed : AreTransferScriptsSizeDeployed())) {
                 assetName = asset.strName;
                 assetAmount = asset.nAmount;
                 isAsset = true;
@@ -5407,7 +5408,7 @@ bool ContextualCheckVerifierString(CAssetsCache* cache, const std::string& verif
     }
 }
 
-bool ContextualCheckTransferAsset(CAssetsCache* assetCache, const CAssetTransfer& transfer, const std::string& address, std::string& strError)
+bool ContextualCheckTransferAsset(CAssetsCache* assetCache, const CAssetTransfer& transfer, const std::string& address, std::string& strError, const TxAssetDeploymentContext* pAssetContext)
 {
     strError = "";
     AssetType assetType;
@@ -5421,7 +5422,7 @@ bool ContextualCheckTransferAsset(CAssetsCache* assetCache, const CAssetTransfer
         return false;
     }
 
-    if (AreMessagesDeployed()) {
+    if (pAssetContext ? pAssetContext->fMessagesDeployed : AreMessagesDeployed()) {
         // This is for the current testnet6 only.
         if (transfer.nAmount <= 0) {
             strError = "Invalid parameter: asset amount can't be equal to or less than zero.";
@@ -5438,21 +5439,21 @@ bool ContextualCheckTransferAsset(CAssetsCache* assetCache, const CAssetTransfer
             return false;
         }
 
-        if (transfer.message.size() && !CheckEncoded(transfer.message, strError)) {
+        if (transfer.message.size() && !CheckEncoded(transfer.message, strError, pAssetContext)) {
             return false;
         }
     }
 
     // If the transfer is a message channel asset. Check to make sure that it is UNIQUE_ASSET_AMOUNT
     if (assetType == AssetType::MSGCHANNEL) {
-        if (!AreMessagesDeployed()) {
+        if (!(pAssetContext ? pAssetContext->fMessagesDeployed : AreMessagesDeployed())) {
             strError = "bad-txns-transfer-msgchannel-before-messaging-is-active";
             return false;
         }
     }
 
     if (assetType == AssetType::RESTRICTED) {
-        if (!AreRestrictedAssetsDeployed()) {
+        if (!(pAssetContext ? pAssetContext->fRestrictedAssetsDeployed : AreRestrictedAssetsDeployed())) {
             strError = "bad-txns-transfer-restricted-before-it-is-active";
             return false;
         }
@@ -5474,7 +5475,7 @@ bool ContextualCheckTransferAsset(CAssetsCache* assetCache, const CAssetTransfer
 
     // If the transfer is a qualifier channel asset.
     if (assetType == AssetType::QUALIFIER || assetType == AssetType::SUB_QUALIFIER) {
-        if (!AreRestrictedAssetsDeployed()) {
+        if (!(pAssetContext ? pAssetContext->fRestrictedAssetsDeployed : AreRestrictedAssetsDeployed())) {
             strError = "bad-txns-transfer-qualifier-before-it-is-active";
             return false;
         }
@@ -5560,9 +5561,9 @@ bool CheckNewAsset(const CNewAsset& asset, std::string& strError)
     return true;
 }
 
-bool ContextualCheckNewAsset(CAssetsCache* assetCache, const CNewAsset& asset, std::string& strError, bool fCheckMempool)
+bool ContextualCheckNewAsset(CAssetsCache* assetCache, const CNewAsset& asset, std::string& strError, bool fCheckMempool, const TxAssetDeploymentContext* pAssetContext)
 {
-    if (!AreAssetsDeployed() && !fUnitTest) {
+    if (!(pAssetContext ? pAssetContext->fAssetsDeployed : AreAssetsDeployed()) && !fUnitTest) {
         strError = "bad-txns-new-asset-when-assets-is-not-active";
         return false;
     }
@@ -5586,7 +5587,7 @@ bool ContextualCheckNewAsset(CAssetsCache* assetCache, const CNewAsset& asset, s
 
     // Check the ipfs hash as it changes when messaging goes active
     if (asset.nHasIPFS && asset.strIPFSHash.size() != 34) {
-        if (!AreMessagesDeployed()) {
+        if (!(pAssetContext ? pAssetContext->fMessagesDeployed : AreMessagesDeployed())) {
             strError = _("Invalid parameter: ipfs_hash must be 46 characters. Txid must be valid 64 character hash");
             return false;
         } else {
@@ -5598,7 +5599,7 @@ bool ContextualCheckNewAsset(CAssetsCache* assetCache, const CNewAsset& asset, s
     }
 
     if (asset.nHasIPFS) {
-        if (!CheckEncoded(asset.strIPFSHash, strError))
+        if (!CheckEncoded(asset.strIPFSHash, strError, pAssetContext))
             return false;
     }
 
@@ -5646,7 +5647,7 @@ bool CheckReissueAsset(const CReissueAsset& asset, std::string& strError)
     return true;
 }
 
-bool ContextualCheckReissueAsset(CAssetsCache* assetCache, const CReissueAsset& reissue_asset, std::string& strError, const CTransaction& tx)
+bool ContextualCheckReissueAsset(CAssetsCache* assetCache, const CReissueAsset& reissue_asset, std::string& strError, const CTransaction& tx, const TxAssetDeploymentContext* pAssetContext)
 {
     // We are using this just to get the strAddress
     CReissueAsset reissue;
@@ -5690,13 +5691,13 @@ bool ContextualCheckReissueAsset(CAssetsCache* assetCache, const CReissueAsset& 
     }
 
     // Check the ipfs hash
-    if (reissue_asset.strIPFSHash != "" && reissue_asset.strIPFSHash.size() != 34 && (AreMessagesDeployed() && reissue_asset.strIPFSHash.size() != 32)) {
+    if (reissue_asset.strIPFSHash != "" && reissue_asset.strIPFSHash.size() != 34 && ((pAssetContext ? pAssetContext->fMessagesDeployed : AreMessagesDeployed()) && reissue_asset.strIPFSHash.size() != 32)) {
         strError = _("Invalid parameter: ipfs_hash must be 34 bytes, Txid must be 32 bytes");
         return false;
     }
 
     if (reissue_asset.strIPFSHash != "") {
-        if (!CheckEncoded(reissue_asset.strIPFSHash, strError))
+        if (!CheckEncoded(reissue_asset.strIPFSHash, strError, pAssetContext))
             return false;
     }
 
@@ -5789,7 +5790,7 @@ bool ContextualCheckReissueAsset(CAssetsCache* assetCache, const CReissueAsset& 
     return true;
 }
 
-bool ContextualCheckUniqueAssetTx(CAssetsCache* assetCache, std::string& strError, const CTransaction& tx)
+bool ContextualCheckUniqueAssetTx(CAssetsCache* assetCache, std::string& strError, const CTransaction& tx, const TxAssetDeploymentContext* pAssetContext)
 {
     for (auto out : tx.vout)
     {
@@ -5802,7 +5803,7 @@ bool ContextualCheckUniqueAssetTx(CAssetsCache* assetCache, std::string& strErro
                 return false;
             }
 
-            if (!ContextualCheckUniqueAsset(assetCache, asset, strError))
+            if (!ContextualCheckUniqueAsset(assetCache, asset, strError, pAssetContext))
                 return false;
         }
     }
@@ -5810,9 +5811,9 @@ bool ContextualCheckUniqueAssetTx(CAssetsCache* assetCache, std::string& strErro
     return true;
 }
 
-bool ContextualCheckUniqueAsset(CAssetsCache* assetCache, const CNewAsset& unique_asset, std::string& strError)
+bool ContextualCheckUniqueAsset(CAssetsCache* assetCache, const CNewAsset& unique_asset, std::string& strError, const TxAssetDeploymentContext* pAssetContext)
 {
-    if (!ContextualCheckNewAsset(assetCache, unique_asset, strError))
+    if (!ContextualCheckNewAsset(assetCache, unique_asset, strError, false, pAssetContext))
         return false;
 
     return true;

@@ -18,7 +18,7 @@
 #include <boost/test/unit_test.hpp>
 #include <assets/assets.h>
 
-int ApplyTxInUndo(Coin &&undo, CCoinsViewCache &view, const COutPoint &out, CAssetsCache *assetsCache = nullptr);
+int ApplyTxInUndo(Coin &&undo, CCoinsViewCache &view, const COutPoint &out, CAssetsCache *assetsCache = nullptr, const TxAssetDeploymentContext* pAssetContext = nullptr);
 
 namespace txdb_tests
 {
