@@ -3010,13 +3010,15 @@ bool CAssetsCache::Flush()
 
         for (auto &item : mapRootQualifierAddressesAdd) {
             for (auto asset : item.second) {
+                passets->mapRootQualifierAddressesRemove[item.first].erase(asset);
                 passets->mapRootQualifierAddressesAdd[item.first].insert(asset);
             }
         }
 
         for (auto &item : mapRootQualifierAddressesRemove) {
             for (auto asset : item.second) {
-                passets->mapRootQualifierAddressesAdd[item.first].insert(asset);
+                passets->mapRootQualifierAddressesAdd[item.first].erase(asset);
+                passets->mapRootQualifierAddressesRemove[item.first].insert(asset);
             }
         }
 
