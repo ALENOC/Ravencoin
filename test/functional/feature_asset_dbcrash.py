@@ -63,6 +63,27 @@ class AssetReplayCrashTest(RavenTestFramework):
         assert_equal(node.getbestblockhash(), asset_block)
         assert_equal(node.getassetdata(asset_name), asset_data)
 
+        # Reissue metadata changes also need a safe replay path. In
+        # particular, units changes create asset undo data during AddCoins.
+        self.restart_node(0, ['-assetindex', '-dbbatchsize=1', '-dbcrashratio=1', '-dbcache=1000'])
+        node = self.nodes[0]
+        node.reissue(asset_name, 5, node.getnewaddress(), '', True, 1)
+        reissue_block = node.generate(1)[0]
+        reissue_data = node.getassetdata(asset_name)
+        assert_equal(reissue_data['amount'], 42)
+        assert_equal(reissue_data['units'], 1)
+        try:
+            node.gettxoutsetinfo()
+        except (http.client.HTTPException, OSError):
+            pass
+        else:
+            raise AssertionError('The reissue coins flush did not crash')
+        node.wait_until_stopped()
+        self.start_node(0, ['-assetindex', '-dbbatchsize=1', '-dbcache=1000'])
+        node = self.nodes[0]
+        assert_equal(node.getbestblockhash(), reissue_block)
+        assert_equal(node.getassetdata(asset_name), reissue_data)
+
 
 if __name__ == '__main__':
     AssetReplayCrashTest().main()
