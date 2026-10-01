@@ -71,7 +71,37 @@ class RestrictedVerifyDBTest(RavenTestFramework):
         node.generate(1)
         assert_equal(node.getassetdata('$VERIFYDBTAG')['verifier_string'], 'true')
         assert_equal(node.verifychain(4, 1), True)
-        assert_equal(node.verifychain(4, 10), True)
+
+        # A transfer valid under the old verifier remains valid after a
+        # later reissue restores the qualifier requirement.
+        untagged_address = node.getnewaddress()
+        node.transfer('$VERIFYDBTAG', 1, untagged_address)
+        node.generate(1)
+        node.reissuerestrictedasset('$VERIFYDBTAG', 1, address, True, '#VERIFYDBTAG')
+        node.generate(1)
+        assert_equal(node.getassetdata('$VERIFYDBTAG')['verifier_string'], 'VERIFYDBTAG')
+        assert_equal(node.verifychain(4, 3), True)
+        for depth in range(4, 13):
+            assert node.verifychain(4, depth), 'historical verifier failed at depth {}'.format(depth)
+
+        # A subqualifier acquired after a transfer must not retroactively
+        # change the parent qualifier result while reconnecting that transfer.
+        node.issuequalifierasset('#VERIFYROOT')
+        node.generate(1)
+        node.issuequalifierasset('#VERIFYROOT/SUB')
+        node.generate(1)
+        node.issue('ROOTCASE')
+        node.generate(1)
+        source_address = node.getnewaddress()
+        root_case_address = node.getnewaddress()
+        node.issuerestrictedasset('$ROOTCASE', 100, '!#VERIFYROOT', source_address)
+        node.generate(1)
+        node.transfer('$ROOTCASE', 1, root_case_address)
+        node.generate(1)
+        node.addtagtoaddress('#VERIFYROOT/SUB', root_case_address)
+        node.generate(1)
+        assert_equal(node.checkaddresstag(root_case_address, '#VERIFYROOT'), True)
+        assert_equal(node.verifychain(4, 2), True)
 
 
 if __name__ == '__main__':
