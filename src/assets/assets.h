@@ -127,6 +127,11 @@ std::string GetUserErrorString(const ErrorReport& report);
 class CAssetsCache : public CAssets
 {
 private:
+    // VerifyDB reconnects historical blocks without changing the live tip.
+    // Its within-block checks must see the reconstructed pre-block state.
+    CAssetsCache* pVerifyDBPreBlockCache = nullptr;
+    bool fVerifyDBHistoricalReplay = false;
+    bool CheckForAddressQualifierExact(const std::string& qualifierName, const std::string& address, bool skipTempCache);
     bool AddBackSpentAsset(const Coin& coin, const std::string& assetName, const std::string& address, const CAmount& nAmount, const COutPoint& out);
     void AddToAssetBalance(const std::string& strName, const std::string& address, const CAmount& nAmount);
     bool UndoTransfer(const CAssetTransfer& transfer, const std::string& address, const COutPoint& outToRemove);
@@ -266,6 +271,18 @@ public :
         this->mapRootQualifierAddressesRemove = cache.mapRootQualifierAddressesRemove;
 
         return *this;
+    }
+
+    void SetVerifyDBPreBlockCache(CAssetsCache* cache)
+    {
+        pVerifyDBPreBlockCache = cache;
+    }
+
+    CAssetsCache* GetParentCache() const;
+
+    void SetVerifyDBHistoricalReplay(bool enabled)
+    {
+        fVerifyDBHistoricalReplay = enabled;
     }
 
     //! Cache only undo functions

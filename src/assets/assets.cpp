@@ -2281,6 +2281,11 @@ bool CAssetsCache::AddRestrictedVerifier(const std::string& assetName, const std
     if (setNewRestrictedVerifierToRemove.count(newVerifier))
         setNewRestrictedVerifierToRemove.erase(newVerifier);
 
+    // VerifyDB replays multiple historical blocks through one cache.
+    // Unlike a normal block cache, an older value may still be present.
+    if (fVerifyDBHistoricalReplay)
+        setNewRestrictedVerifierToAdd.erase(newVerifier);
+
     setNewRestrictedVerifierToAdd.insert(newVerifier);
 
     return true;
@@ -2294,6 +2299,9 @@ bool CAssetsCache::RemoveRestrictedVerifier(const std::string& assetName, const 
 
     if (setNewRestrictedVerifierToAdd.count(newVerifier))
         setNewRestrictedVerifierToAdd.erase(newVerifier);
+
+    if (fVerifyDBHistoricalReplay)
+        setNewRestrictedVerifierToRemove.erase(newVerifier);
 
     setNewRestrictedVerifierToRemove.insert(newVerifier);
 
@@ -2841,10 +2849,18 @@ bool CAssetsCache::DumpCacheToDatabase()
     }
 }
 
-// This function will put all current cache data into the global passets cache.
-//! Do not call this function on the passets pointer
+CAssetsCache* CAssetsCache::GetParentCache() const
+{
+    return pVerifyDBPreBlockCache ? pVerifyDBPreBlockCache : ::passets;
+}
+
+// Merge this block's changes into its parent cache. Normal validation uses
+// the global cache; VerifyDB uses a private historical parent.
 bool CAssetsCache::Flush()
 {
+    // VerifyDB reconnects into a private historical parent, never the live
+    // asset cache. Normal block connection still uses the global cache.
+    CAssetsCache* passets = GetParentCache();
 
     if (!passets)
         return error("%s: Couldn't find passets pointer while trying to flush assets cache", __func__);
@@ -3368,6 +3384,7 @@ bool IsScriptNewRestrictedAsset(const CScript &scriptPubKey, int &nStartingIndex
 //! Returns a boolean on if the asset exists
 bool CAssetsCache::CheckIfAssetExists(const std::string& name, bool fForceDuplicateCheck)
 {
+    CAssetsCache* passets = GetParentCache();
     // If we are reindexing, we don't know if an asset exists when accepting blocks
     if (fReindex) {
         return true;
@@ -3444,6 +3461,7 @@ bool CAssetsCache::GetAssetMetaDataIfExists(const std::string &name, CNewAsset &
 
 bool CAssetsCache::GetAssetMetaDataIfExists(const std::string &name, CNewAsset &asset, int& nHeight, uint256& blockHash)
 {
+    CAssetsCache* passets = GetParentCache();
     // Check the map that contains the reissued asset data. If it is in this map, it hasn't been saved to disk yet
     if (mapReissuedAssetData.count(name)) {
         asset = mapReissuedAssetData.at(name);
@@ -3838,6 +3856,7 @@ std::string GetBurnAddress(const AssetType type)
 bool GetBestAssetAddressAmount(CAssetsCache& cache, const std::string& assetName, const std::string& address)
 {
     if (fAssetIndex) {
+        CAssetsCache* parent = cache.GetParentCache();
         auto pair = make_pair(assetName, address);
 
         // If the caches map has the pair, return true because the map already contains the best dirty amount
@@ -3845,8 +3864,8 @@ bool GetBestAssetAddressAmount(CAssetsCache& cache, const std::string& assetName
             return true;
 
         // If the caches map has the pair, return true because the map already contains the best dirty amount
-        if (passets->mapAssetsAddressAmount.count(pair)) {
-            cache.mapAssetsAddressAmount[pair] = passets->mapAssetsAddressAmount.at(pair);
+        if (parent->mapAssetsAddressAmount.count(pair)) {
+            cache.mapAssetsAddressAmount[pair] = parent->mapAssetsAddressAmount.at(pair);
             return true;
         }
 
@@ -4765,6 +4784,11 @@ void CNullAssetTxVerifierString::ConstructTransaction(CScript &script) const
 bool CAssetsCache::GetAssetVerifierStringIfExists(const std::string &name, CNullAssetTxVerifierString& verifierString, bool fSkipTempCache)
 {
 
+    if (fSkipTempCache && pVerifyDBPreBlockCache)
+        return pVerifyDBPreBlockCache->GetAssetVerifierStringIfExists(name, verifierString);
+
+    CAssetsCache* passets = GetParentCache();
+
     /** There are circumstances where a blocks transactions could be changing an assets verifier string, While at the
      * same time a transaction is added to the same block that is trying to transfer the assets who verifier string is
      * changing.
@@ -4786,6 +4810,12 @@ bool CAssetsCache::GetAssetVerifierStringIfExists(const std::string &name, CNull
             return true;
         }
         return false;
+    }
+
+    setIterator = setNewRestrictedVerifierToAdd.find(tempCacheVerifier);
+    if (fVerifyDBHistoricalReplay && !fSkipTempCache && setIterator != setNewRestrictedVerifierToAdd.end()) {
+        verifierString.verifier_string = setIterator->verifier;
+        return true;
     }
 
     setIterator = passets->setNewRestrictedVerifierToRemove.find(tempCacheVerifier);
@@ -4831,103 +4861,91 @@ bool CAssetsCache::GetAssetVerifierStringIfExists(const std::string &name, CNull
     return false;
 }
 
-bool CAssetsCache::CheckForAddressQualifier(const std::string &qualifier_name, const std::string& address, bool fSkipTempCache)
+bool CAssetsCache::CheckForAddressQualifierExact(const std::string& qualifierName, const std::string& address,
+                                                  bool skipTempCache)
 {
-    /** There are circumstances where a blocks transactions could be removing or adding a qualifier to an address,
-     * While at the same time a transaction is added to the same block that is trying to transfer to the same address.
-     * Depending on the ordering of these two transactions. The qualifier database used to verify the validity of the
-     * transactions could be different.
-     * To fix this all restricted asset transfer validation checks will use only the latest connect block tips caches
-     * and databases to validate it. This allows for asset transfers and address qualifier transactions to be added in the same block
-     * without failing validation
-    **/
+    CAssetsCache* passets = GetParentCache();
+    CAssetCacheQualifierAddress key(qualifierName, address, QualifierType::ADD_QUALIFIER);
+    auto it = setNewQualifierAddressToRemove.find(key);
+    if (!skipTempCache && it != setNewQualifierAddressToRemove.end())
+        return it->type == QualifierType::REMOVE_QUALIFIER;
 
-    // Create cache object that will be used to check the dirty caches
-    CAssetCacheQualifierAddress cachedQualifierAddress(qualifier_name, address, QualifierType::ADD_QUALIFIER);
+    // VerifyDB's reconstructed state is local and must override the live tip.
+    it = setNewQualifierAddressToAdd.find(key);
+    if (fVerifyDBHistoricalReplay && !skipTempCache && it != setNewQualifierAddressToAdd.end())
+        return it->type == QualifierType::ADD_QUALIFIER;
 
-    // Check the dirty caches first and see if it was recently added or removed
-    auto setIterator = setNewQualifierAddressToRemove.find(cachedQualifierAddress);
-    if (!fSkipTempCache &&setIterator != setNewQualifierAddressToRemove.end()) {
-        // Undoing a remove qualifier command, means that we are adding the qualifier to the address
-        return setIterator->type == QualifierType::REMOVE_QUALIFIER;
-    }
+    it = passets->setNewQualifierAddressToRemove.find(key);
+    if (it != passets->setNewQualifierAddressToRemove.end())
+        return it->type == QualifierType::REMOVE_QUALIFIER;
 
+    it = setNewQualifierAddressToAdd.find(key);
+    if (!skipTempCache && it != setNewQualifierAddressToAdd.end())
+        return it->type == QualifierType::ADD_QUALIFIER;
 
-    setIterator = passets->setNewQualifierAddressToRemove.find(cachedQualifierAddress);
-    if (setIterator != passets->setNewQualifierAddressToRemove.end()) {
-        // Undoing a remove qualifier command, means that we are adding the qualifier to the address
-        return setIterator->type == QualifierType::REMOVE_QUALIFIER;
-    }
+    it = passets->setNewQualifierAddressToAdd.find(key);
+    if (it != passets->setNewQualifierAddressToAdd.end())
+        return it->type == QualifierType::ADD_QUALIFIER;
 
-    setIterator = setNewQualifierAddressToAdd.find(cachedQualifierAddress);
-    if (!fSkipTempCache && setIterator != setNewQualifierAddressToAdd.end()) {
-        // Return true if we are adding the qualifier, and false if we are removing it
-        return setIterator->type == QualifierType::ADD_QUALIFIER;
-    }
+    if (passetsQualifierCache && passetsQualifierCache->Exists(key.GetHash().GetHex()))
+        return true;
 
-
-    setIterator = passets->setNewQualifierAddressToAdd.find(cachedQualifierAddress);
-    if (setIterator != passets->setNewQualifierAddressToAdd.end()) {
-        if (setIterator->type == QualifierType::ADD_QUALIFIER) {
-            return true;
-        } else {
-            // BUG FIX:
-            // This scenario can occur if a tag #TAG is removed from an address in a block, then in a later block
-            // #TAG/#SECOND is added to the address.
-            // If a database event hasn't occurred yet the in memory caches will find that #TAG should be removed from the
-            // address and would normally fail this check. Now we can check for the exact condition where a subqualifier
-            // was added later.
-
-            auto tempChecker = CAssetCacheRootQualifierChecker(qualifier_name, address);
-            if (passets->mapRootQualifierAddressesAdd.count(tempChecker)) {
-                if (passets->mapRootQualifierAddressesAdd.at(tempChecker).size()) {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-    }
-
-    auto tempChecker = CAssetCacheRootQualifierChecker(qualifier_name, address);
-    if (!fSkipTempCache && mapRootQualifierAddressesAdd.count(tempChecker)){
-        if (mapRootQualifierAddressesAdd.at(tempChecker).size()) {
-            return true;
-        }
-    }
-
-    if (passets->mapRootQualifierAddressesAdd.count(tempChecker)) {
-        if (passets->mapRootQualifierAddressesAdd.at(tempChecker).size()) {
-            return true;
-        }
-    }
-
-    // Check the cache, if it doesn't exist in the cache. Try and read it from database
-    if (passetsQualifierCache) {
-        if (passetsQualifierCache->Exists(cachedQualifierAddress.GetHash().GetHex())) {
-            return true;
-        }
-    }
-
-    if (prestricteddb) {
-        // Check for exact qualifier, and add to cache if it exists
-        if (prestricteddb->ReadAddressQualifier(address, qualifier_name)) {
-            passetsQualifierCache->Put(cachedQualifierAddress.GetHash().GetHex(), 1);
-            return true;
-        }
-
-        // Look for sub qualifiers
-        if (prestricteddb->CheckForAddressRootQualifier(address, qualifier_name)){
-            return true;
-        }
+    if (prestricteddb && prestricteddb->ReadAddressQualifier(address, qualifierName)) {
+        if (passetsQualifierCache)
+            passetsQualifierCache->Put(key.GetHash().GetHex(), 1);
+        return true;
     }
 
     return false;
 }
 
+bool CAssetsCache::CheckForAddressQualifier(const std::string &qualifier_name, const std::string& address, bool fSkipTempCache)
+{
+    if (fSkipTempCache && pVerifyDBPreBlockCache)
+        return pVerifyDBPreBlockCache->CheckForAddressQualifier(qualifier_name, address);
+
+    CAssetsCache* passets = GetParentCache();
+
+    // Restricted transfers deliberately skip changes made within their own
+    // block. The historical parent retains that rule during VerifyDB.
+    if (CheckForAddressQualifierExact(qualifier_name, address, fSkipTempCache))
+        return true;
+    if (IsAssetNameASubQualifier(qualifier_name))
+        return false;
+
+    // A root qualifier is true if any active subqualifier is present. The
+    // database can contain a subtag that a dirty cache has since removed, so
+    // each candidate must be checked against the exact-tag overlay.
+    const CAssetCacheRootQualifierChecker rootKey(qualifier_name, address);
+    auto local = mapRootQualifierAddressesAdd.find(rootKey);
+    if (!fSkipTempCache && local != mapRootQualifierAddressesAdd.end()) {
+        for (const auto& subQualifier : local->second) {
+            if (CheckForAddressQualifierExact(subQualifier, address, fSkipTempCache))
+                return true;
+        }
+    }
+    auto global = passets->mapRootQualifierAddressesAdd.find(rootKey);
+    if (global != passets->mapRootQualifierAddressesAdd.end()) {
+        for (const auto& subQualifier : global->second) {
+            if (CheckForAddressQualifierExact(subQualifier, address, fSkipTempCache))
+                return true;
+        }
+    }
+
+    return prestricteddb && prestricteddb->AnyAddressSubQualifier(
+        address, qualifier_name, [&](const std::string& subQualifier) {
+            return CheckForAddressQualifierExact(subQualifier, address, fSkipTempCache);
+        });
+}
+
 
 bool CAssetsCache::CheckForAddressRestriction(const std::string &restricted_name, const std::string& address, bool fSkipTempCache)
 {
+    if (fSkipTempCache && pVerifyDBPreBlockCache)
+        return pVerifyDBPreBlockCache->CheckForAddressRestriction(restricted_name, address);
+
+    CAssetsCache* passets = GetParentCache();
+
     /** There are circumstances where a blocks transactions could be removing or adding a restriction to an address,
      * While at the same time a transaction is added to the same block that is trying to transfer from that address.
      * Depending on the ordering of these two transactions. The address restriction database used to verify the validity of the
@@ -4946,6 +4964,10 @@ bool CAssetsCache::CheckForAddressRestriction(const std::string &restricted_name
         // Undoing a unfreeze, means that we are adding back a freeze
         return setIterator->type == RestrictedType::UNFREEZE_ADDRESS;
     }
+
+    setIterator = setNewRestrictedAddressToAdd.find(cachedRestrictedAddress);
+    if (fVerifyDBHistoricalReplay && !fSkipTempCache && setIterator != setNewRestrictedAddressToAdd.end())
+        return setIterator->type == RestrictedType::FREEZE_ADDRESS;
 
     setIterator = passets->setNewRestrictedAddressToRemove.find(cachedRestrictedAddress);
     if (setIterator != passets->setNewRestrictedAddressToRemove.end()) {
@@ -4986,6 +5008,11 @@ bool CAssetsCache::CheckForAddressRestriction(const std::string &restricted_name
 
 bool CAssetsCache::CheckForGlobalRestriction(const std::string &restricted_name, bool fSkipTempCache)
 {
+    if (fSkipTempCache && pVerifyDBPreBlockCache)
+        return pVerifyDBPreBlockCache->CheckForGlobalRestriction(restricted_name);
+
+    CAssetsCache* passets = GetParentCache();
+
     /** There are circumstances where a blocks transactions could be freezing all asset transfers. While at
      * the same time a transaction is added to the same block that is trying to transfer the same asset that is being
      * frozen.
@@ -5005,6 +5032,10 @@ bool CAssetsCache::CheckForGlobalRestriction(const std::string &restricted_name,
         // Undoing a removal of a global unfreeze, means that is will become frozen
         return setIterator->type == RestrictedType::GLOBAL_UNFREEZE;
     }
+
+    setIterator = setNewRestrictedGlobalToAdd.find(cachedRestrictedGlobal);
+    if (fVerifyDBHistoricalReplay && !fSkipTempCache && setIterator != setNewRestrictedGlobalToAdd.end())
+        return setIterator->type == RestrictedType::GLOBAL_FREEZE;
 
     setIterator = passets->setNewRestrictedGlobalToRemove.find(cachedRestrictedGlobal);
     if (setIterator != passets->setNewRestrictedGlobalToRemove.end()) {

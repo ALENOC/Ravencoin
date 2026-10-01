@@ -5192,6 +5192,7 @@ bool CVerifyDB::VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview,
 
     auto currentActiveAssetCache = GetCurrentAssetCache();
     CAssetsCache assetCache(*currentActiveAssetCache);
+    assetCache.SetVerifyDBHistoricalReplay(true);
     LogPrintf("[0%%]...");
     for (CBlockIndex* pindex = chainActive.Tip(); pindex && pindex->pprev; pindex = pindex->pprev)
     {
@@ -5264,8 +5265,12 @@ bool CVerifyDB::VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview,
             CBlock block;
             if (!ReadBlockFromDisk(block, pindex, chainparams.GetConsensus()))
                 return error("VerifyDB(): *** ReadBlockFromDisk failed at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
-            if (!ConnectBlock(block, state, pindex, coins, chainparams, &assetCache, false, true))
+            CAssetsCache blockAssets;
+            blockAssets.SetVerifyDBPreBlockCache(&assetCache);
+            if (!ConnectBlock(block, state, pindex, coins, chainparams, &blockAssets, false, true))
                 return error("VerifyDB(): *** found unconnectable block at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
+            if (!blockAssets.Flush())
+                return error("VerifyDB(): *** failed to merge historical asset state at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
         }
     }
 

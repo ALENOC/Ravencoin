@@ -209,20 +209,30 @@ BOOST_FIXTURE_TEST_SUITE(asset_reissue_tests, BasicTestingSetup)
         const std::string secondVerifier = "ACCREDITED";
 
         CAssetsCache normalCache;
-        CAssetsCache replayCache;
-        replayCache.SetVerifyDBHistoricalReplay(true);
+        CAssetsCache replayParent;
+        replayParent.SetVerifyDBHistoricalReplay(true);
+        CAssetsCache replayBlock;
+        replayBlock.SetVerifyDBPreBlockCache(&replayParent);
 
         BOOST_REQUIRE(normalCache.AddRestrictedVerifier(assetName, firstVerifier));
-        BOOST_REQUIRE(replayCache.AddRestrictedVerifier(assetName, firstVerifier));
+        BOOST_REQUIRE(replayBlock.AddRestrictedVerifier(assetName, firstVerifier));
         BOOST_REQUIRE(normalCache.AddRestrictedVerifier(assetName, secondVerifier));
-        BOOST_REQUIRE(replayCache.AddRestrictedVerifier(assetName, secondVerifier));
+        BOOST_REQUIRE(replayBlock.AddRestrictedVerifier(assetName, secondVerifier));
 
         BOOST_REQUIRE_EQUAL(normalCache.setNewRestrictedVerifierToAdd.size(), 1U);
-        BOOST_REQUIRE_EQUAL(replayCache.setNewRestrictedVerifierToAdd.size(), 1U);
+        BOOST_REQUIRE_EQUAL(replayBlock.setNewRestrictedVerifierToAdd.size(), 1U);
         const std::string& normalVerifier = normalCache.setNewRestrictedVerifierToAdd.begin()->verifier;
-        const std::string& replayVerifier = replayCache.setNewRestrictedVerifierToAdd.begin()->verifier;
+        const std::string& replayVerifier = replayBlock.setNewRestrictedVerifierToAdd.begin()->verifier;
         BOOST_CHECK_EQUAL(normalVerifier, firstVerifier);
         BOOST_CHECK_EQUAL(replayVerifier, normalVerifier);
+
+        BOOST_REQUIRE(replayBlock.Flush());
+        CAssetsCache nextReplayBlock;
+        nextReplayBlock.SetVerifyDBPreBlockCache(&replayParent);
+        BOOST_REQUIRE(nextReplayBlock.AddRestrictedVerifier(assetName, secondVerifier));
+        BOOST_REQUIRE(nextReplayBlock.Flush());
+        BOOST_REQUIRE_EQUAL(replayParent.setNewRestrictedVerifierToAdd.size(), 1U);
+        BOOST_CHECK_EQUAL(replayParent.setNewRestrictedVerifierToAdd.begin()->verifier, secondVerifier);
     }
 
 
