@@ -24,12 +24,18 @@ class RestrictedRootCacheTest(RavenTestFramework):
         node.generate(1)
         node.issuequalifierasset('VERIFYROOT/#ALT')
         node.generate(1)
+        node.issuequalifierasset('#ZZZZZZZZZZZ')
+        node.generate(1)
 
         recipient = node.getnewaddress()
         node.addtagtoaddress('VERIFYROOT/SUB', recipient)
         node.generate(1)
         node.addtagtoaddress('VERIFYROOT/ALT', recipient)
         node.generate(1)
+        node.addtagtoaddress('#ZZZZZZZZZZZ', recipient)
+        node.generate(1)
+        assert_equal(node.checkaddresstag(recipient, '#VERIFYROOT'), True)
+        node.gettxoutsetinfo()
         assert_equal(node.checkaddresstag(recipient, '#VERIFYROOT'), True)
 
         node.removetagfromaddress('VERIFYROOT/SUB', recipient)
