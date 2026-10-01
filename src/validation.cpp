@@ -5283,7 +5283,8 @@ static bool RollforwardBlock(const CBlockIndex* pindex, CCoinsViewCache& inputs,
             }
         }
         // Pass check = true as every addition may be an overwrite.
-        AddCoins(inputs, *tx, pindex->nHeight, pindex->GetBlockHash(), true, assetsCache, nullptr, &assetContext);
+        std::pair<std::string, CBlockAssetUndo> undoAssetData = std::make_pair("", CBlockAssetUndo());
+        AddCoins(inputs, *tx, pindex->nHeight, pindex->GetBlockHash(), true, assetsCache, &undoAssetData, &assetContext);
     }
     return true;
 }
