@@ -235,5 +235,26 @@ BOOST_FIXTURE_TEST_SUITE(asset_reissue_tests, BasicTestingSetup)
         BOOST_CHECK_EQUAL(replayParent.setNewRestrictedVerifierToAdd.begin()->verifier, secondVerifier);
     }
 
+    BOOST_AUTO_TEST_CASE(verifydb_same_block_new_asset_overrides_parent_removal)
+    {
+        const CNewAsset issued("VERIFYDBISSUE", CAmount(100 * COIN), 0, 1, 0, "");
+        const std::string address = GetParams().GlobalBurnAddress();
+
+        CAssetsCache replayParent;
+        replayParent.SetVerifyDBHistoricalReplay(true);
+        replayParent.setNewAssetsToRemove.insert(
+            CAssetCacheNewAsset(issued, address, 0, uint256()));
+
+        CAssetsCache replayBlock;
+        replayBlock.SetVerifyDBPreBlockCache(&replayParent);
+        BOOST_REQUIRE(replayBlock.AddNewAsset(issued, address, 433, uint256()));
+
+        CNewAsset lookedUp;
+        BOOST_CHECK(replayBlock.CheckIfAssetExists(issued.strName, true));
+        BOOST_REQUIRE(replayBlock.GetAssetMetaDataIfExists(issued.strName, lookedUp));
+        BOOST_CHECK_EQUAL(lookedUp.strName, issued.strName);
+        BOOST_CHECK_EQUAL(lookedUp.nAmount, issued.nAmount);
+    }
+
 
 BOOST_AUTO_TEST_SUITE_END()
