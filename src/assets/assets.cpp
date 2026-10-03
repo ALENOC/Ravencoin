@@ -3400,11 +3400,6 @@ bool CAssetsCache::CheckIfAssetExists(const std::string& name, bool fForceDuplic
         return false;
     }
 
-    // Check the dirty caches first and see if it was recently added or removed
-    if (passets->setNewAssetsToRemove.count(cachedAsset)) {
-        return false;
-    }
-
     if (setNewAssetsToAdd.count(cachedAsset)) {
         if (fForceDuplicateCheck) {
             return true;
@@ -3412,6 +3407,11 @@ bool CAssetsCache::CheckIfAssetExists(const std::string& name, bool fForceDuplic
         else {
             LogPrintf("%s : Found asset %s in setNewAssetsToAdd but force duplicate check wasn't true\n", __func__, name);
         }
+    }
+
+    // A replayed block can re-add an asset removed from its historical parent.
+    if (passets->setNewAssetsToRemove.count(cachedAsset)) {
+        return false;
     }
 
     if (passets->setNewAssetsToAdd.count(cachedAsset)) {
@@ -3485,18 +3485,19 @@ bool CAssetsCache::GetAssetMetaDataIfExists(const std::string &name, CNewAsset &
         return false;
     }
 
-    // Check the dirty caches first and see if it was recently added or removed
-    if (passets->setNewAssetsToRemove.count(cachedAsset)) {
-        LogPrintf("%s : Found in new assets to Remove - Returning False\n", __func__);
-        return false;
-    }
-
     auto setIterator = setNewAssetsToAdd.find(cachedAsset);
     if (setIterator != setNewAssetsToAdd.end()) {
         asset = setIterator->asset;
         nHeight = setIterator->blockHeight;
         blockHash = setIterator->blockHash;
         return true;
+    }
+
+    // Local additions represent the block being replayed and override older
+    // removals retained by the historical parent cache.
+    if (passets->setNewAssetsToRemove.count(cachedAsset)) {
+        LogPrintf("%s : Found in new assets to Remove - Returning False\n", __func__);
+        return false;
     }
 
     setIterator = passets->setNewAssetsToAdd.find(cachedAsset);
