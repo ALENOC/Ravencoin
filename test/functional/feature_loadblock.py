@@ -25,7 +25,7 @@ from test_framework.mininode import COutPoint, CTransaction, CTxIn, CTxOut
 from test_framework.script import CScript, OP_CHECKSIG, OP_DROP, OP_DUP, OP_EQUALVERIFY, OP_HASH160, OP_RVN_ASSET
 from test_framework.test_framework import RavenTestFramework
 from test_framework import util as test_util
-from test_framework.util import assert_equal, assert_raises_rpc_error, wait_until
+from test_framework.util import assert_equal, wait_until
 
 class LoadblockTest(RavenTestFramework):
     def set_test_params(self):
@@ -118,8 +118,10 @@ class LoadblockTest(RavenTestFramework):
 
         assert_equal(self.nodes[1].getblockchaininfo()['blocks'], 100)
         assert_equal(self.nodes[0].getbestblockhash(), self.nodes[1].getbestblockhash())
-        assert_raises_rpc_error(-1, 'Block not found on disk',
-                                self.nodes[1].getblock, invalid_block.hash, 0)
+        imported_tip = [tip for tip in self.nodes[1].getchaintips()
+                        if tip['hash'] == invalid_block.hash]
+        assert_equal(len(imported_tip), 1)
+        assert_equal(imported_tip[0]['status'], 'invalid')
 
 
 if __name__ == '__main__':
