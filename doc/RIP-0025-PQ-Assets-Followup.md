@@ -1,10 +1,12 @@
 # RIP-25 PQ Asset Extension Design Note
 
-Status: follow-up design analysis only. This document does not define or activate a consensus rule.
+Status: dormant bit 13 consensus candidate for the 4.8.1 working branch.
+Default public-network parameters do not activate it. Wallet and release
+qualification remain open.
 
 ## 1. Current Scope
 
-RIP-25 witness-v2 protects native RVN outputs only. No current Ravencoin asset class can be issued, held, transferred, reissued, tagged, frozen, or spent under an ML-DSA-44 witness-v2 ownership condition.
+On the default public-network parameters, RIP-25 witness-v2 protects native RVN outputs only. No current Ravencoin asset class is yet qualified for issuance, custody, transfer, reissue, tagging, freezing, or spending under an ML-DSA-44 ownership condition. The 4.8.1 candidate assigns a separate, dormant bit 13 for a dependent asset rule and exercises it on regtest. That candidate is not a deployed public-network protection or a wallet-complete feature.
 
 The current spendable asset envelope is:
 
@@ -179,13 +181,19 @@ The follow-up implementation should not be proposed for activation without:
 
 ## 12. Current Decision
 
-The current RIP-25 remediation deliberately does not implement a PQ asset consensus extension. It documents assets as out of scope, rejects witness-v2 destinations in asset construction paths, and preserves the existing consensus rules. A separate RIP and independent adversarial review are required for any future PQ asset design.
+The approved native-RVN RIP-25 rules remain unchanged. The 4.8.1 working
+branch includes a dependent, dormant bit 13 asset-consensus candidate. Wallet
+asset builders still reject a bare witness-v2 destination, since a native PQ
+address alone is not a hybrid asset destination. The candidate is not ready
+for public-network activation or a 4.8.1 asset-PQ release claim. An
+independent adversarial review and an explicit protocol decision remain
+required.
 
 ## 13. Experimental Compatibility Direction
 
-The following is a research direction for a separate extension. It is not an
-activated rule and must not be described as protecting assets in the current
-RIP-25 implementation.
+The following records the compatibility research behind the dormant bit 13
+candidate. It must not be described as protecting assets on the default
+public-network parameters.
 
 Directly appending a witness-v2 program or witness to a legacy P2PKH asset
 output does not work as a compatible soft fork. The complete script is not a
@@ -219,13 +227,14 @@ representative transfer, issue, owner, and reissue scripts, including normal,
 unique, restricted, and qualifier transfer names. This is evidence of parser
 compatibility, not evidence that the proposed new consensus rule is safe.
 
-A research-only helper recognizes the narrow canonical envelope and rejects
+A canonical helper recognizes the narrow envelope and rejects
 short/long tails, nonminimal pushes, malformed payloads, and transfer messages
-without an explicit expiry field. Its classification is deliberately not used
-by consensus. An old-valid script ending in `OP_DROP` plus 31 arbitrary bytes
+without an explicit expiry field. The dormant bit 13 candidate uses this
+helper in consensus only after its effective activation height. An old-valid
+script ending in `OP_DROP` plus 31 arbitrary bytes
 is byte-identical to a candidate with a 32-byte program beginning `OP_DROP`.
-The helper necessarily classifies it as a candidate. Any later spend rule
-must therefore check the creating UTXO's height against the asset extension's
+The helper necessarily classifies it as a candidate. The spend rule therefore
+checks the creating UTXO's height against the asset extension's
 activation height. Applying the rule only at spending height would retroactively
 lock historical coins and could split nodes after reorg or reindex.
 
@@ -236,62 +245,64 @@ Its fixed `SIGHASH_ALL` ML-DSA signature commits to every asset input and
 output in the same transaction. A quantum attacker with only the P2PKH
 private key could not create the required PQ input.
 
-This construction is a candidate, not yet a specification. Before activation
-it needs an exact per-type canonical parser, protection against
-historical lookalike scripts, explicit creation-height semantics, a separate
-activation decision, asset-change and owner-token no-downgrade rules, anchor
-UTXO funding and refresh behavior, wallet coin selection, restricted-address
-checks, miner and mempool equivalence, sigop and weight accounting, and
-cross-network and reorg vectors. A separate BIP9 bit must not be assigned or
-enabled on mainnet without protocol-owner review. Until these are proved, the
-current native-RVN-only security claim remains unchanged.
+This construction remains a candidate rather than a release-qualified
+specification. The 4.8.1 working branch assigns BIP9 bit 13 but leaves its
+start and timeout equal and far in the future on every network, so default
+nodes do not activate it. Its tested consensus prototype uses the canonical
+parser and creation-height gate described below. Before public-network
+activation it still needs wallet asset-change and owner-token no-downgrade
+paths, anchor funding and refresh, restricted-address checks, all asset-class
+vectors, miner and mempool equivalence, and independent review. Bit 13 timing
+must not be enabled without protocol-owner review.
 
-## 14. Contextual Enforcement Map (Research, Not Activated)
+## 14. Contextual Enforcement Map (Dormant Candidate)
 
-The current code offers a UTXO-aware block hook in `ConnectBlock` before
-`UpdateCoins`: `CheckTxInputs` and `Consensus::CheckTxAssets` run with the
-candidate block's coins view. `Coin::nHeight` is available there. Mempool
-admission has a separate `CCoinsViewMemPool` path, where an unconfirmed parent
-uses `MEMPOOL_HEIGHT`. A future rule must define that sentinel's behavior and
-must mirror block checks in mempool policy without making consensus depend on
-mempool state.
+The candidate's UTXO-aware hook runs in `ConnectBlock` before `UpdateCoins`.
+`Consensus::CheckTxPQAssets` requires canonical tagged asset outputs at the
+effective height and a matching native witness-v2 input for each distinct
+program of a protected asset input. A coin created before the effective
+height remains under historical rules, even if its script looks tagged. A
+mempool parent has `MEMPOOL_HEIGHT` and is treated as newly created. The same
+check runs at mempool admission and after a reorg, with a per-transaction coin
+cache to avoid retaining every mempool input in memory.
 
-The block script flags come from the candidate block's `pindex->pprev`, while
-mempool flags come from `chainActive.Tip()`. A future asset deployment must use
-the candidate context in `ConnectBlock`; using the global active tip would
-permit two nodes validating the same side chain to apply different rules.
+The block script flags and effective asset height come from the candidate
+block's `pindex->pprev`, while mempool policy uses `chainActive.Tip()`.
+Effective asset enforcement requires bit 13, the historical bit 8 transfer
+parser, and native RIP-25 bit 12 all to be active. Its first enforcement
+height is the maximum of their activation heights. This prevents a node
+validating a side branch from borrowing the global active tip's state.
 The parser's historical `OP_DROP` lookalike requires a creation-height check
 against the asset extension activation height, not merely a spend-height
-check. Reorgs across activation must evict or revalidate affected mempool
-transactions. Reusing the existing RIP-25 bit 12 would be unsafe because it
+check. Reorgs across activation revalidate affected mempool transactions
+through staged removal so asset reissue reservations and compact-block
+indexes stay consistent. Reusing the existing RIP-25 bit 12 would be unsafe
+because it
 would make the newly upgraded nodes enforce a rule older RIP-25 nodes do not.
 
-`CheckInputs` may skip ordinary script checks under assumevalid or return from
-its script cache. Existing code selectively verifies native witness-v2
-scripts even when ordinary checks are skipped. Any anchor construction must
-prove that this protection applies to every matching native witness-v2 input,
-and must enforce the asset-to-anchor relationship in a UTXO-aware path outside
-any script-cache early return. `TestBlockValidity` is the miner's final
-template check, but direct template selection and package policy still need
-boundary tests. `Consensus::CheckTxAssets` is also called during mempool
-revalidation and consistency checks; a new parameter defaulting to inactive
-could silently omit the rule at those sites.
+`CheckTxPQAssets` runs outside the script cache. When it finds an asset input
+created after activation, `ConnectBlock` forces both the classical and PQ
+script checks even under assumevalid. A native witness-v2 input is verified
+under the contextual RIP-25 flag, not by treating the asset envelope itself
+as a witness program. `TestBlockValidity` is the miner's final template
+check, but template selection and package policy still need boundary tests.
 
-The precise matching rule remains undecided: whether one matching native
-witness-v2 anchor input can authorize several tagged asset inputs with the
-same program, and whether creating an asset output must create a funded anchor
-output. Those choices affect wallet funding, UTXO availability, migration,
-fee estimation, and duplicate-program resource limits. They require a protocol
-decision before any consensus patch. No BIP9 bit is assigned by this research.
+The candidate permits one valid native witness-v2 anchor input to authorize
+several protected asset inputs with the identical program. A different
+program requires a different anchor input. An output does not itself have to
+create a funded anchor, so wallet design must guarantee that the recipient
+can obtain and refresh one before a protected spend. This is a release-blocking
+funding and usability question. Bit 13 is assigned but dormant.
 
 ## 15. 4.8.1 Integration Candidate and Release Gate
 
 The 4.8.1 integration request expands RIP-25 to assets. The native-RVN
-implementation and its bit 12 deployment must remain unchanged. This section
-records a candidate for review, not a consensus rule already in force.
+implementation and its bit 12 deployment remain unchanged. This section
+records the dormant bit 13 consensus candidate, not a public-network rule
+already in force or a wallet-complete release feature.
 
-Let `H` be the first height at which a separate, dependent PQ asset deployment
-is active on the candidate chain. A safe soft-fork direction requires both:
+Let `H` be the first candidate-block height at which bit 13, bit 8, and
+native RIP-25 bit 12 are all active. A safe soft-fork direction requires both:
 
 1. Every spendable asset output created at height `h >= H`, including an owner
    token, has one canonical 32-byte PQ program in the validated legacy-compatible
@@ -324,7 +335,7 @@ the old key can race that migration. Software cannot distinguish the rightful
 holder from the attacker using the old signature alone.
 
 The following decisions remain release-blocking and must be proved before
-assigning mainnet activation parameters or publishing a 4.8.1 artifact as
+assigning public-network activation times or publishing a 4.8.1 artifact as
 asset-PQ-qualified: exact hybrid asset address encoding, wallet ownership and
 coin selection, anchor funding and refresh, restricted/qualifier address
 identity and indexes, same-block and mempool-parent creation heights, all

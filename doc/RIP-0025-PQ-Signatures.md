@@ -462,6 +462,13 @@ RIP-25 witness-v2 protects native RVN outputs only. It does not change the Raven
 - restricted assets such as `$ASSET`, whose administration depends on `ASSET!`;
 - qualifier and sub-qualifier assets.
 
+This scope statement describes the approved bit 12 baseline and the default
+public-network state. A 4.8.1 working branch has a separate, dormant bit 13
+asset candidate with a classical-plus-PQ ownership rule. That candidate is
+not included in the approved PR #1281 semantics, is not wallet-complete, and
+must not be advertised as protecting existing asset holdings. See the linked
+asset extension note for its constraints and release blockers.
+
 A wallet or raw-transaction RPC must reject a witness-v2 PQ destination when constructing an asset-bearing output. Appending `OP_RVN_ASSET` data to an `OP_2 <32-byte-program>` script does not create a PQ asset output: it makes the script cease to be a witness program, and current consensus rejects the misplaced asset opcode.
 
 Asset owners therefore retain a post-quantum exposure until a separately specified and activated PQ asset extension exists. In particular, theft of `ASSET!` can transfer administrative control and can authorize reissuance where the asset remains reissuable. See [RIP-25 PQ Asset Extension Design Note](RIP-0025-PQ-Assets-Followup.md).
