@@ -18,6 +18,7 @@
 #include <policy/policy.h>
 #include <script/interpreter.h>
 #include <script/sign.h>
+#include <txmempool.h>
 #include <validation.h>
 #include <wallet/wallet.h>
 #ifdef ENABLE_WALLET
@@ -378,7 +379,7 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
     }
 
-    BOOST_AUTO_TEST_CASE(pq_asset_program_research_parser_test)
+    BOOST_AUTO_TEST_CASE(pq_asset_program_canonical_parser_test)
     {
         SelectParams(CBaseChainParams::MAIN);
         const uint256 expected = uint256S("03");
@@ -414,6 +415,13 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         CScript issue = destination;
         CNewAsset("RAVENTEST", COIN, 0, 1, 0, "").ConstructTransaction(issue);
         checkProgram(addProgram(issue));
+        for (const std::string& name : {"RAVENTEST/SUB", "RAVENTEST#ONE",
+                                         "$RAVENTEST", "#RAVENTEST",
+                                         "#RAVENTEST/SUB"}) {
+            CScript classIssue = destination;
+            CNewAsset(name, COIN, 0, 1, 0, "").ConstructTransaction(classIssue);
+            checkProgram(addProgram(classIssue));
+        }
         CScript owner = destination;
         CNewAsset("RAVENTEST", COIN, 0, 1, 0, "").ConstructOwnerTransaction(owner);
         checkProgram(addProgram(owner));
@@ -510,6 +518,134 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         historical.insert(historical.end(), filler.begin(), filler.end());
         BOOST_CHECK(GetPQAssetProgram(historical, parsed));
         BOOST_CHECK_EQUAL(parsed.begin()[0], OP_DROP);
+    }
+
+    BOOST_AUTO_TEST_CASE(pq_asset_creation_height_and_anchor_rule_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        const int activationHeight = 20;
+        const uint256 program = uint256S("03");
+        const uint256 otherProgram = uint256S("04");
+
+        CTxOut legacy = MakeAssetTransferOutput("RAVENTEST!", OWNER_ASSET_AMOUNT);
+        CTxOut tagged = legacy;
+        BOOST_REQUIRE_EQUAL(tagged.scriptPubKey.back(), OP_DROP);
+        tagged.scriptPubKey.pop_back();
+        const std::vector<unsigned char> programBytes = ToByteVector(program);
+        tagged.scriptPubKey.insert(tagged.scriptPubKey.end(), programBytes.begin(), programBytes.end());
+        uint256 parsed;
+        BOOST_REQUIRE(GetPQAssetProgram(tagged.scriptPubKey, parsed));
+        BOOST_CHECK(parsed == program);
+
+        CCoinsView base;
+        CCoinsViewCache coins(&base);
+        const COutPoint legacyOut(uint256S("11"), 0);
+        const COutPoint historicalLookalike(uint256S("12"), 0);
+        const COutPoint protectedOut(uint256S("13"), 0);
+        const COutPoint unconfirmedParent(uint256S("14"), 0);
+        const COutPoint matchingAnchor(uint256S("15"), 0);
+        const COutPoint wrongAnchor(uint256S("16"), 0);
+        coins.AddCoin(legacyOut, Coin(legacy, 19, false), true);
+        coins.AddCoin(historicalLookalike, Coin(tagged, 19, false), true);
+        coins.AddCoin(protectedOut, Coin(tagged, activationHeight, false), true);
+        coins.AddCoin(unconfirmedParent, Coin(tagged, MEMPOOL_HEIGHT, false), true);
+        coins.AddCoin(matchingAnchor, Coin(CTxOut(1000, GetScriptForWitnessV2PQ(program)), 19, false), true);
+        coins.AddCoin(wrongAnchor, Coin(CTxOut(1000, GetScriptForWitnessV2PQ(otherProgram)), 19, false), true);
+
+        unsigned char classIndex = 0x80;
+        const auto checkClassRule = [&](CScript script) {
+            CMutableTransaction check;
+            check.vin.emplace_back(legacyOut);
+            check.vout.emplace_back(0, script);
+            CValidationState oldOutput;
+            BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(check), oldOutput,
+                                                    coins, activationHeight));
+            BOOST_CHECK_EQUAL(oldOutput.GetRejectReason(), "bad-pq-asset-output");
+
+            BOOST_REQUIRE_EQUAL(script.back(), OP_DROP);
+            script.pop_back();
+            script.insert(script.end(), programBytes.begin(), programBytes.end());
+            check.vout[0].scriptPubKey = script;
+            uint256 hash;
+            hash.SetNull();
+            hash.begin()[0] = classIndex++;
+            const COutPoint classOut(hash, 0);
+            coins.AddCoin(classOut, Coin(CTxOut(0, script), activationHeight, false), true);
+            check.vin[0].prevout = classOut;
+            CValidationState noAnchor;
+            BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(check), noAnchor,
+                                                    coins, activationHeight));
+            BOOST_CHECK_EQUAL(noAnchor.GetRejectReason(), "bad-pq-asset-anchor");
+            check.vin.emplace_back(matchingAnchor);
+            CValidationState withAnchor;
+            BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(check), withAnchor,
+                                                   coins, activationHeight));
+        };
+        const CScript classDestination = GetScriptForDestination(
+            DecodeDestination(GetParams().GlobalBurnAddress()));
+        for (const std::string& name : {"RAVENTEST", "RAVENTEST/SUB",
+                                         "RAVENTEST#ONE", "$RAVENTEST",
+                                         "#RAVENTEST", "#RAVENTEST/SUB"}) {
+            CScript script = classDestination;
+            CNewAsset(name, COIN, 0, 1, 0, "").ConstructTransaction(script);
+            checkClassRule(script);
+            script = classDestination;
+            CAssetTransfer(name, COIN).ConstructTransaction(script);
+            checkClassRule(script);
+        }
+        CScript ownerIssue = classDestination;
+        CNewAsset("RAVENTEST", COIN, 0, 1, 0, "").ConstructOwnerTransaction(ownerIssue);
+        checkClassRule(ownerIssue);
+        CScript reissueOutput = classDestination;
+        CReissueAsset("RAVENTEST", COIN, 0, 1, "").ConstructTransaction(reissueOutput);
+        checkClassRule(reissueOutput);
+
+        CMutableTransaction spend;
+        spend.vin.emplace_back(legacyOut);
+        spend.vout.push_back(legacy);
+        CValidationState inactive;
+        BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(spend), inactive, coins, -1));
+        CValidationState untagged;
+        BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(spend), untagged, coins, activationHeight));
+        BOOST_CHECK_EQUAL(untagged.GetRejectReason(), "bad-pq-asset-output");
+
+        spend.vout[0] = tagged;
+        bool protectedInput = true;
+        CValidationState migration;
+        BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(spend), migration, coins,
+                                               activationHeight, &protectedInput));
+        BOOST_CHECK(!protectedInput);
+        spend.vin[0].prevout = historicalLookalike;
+        CValidationState historical;
+        BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(spend), historical, coins,
+                                               activationHeight, &protectedInput));
+        BOOST_CHECK(!protectedInput);
+
+        spend.vin[0].prevout = protectedOut;
+        CValidationState missing;
+        BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(spend), missing, coins, activationHeight));
+        BOOST_CHECK_EQUAL(missing.GetRejectReason(), "bad-pq-asset-anchor");
+        spend.vin.emplace_back(wrongAnchor);
+        CValidationState wrong;
+        BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(spend), wrong, coins, activationHeight));
+        BOOST_CHECK_EQUAL(wrong.GetRejectReason(), "bad-pq-asset-anchor");
+        spend.vin[1].prevout = matchingAnchor;
+        CValidationState matched;
+        BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(spend), matched, coins,
+                                               activationHeight, &protectedInput));
+        BOOST_CHECK(protectedInput);
+
+        spend.vin[0].prevout = unconfirmedParent;
+        CValidationState mempoolParent;
+        BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(spend), mempoolParent, coins,
+                                               activationHeight, &protectedInput));
+        BOOST_CHECK(protectedInput);
+
+        spend.vin.pop_back();
+        spend.vout[0] = legacy;
+        CValidationState downgrade;
+        BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(spend), downgrade, coins, activationHeight));
+        BOOST_CHECK_EQUAL(downgrade.GetRejectReason(), "bad-pq-asset-output");
     }
 
     BOOST_AUTO_TEST_CASE(asset_tx_valid_test)

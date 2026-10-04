@@ -72,6 +72,13 @@ Consensus::Params MakeRIP25VersionBitsParams()
     pq.nOverrideRuleChangeActivationThreshold = 3;
     pq.nOverrideMinerConfirmationWindow = 4;
 
+    auto& pqAssets = params.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS];
+    pqAssets.bit = 13;
+    pqAssets.nStartTime = 0;
+    pqAssets.nTimeout = std::numeric_limits<int64_t>::max();
+    pqAssets.nOverrideRuleChangeActivationThreshold = 3;
+    pqAssets.nOverrideMinerConfirmationWindow = 4;
+
     return params;
 }
 
@@ -132,6 +139,32 @@ BOOST_AUTO_TEST_CASE(overflow_bit11_does_not_signal_pq_bit12)
 
     BOOST_CHECK_EQUAL(VersionBitsState(chain.Tip(), params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW, cache), THRESHOLD_LOCKED_IN);
     BOOST_CHECK_EQUAL(VersionBitsState(chain.Tip(), params, Consensus::DEPLOYMENT_PQ_HYBRID, cache), THRESHOLD_STARTED);
+}
+
+BOOST_AUTO_TEST_CASE(pq_asset_bit13_is_distinct_and_rewinds_across_forks)
+{
+    Consensus::Params params = MakeRIP25VersionBitsParams();
+    VersionBitsCache cache;
+    SyntheticVersionBitsChain common;
+    const uint32_t overflowMask = VersionBitsMask(params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW);
+    const uint32_t nativeMask = VersionBitsMask(params, Consensus::DEPLOYMENT_PQ_HYBRID);
+    const uint32_t assetMask = VersionBitsMask(params, Consensus::DEPLOYMENT_PQ_ASSETS);
+    BOOST_CHECK_EQUAL(assetMask, 1U << 13);
+    BOOST_CHECK_EQUAL(assetMask & (overflowMask | nativeMask), 0U);
+
+    common.Mine(4, VERSIONBITS_TOP_BITS);
+    SyntheticVersionBitsChain signaled(common.Tip());
+    signaled.Mine(3, VERSIONBITS_TOP_BITS | assetMask);
+    signaled.Mine(1, VERSIONBITS_TOP_BITS);
+    BOOST_CHECK_EQUAL(VersionBitsState(signaled.Tip(), params, Consensus::DEPLOYMENT_PQ_ASSETS, cache), THRESHOLD_LOCKED_IN);
+    signaled.Mine(4, VERSIONBITS_TOP_BITS);
+    BOOST_CHECK_EQUAL(VersionBitsState(signaled.Tip(), params, Consensus::DEPLOYMENT_PQ_ASSETS, cache), THRESHOLD_ACTIVE);
+    BOOST_CHECK_EQUAL(VersionBitsStateSinceHeight(signaled.Tip(), params, Consensus::DEPLOYMENT_PQ_ASSETS, cache), 12);
+    BOOST_CHECK_EQUAL(VersionBitsState(signaled.Tip(), params, Consensus::DEPLOYMENT_PQ_HYBRID, cache), THRESHOLD_STARTED);
+
+    SyntheticVersionBitsChain unsignaled(common.Tip());
+    unsignaled.Mine(8, VERSIONBITS_TOP_BITS);
+    BOOST_CHECK_EQUAL(VersionBitsState(unsignaled.Tip(), params, Consensus::DEPLOYMENT_PQ_ASSETS, cache), THRESHOLD_STARTED);
 }
 
 BOOST_AUTO_TEST_CASE(transfer_overflow_state_rewinds_across_forks)
