@@ -71,6 +71,7 @@ EXTENDED_SCRIPTS = [
     'feature_asset_db_missing_block.py',
     'feature_asset_verifydb_sameblock.py',
     'feature_transfer_mempool_reorg.py',
+    'feature_transfer_sidebranch.py',
     'feature_restricted_dbcrash.py',
     'feature_restricted_verifydb.py',
     'feature_restricted_verifydb_root.py',
