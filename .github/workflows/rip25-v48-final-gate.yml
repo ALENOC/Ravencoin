@@ -106,7 +106,7 @@ jobs:
             wallet_encryption_rewrite.py wallet_asset_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py \
             feature_asset_activation_reorg.py feature_transfer_script_reorg.py feature_rip5_activation_reorg.py \
             feature_asset_dbcrash.py feature_asset_dbcrash_transfer.py feature_asset_db_missing_block.py \
-            feature_asset_verifydb_sameblock.py feature_transfer_mempool_reorg.py feature_transfer_sidebranch.py feature_loadblock.py \
+            feature_asset_verifydb_sameblock.py feature_transfer_mempool_reorg.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py feature_transfer_sidebranch.py feature_pq_asset_anchor.py feature_loadblock.py \
             feature_restricted_dbcrash.py feature_restricted_verifydb.py feature_restricted_verifydb_root.py \
             feature_restricted_verifydb_freeze.py feature_restricted_verifydb_global.py feature_restricted_verifydb_verifier.py \
             feature_restricted_root_cache.py feature_restricted_root_split.py feature_restricted_root_prefix_split.py \

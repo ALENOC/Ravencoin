@@ -79,6 +79,11 @@ require_fixed 'pq_asset_envelope_is_not_witness_v2_test' src/test/assets/asset_t
 require_fixed 'Testing PQ native RVN change with independent legacy asset change' test/functional/rpc_assettransfer.py 'native-PQ plus legacy-asset change regression missing'
 require_fixed "'rpc_assettransfer.py'" test/functional/test_runner.py 'asset destination functional regression is not in the functional suite'
 require_fixed 'RIP-0025-PQ-Assets-Followup.md' doc/RIP-0025-PQ-Signatures.md 'PQ asset follow-up design is not linked from the specification'
+require_fixed 'vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].bit = 13' src/chainparams.cpp 'dependent PQ asset deployment must use bit 13'
+require_fixed 'CheckTxPQAssets(tx, state, view, pqAssetActivationHeight' src/validation.cpp 'PQ asset rule must run against candidate UTXOs'
+require_fixed 'feature_pq_asset_anchor.py' test/functional/test_runner.py 'PQ asset full-chain regression is not registered'
+require_fixed 'feature_mempool_clear_reissue.py' test/functional/test_runner.py 'mempool clear reissue regression is not registered'
+require_fixed 'feature_mempool_reissue_restart.py' test/functional/test_runner.py 'mempool reissue restart regression is not registered'
 
 # GLM-003: contextual 8 -> 12 -> 16 MWU and UTXO-bound 8x discount.
 require_fixed 'VersionBitsStateSinceHeight' src/validation.cpp 'deterministic RIP-25 phase boundary missing'
@@ -605,6 +610,8 @@ require_fixed 'run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests
 require_fixed 'id: required_functional' "$final_gate" 'final gate does not require functional security tests'
 require_fixed 'python3 contrib/devtools/test-required-functional-gate.py' "$final_gate" 'functional gate negative controls are not run'
 require_fixed 'python3 test/functional/test_runner.py --require-tests' "$final_gate" 'functional gate permits absent or skipped security tests'
+require_fixed 'feature_mempool_clear_reissue.py' "$final_gate" 'final gate omits inherited mempool clear regression'
+require_fixed 'feature_mempool_reissue_restart.py' "$final_gate" 'final gate omits inherited reissue restart regression'
 require_fixed 'wallet_encryption_rewrite.py wallet_asset_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py' "$final_gate" 'required wallet, multiwallet asset, asset-scope, and chainstate-ahead functional tests are missing'
 require_fixed 'wallet_asset_multiwallet.py' .github/workflows/build-raven.yml 'release security job omits the multiwallet asset regression'
 require_fixed "'wallet_asset_multiwallet.py'" test/functional/test_runner.py 'multiwallet asset regression is not in the functional suite'
@@ -649,6 +656,8 @@ require_text "$release_security_job" 'test/test_raven_fuzzy --pq-smoke' 'release
 require_text "$release_security_job" 'make check' 'release artifact workflow does not run unit security tests before packaging'
 require_text "$release_security_job" 'check-rip25-v48-invariants.sh --run-tests' 'release artifact workflow does not run behavioral security tests before packaging'
 require_text "$release_security_job" 'test_runner.py --require-tests' 'release artifact workflow does not run required functional tests before packaging'
+require_text "$release_security_job" 'feature_mempool_clear_reissue.py' 'release artifact workflow omits inherited mempool clear regression'
+require_text "$release_security_job" 'feature_mempool_reissue_restart.py' 'release artifact workflow omits inherited reissue restart regression'
 require_text "$release_security_job" 'feature_chainstate_ahead.py' 'release artifact workflow does not test chainstate-ahead recovery'
 require_text "$release_security_job" 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' 'release security job does not bind tests to the artifact SHA'
 require_text "$release_build_job" '    needs: security-tests' 'release artifact matrix can package without passing security tests'
@@ -788,6 +797,6 @@ echo "$fuzz_smoke_output"
 
 python3 contrib/devtools/test-required-functional-gate.py
 python3 test/functional/test_runner.py --require-tests --jobs=2 \
-  wallet_encryption_rewrite.py rpc_assettransfer.py feature_chainstate_ahead.py
+  wallet_encryption_rewrite.py rpc_assettransfer.py feature_chainstate_ahead.py feature_pq_asset_anchor.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py
 
 echo 'RIP-25/v4.8 structural + behavioral invariants: OK'
