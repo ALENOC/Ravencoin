@@ -2040,6 +2040,9 @@ UniValue signrawtransaction(const JSONRPCRequest& request)
     // Use CTransaction for the constant parts of the
     // transaction to avoid rehashing.
     const CTransaction txConst(mtx);
+    const unsigned int scriptVerifyFlags = STANDARD_SCRIPT_VERIFY_FLAGS |
+        (IsPQWitnessDiscountActive(chainActive.Tip(), GetParams().GetConsensus())
+             ? SCRIPT_VERIFY_PQ_HYBRID : SCRIPT_VERIFY_NONE);
     // Sign what we can:
     for (unsigned int i = 0; i < mtx.vin.size(); i++) {
         CTxIn& txin = mtx.vin[i];
@@ -2070,7 +2073,7 @@ UniValue signrawtransaction(const JSONRPCRequest& request)
         ScriptError serror = SCRIPT_ERR_OK;
         if (!VerifyScript(
                 txin.scriptSig, prevPubKey, &txin.scriptWitness,
-                STANDARD_SCRIPT_VERIFY_FLAGS,
+                scriptVerifyFlags,
                 TransactionSignatureChecker(
                     &txConst, i, amount,
                     GetParams().GetConsensus().pqSignatureContext),
