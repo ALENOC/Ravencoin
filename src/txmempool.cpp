@@ -1097,6 +1097,26 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx,
 
 void CTxMemPool::_clear()
 {
+    // Clear per-transaction state before invalidating mapTx iterators. This
+    // also releases pending reissue reservations for transactions in this
+    // pool, including when clearmempool is called on a live node.
+    for (const auto& entry : mapTx) {
+        const uint256 hash = entry.GetTx().GetHash();
+        if (minerPolicyEstimator)
+            minerPolicyEstimator->removeTx(hash, false);
+        const auto reissue = mapReissuedTx.find(hash);
+        if (reissue != mapReissuedTx.end()) {
+            const auto asset = mapReissuedAssets.find(reissue->second);
+            if (asset != mapReissuedAssets.end() && asset->second == hash)
+                mapReissuedAssets.erase(asset);
+            mapReissuedTx.erase(reissue);
+        }
+    }
+    vTxHashes.clear();
+    mapAddress.clear();
+    mapAddressInserted.clear();
+    mapSpent.clear();
+    mapSpentInserted.clear();
     mapLinks.clear();
     mapTx.clear();
     mapNextTx.clear();

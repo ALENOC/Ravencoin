@@ -23,6 +23,27 @@
 
 BOOST_FIXTURE_TEST_SUITE(mempool_tests, TestingSetup)
 
+    BOOST_AUTO_TEST_CASE(mempool_clear_drops_compact_block_index)
+    {
+        CTxMemPool pool;
+        TestMemPoolEntryHelper entry;
+        CMutableTransaction tx;
+        tx.vin.resize(1);
+        tx.vin[0].prevout = COutPoint(uint256S("31"), 0);
+        tx.vout.emplace_back(1000, CScript() << OP_TRUE);
+        BOOST_REQUIRE(pool.addUnchecked(tx.GetHash(), entry.FromTx(tx)));
+        BOOST_REQUIRE_EQUAL(pool.vTxHashes.size(), 1U);
+
+        pool.clear();
+        BOOST_CHECK_EQUAL(pool.size(), 0U);
+        BOOST_REQUIRE(pool.vTxHashes.empty());
+
+        tx.nLockTime = 1;
+        BOOST_REQUIRE(pool.addUnchecked(tx.GetHash(), entry.FromTx(tx)));
+        BOOST_REQUIRE_EQUAL(pool.vTxHashes.size(), 1U);
+        BOOST_CHECK(pool.vTxHashes[0].second->GetTx().GetHash() == tx.GetHash());
+    }
+
     BOOST_AUTO_TEST_CASE(mempool_remove_test)
     {
         BOOST_TEST_MESSAGE("Running Mempool Remove Test");
