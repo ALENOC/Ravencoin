@@ -1614,9 +1614,11 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
                         break;
                     }
 
-                    if (!passetsdb->ReadReissuedMempoolState())
-                        LogPrintf(
-                                "Database failed to load last Reissued Mempool State. Will have to start from empty state");
+                    // Pending reissue reservations are mempool state, not
+                    // chain state. Loading a separately persisted map here
+                    // can retain a lock for a transaction that is absent
+                    // from mempool.dat. Rebuild it as transactions are
+                    // accepted during the normal mempool load instead.
 
                     LogPrintf("Successfully loaded assets from database.\nCache of assets size: %d\n",
                               passetsCache->Size());
