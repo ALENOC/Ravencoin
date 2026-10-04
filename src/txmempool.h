@@ -585,9 +585,10 @@ public:
      * a new chain tip. Remove witness-v2 transactions when RIP-25 is inactive
      * and remove descendants of each invalid transaction.
      */
-    void removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMemPoolHeight,
+    void removeForReorg(CCoinsViewCache *pcoins, unsigned int nMemPoolHeight,
                         int flags, bool fPQHybridActive,
-                        const TxAssetDeploymentContext& assetContext);
+                        const TxAssetDeploymentContext& assetContext,
+                        int pqAssetActivationHeight = -1);
     void removeConflicts(const CTransaction &tx);
     void removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight,
                         ConnectedBlockAssetData& connectedBlockData,

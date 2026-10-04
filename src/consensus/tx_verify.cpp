@@ -14,6 +14,7 @@
 #include "primitives/transaction.h"
 #include "script/interpreter.h"
 #include "validation.h"
+#include <algorithm>
 #include <cmath>
 #include <wallet/wallet.h>
 #include <base58.h>
@@ -619,6 +620,59 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
     }
 
     txfee = txfee_aux;
+    return true;
+}
+
+bool Consensus::CheckTxPQAssets(const CTransaction& tx, CValidationState& state,
+                                const CCoinsViewCache& inputs, int activationHeight,
+                                bool* pHasProtectedInput)
+{
+    if (pHasProtectedInput)
+        *pHasProtectedInput = false;
+    if (activationHeight < 0)
+        return true;
+
+    for (const CTxOut& output : tx.vout) {
+        if (!output.scriptPubKey.IsAssetScript())
+            continue;
+        uint256 program;
+        if (!GetPQAssetProgram(output.scriptPubKey, program))
+            return state.DoS(100, false, REJECT_INVALID, "bad-pq-asset-output");
+    }
+
+    if (tx.IsCoinBase())
+        return true;
+    if (!inputs.HaveInputs(tx))
+        return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputs-missingorspent");
+
+    std::set<uint256> requiredPrograms;
+    std::set<uint256> anchorPrograms;
+    for (const CTxIn& input : tx.vin) {
+        const Coin& coin = inputs.AccessCoin(input.prevout);
+        int witnessVersion = -1;
+        std::vector<unsigned char> witnessProgram;
+        if (coin.out.scriptPubKey.IsWitnessProgram(witnessVersion, witnessProgram) &&
+            witnessVersion == 2 && witnessProgram.size() == 32) {
+            uint256 program;
+            std::copy(witnessProgram.begin(), witnessProgram.end(), program.begin());
+            anchorPrograms.insert(program);
+        }
+
+        if (coin.nHeight < static_cast<uint32_t>(activationHeight) ||
+            !coin.out.scriptPubKey.IsAssetScript())
+            continue;
+        uint256 program;
+        if (!GetPQAssetProgram(coin.out.scriptPubKey, program))
+            return state.DoS(100, false, REJECT_INVALID, "bad-pq-asset-prevout");
+        requiredPrograms.insert(program);
+    }
+
+    for (const uint256& program : requiredPrograms) {
+        if (anchorPrograms.count(program) == 0)
+            return state.DoS(100, false, REJECT_INVALID, "bad-pq-asset-anchor");
+    }
+    if (pHasProtectedInput)
+        *pHasProtectedInput = !requiredPrograms.empty();
     return true;
 }
 

@@ -3630,8 +3630,8 @@ bool GetAssetData(const CScript& script, CAssetOutputEntry& data, const TxAssetD
 
 bool GetPQAssetProgram(const CScript& script, uint256& program)
 {
-    // Research parser only. No consensus or wallet path calls this function.
-    // Keep the classical envelope intact so legacy nodes see the same asset.
+    // Canonical parser for the dependent PQ asset rule. Keep the classical
+    // envelope intact so legacy nodes see the same asset.
     if (script.size() < 26 + 1 + 4 + 32 ||
         script[0] != OP_DUP || script[1] != OP_HASH160 || script[2] != 20 ||
         script[23] != OP_EQUALVERIFY || script[24] != OP_CHECKSIG ||

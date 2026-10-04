@@ -787,13 +787,15 @@ void CTxMemPool::removeRecursive(const CTransaction &origTx, MemPoolRemovalReaso
     }
 }
 
-void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMemPoolHeight,
+void CTxMemPool::removeForReorg(CCoinsViewCache *pcoins, unsigned int nMemPoolHeight,
                                 int flags, bool fPQHybridActive,
-                                const TxAssetDeploymentContext& assetContext)
+                                const TxAssetDeploymentContext& assetContext,
+                                int pqAssetActivationHeight)
 {
     // Remove transactions spending a coinbase which are now immature and no-longer-final transactions
     LOCK(cs);
     setEntries txToRemove;
+    CCoinsViewMemPool viewMemPool(pcoins, *this);
     for (indexed_transaction_set::const_iterator it = mapTx.begin(); it != mapTx.end(); it++) {
         const CTransaction& tx = it->GetTx();
         LockPoints lp = it->GetLockPoints();
@@ -855,6 +857,18 @@ void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMem
                 txToRemove.insert(it);
                 LogPrint(BCLog::MEMPOOL,
                          "Removing tx %s after reorg contextual validation: %s\n",
+                         tx.GetHash().ToString(), state.GetRejectReason());
+            }
+        }
+        if (pqAssetActivationHeight >= 0 && !txToRemove.count(it)) {
+            // Bound the UTXO cache to one transaction. A shared cache across
+            // the whole mempool could amplify a large reorg into excess RAM.
+            CCoinsViewCache view(&viewMemPool);
+            CValidationState state;
+            if (!Consensus::CheckTxPQAssets(tx, state, view, pqAssetActivationHeight)) {
+                txToRemove.insert(it);
+                LogPrint(BCLog::MEMPOOL,
+                         "Removing tx %s after PQ asset reorg validation: %s\n",
                          tx.GetHash().ToString(), state.GetRejectReason());
             }
         }

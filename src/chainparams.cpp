@@ -188,6 +188,12 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1830297600; // placeholder
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 1714; // Approx 85% of 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 2016;
+        // Keep the asset phase dormant until its consensus and wallet paths are qualified.
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].bit = 13;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nStartTime = 999999999999LL;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nTimeout = 999999999999LL;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nOverrideRuleChangeActivationThreshold = 1714;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nOverrideMinerConfirmationWindow = 2016;
         consensus.nPQHybridEnabled = false;
 
 
@@ -373,6 +379,11 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1893456000;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 1310;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 2016;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].bit = 13;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nStartTime = 999999999999LL;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nTimeout = 999999999999LL;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nOverrideRuleChangeActivationThreshold = 1310;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nOverrideMinerConfirmationWindow = 2016;
         consensus.nPQHybridEnabled = true;
 
         // The best chain should have at least this much work.
@@ -610,6 +621,11 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 999999999999ULL;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 108;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 144;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].bit = 13;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nStartTime = 999999999999LL;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nTimeout = 999999999999LL;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nOverrideRuleChangeActivationThreshold = 108;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nOverrideMinerConfirmationWindow = 144;
         consensus.nPQHybridEnabled = true;
 
         // The best chain should have at least this much work.
