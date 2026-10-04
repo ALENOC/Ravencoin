@@ -872,4 +872,18 @@ BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
         BOOST_CHECK_EQUAL(list.begin()->second.size(), (uint64_t)2L);
     }
 
+    BOOST_FIXTURE_TEST_CASE(ListAssets_ignores_invalid_locked_vout, ListCoinsTestingSetup)
+    {
+        LOCK2(cs_main, wallet->cs_wallet);
+        BOOST_REQUIRE(!wallet->mapWallet.empty());
+        const CWalletTx& wtx = wallet->mapWallet.begin()->second;
+        const uint32_t firstInvalid = static_cast<uint32_t>(wtx.tx->vout.size());
+
+        // lockunspent accepts outpoints without checking their output index.
+        // An invalid locked index must never be dereferenced by ListAssets.
+        wallet->LockCoin(COutPoint(wtx.GetHash(), firstInvalid));
+        wallet->LockCoin(COutPoint(wtx.GetHash(), UINT32_MAX));
+        BOOST_CHECK(wallet->ListAssets().empty());
+    }
+
 BOOST_AUTO_TEST_SUITE_END()

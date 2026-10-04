@@ -2865,11 +2865,25 @@ void CWallet::AvailableCoinsWithAssets(std::vector<COutput> &vCoins, std::map<st
     AvailableCoinsAll(vCoins, mapAssetCoins, true, AreAssetsDeployed(), fOnlySafe, coinControl, nMinimumAmount, nMaximumAmount, nMinimumSumAmount, nMaximumCount, nMinDepth, nMaxDepth);
 }
 
+static bool HasRequiredPQAssetKey(const CWallet& wallet, const CTxOut& output,
+                                  int depth, const CBlockIndex* originBlock,
+                                  int activationHeight)
+{
+    if (activationHeight < 0 ||
+        (depth > 0 && originBlock && originBlock->nHeight < activationHeight))
+        return true;
+
+    uint256 program;
+    return GetPQAssetProgram(output.scriptPubKey, program) && wallet.HavePQKey(program);
+}
+
 void CWallet::AvailableCoinsAll(std::vector<COutput>& vCoins, std::map<std::string, std::vector<COutput> >& mapAssetCoins, bool fGetRVN, bool fGetAssets, bool fOnlySafe, const CCoinControl *coinControl, const CAmount& nMinimumAmount, const CAmount& nMaximumAmount, const CAmount& nMinimumSumAmount, const uint64_t& nMaximumCount, const int& nMinDepth, const int& nMaxDepth) const {
     vCoins.clear();
 
     {
         LOCK2(cs_main, cs_wallet);
+
+        const int pqAssetActivationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
 
         CAmount nTotal = 0;
 
@@ -2892,7 +2906,8 @@ void CWallet::AvailableCoinsAll(std::vector<COutput>& vCoins, std::map<std::stri
             if (pcoin->IsCoinBase() && pcoin->GetBlocksToMaturity() > 0)
                 continue;
 
-            int nDepth = pcoin->GetDepthInMainChain();
+            const CBlockIndex* originBlock = nullptr;
+            int nDepth = pcoin->GetDepthInMainChain(originBlock);
             if (nDepth < 0)
                 continue;
 
@@ -2946,6 +2961,15 @@ void CWallet::AvailableCoinsAll(std::vector<COutput>& vCoins, std::map<std::stri
                 int nType;
                 bool fIsOwner;
                 bool isAssetScript = pcoin->tx->vout[i].scriptPubKey.IsAssetScript(nType, fIsOwner);
+
+                // A post-activation asset belongs to the wallet only if it
+                // has both its classical key and the PQ key named by the
+                // output. Historical lookalikes keep their old ownership
+                // semantics, including after a reorg across activation.
+                if (fGetAssets && isAssetScript &&
+                    !HasRequiredPQAssetKey(*this, pcoin->tx->vout[i], nDepth,
+                                           originBlock, pqAssetActivationHeight))
+                    continue;
                 if (coinControl && !isAssetScript && coinControl->HasSelected() && !coinControl->fAllowOtherInputs && !coinControl->IsSelected(COutPoint((*it).first, i)))
                     continue;
 
@@ -3082,14 +3106,20 @@ std::map<CTxDestination, std::vector<COutput>> CWallet::ListAssets() const
 
     std::vector<COutPoint> lockedCoins;
     ListLockedCoins(lockedCoins);
+    const int pqAssetActivationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
     for (const auto& output : lockedCoins) {
         auto it = mapWallet.find(output.hash);
         if (it != mapWallet.end()) {
-            if (!it->second.tx->vout[output.n].scriptPubKey.IsAssetScript()) // If not an asset script skip it
+            if (output.n >= it->second.tx->vout.size())
                 continue;
-            int depth = it->second.GetDepthInMainChain();
-            if (depth >= 0 && output.n < it->second.tx->vout.size() &&
-                IsMine(it->second.tx->vout[output.n]) == ISMINE_SPENDABLE) {
+            const CTxOut& txout = it->second.tx->vout[output.n];
+            if (!txout.scriptPubKey.IsAssetScript()) // If not an asset script skip it
+                continue;
+            const CBlockIndex* originBlock = nullptr;
+            int depth = it->second.GetDepthInMainChain(originBlock);
+            if (depth >= 0 && IsMine(txout) == ISMINE_SPENDABLE &&
+                HasRequiredPQAssetKey(*this, txout, depth, originBlock,
+                                      pqAssetActivationHeight)) {
                 CTxDestination address;
                 if (ExtractDestination(FindNonChangeParentOutput(*it->second.tx, output.n).scriptPubKey, address)) {
                     result[address].emplace_back(

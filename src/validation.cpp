@@ -2439,6 +2439,12 @@ static int GetPQAssetActivationHeightLocked(const CBlockIndex* pindexPrev, const
     return std::max(nativeHeight, std::max(assetHeight, transferHeight));
 }
 
+int GetPQAssetActivationHeightForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    AssertLockHeld(cs_main);
+    return GetPQAssetActivationHeightLocked(pindexPrev, params);
+}
+
 static unsigned int GetMaxBlockWeightForPrevLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params)
 {
     AssertLockHeld(cs_main);

@@ -611,6 +611,12 @@ bool AreCoinbaseCheckAssetsDeployed();
 /** Transfer-overflow enforcement for the block after pindexPrev. */
 bool IsTransferOverflowCheckActive(const CBlockIndex* pindexPrev, const Consensus::Params& params);
 
+/** Effective PQ asset activation height for the block after pindexPrev, or -1.
+ *  The caller must hold cs_main so the versionbits state and chain context
+ *  cannot change during a wallet ownership calculation.
+ */
+int GetPQAssetActivationHeightForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params);
+
 /** Transfer-overflow state for active-tip policy callers. */
 bool IsTransferOverflowCheckDeployed();
 

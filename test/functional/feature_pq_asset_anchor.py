@@ -141,6 +141,7 @@ class PQAssetAnchorTest(RavenTestFramework):
         migration_txid = node.sendrawtransaction(migration_signed['hex'])
         node.generate(1)
         assert_equal(node.getblockcount(), 864)
+        assert_equal(node.listmyassets(asset_name, True)[asset_name]['balance'], 1)
 
         asset_index = self.output_index(
             migration_signed['hex'],
