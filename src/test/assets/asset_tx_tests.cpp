@@ -379,6 +379,68 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
     }
 
+    BOOST_AUTO_TEST_CASE(pq_asset_tail_cannot_bypass_classical_signature_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        CKey key;
+        key.MakeNewKey(true);
+        const CPubKey pubkey = key.GetPubKey();
+
+        CScript assetScript = GetScriptForDestination(pubkey.GetID());
+        CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(assetScript);
+        BOOST_REQUIRE_EQUAL(assetScript.back(), OP_DROP);
+        assetScript.pop_back();
+        std::vector<unsigned char> program(32, 1);
+        program[0] = OP_2DROP;
+        program[1] = 30;
+        assetScript.insert(assetScript.end(), program.begin(), program.end());
+        uint256 parsed;
+        BOOST_REQUIRE(GetPQAssetProgram(assetScript, parsed));
+
+        CMutableTransaction funded;
+        funded.vin.emplace_back(COutPoint(uint256S("06"), 0));
+        funded.vout.emplace_back(0, assetScript);
+        CMutableTransaction spending;
+        spending.vin.emplace_back(COutPoint(CTransaction(funded).GetHash(), 0));
+        spending.vout.emplace_back(0, MakeAssetTransferOutput("RAVENTEST", COIN).scriptPubKey);
+        spending.vin[0].scriptSig = CScript() << OP_0
+            << std::vector<unsigned char>(pubkey.begin(), pubkey.end());
+
+        ScriptError error = SCRIPT_ERR_UNKNOWN_ERROR;
+        BOOST_CHECK_MESSAGE(!VerifyScript(spending.vin[0].scriptSig, assetScript,
+                            &spending.vin[0].scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS,
+                            MutableTransactionSignatureChecker(&spending, 0, 0), &error),
+                            "empty classical signature accepted by bit13 asset tail");
+        BOOST_CHECK_EQUAL(error, SCRIPT_ERR_EVAL_FALSE);
+
+        CBasicKeyStore keystore;
+        BOOST_REQUIRE(keystore.AddKey(key));
+        CMutableTransaction signedSpending = spending;
+        BOOST_REQUIRE(SignSignature(keystore, CTransaction(funded), signedSpending, 0, SIGHASH_ALL));
+        error = SCRIPT_ERR_UNKNOWN_ERROR;
+        BOOST_CHECK(VerifyScript(signedSpending.vin[0].scriptSig, assetScript,
+                    &signedSpending.vin[0].scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS,
+                    MutableTransactionSignatureChecker(&signedSpending, 0, 0), &error));
+        BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
+
+        CScript inertTailScript = assetScript;
+        inertTailScript.erase(inertTailScript.end() - 32, inertTailScript.end());
+        std::vector<unsigned char> inertProgram(32, 0xff);
+        inertProgram[0] = OP_RETURN;
+        inertTailScript.insert(inertTailScript.end(), inertProgram.begin(), inertProgram.end());
+        BOOST_REQUIRE(GetPQAssetProgram(inertTailScript, parsed));
+        CMutableTransaction inertFunded = funded;
+        inertFunded.vout[0].scriptPubKey = inertTailScript;
+        CMutableTransaction inertSpending = spending;
+        inertSpending.vin[0].prevout.hash = CTransaction(inertFunded).GetHash();
+        BOOST_REQUIRE(SignSignature(keystore, CTransaction(inertFunded), inertSpending, 0, SIGHASH_ALL));
+        error = SCRIPT_ERR_UNKNOWN_ERROR;
+        BOOST_CHECK(VerifyScript(inertSpending.vin[0].scriptSig, inertTailScript,
+                    &inertSpending.vin[0].scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS,
+                    MutableTransactionSignatureChecker(&inertSpending, 0, 0), &error));
+        BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
+    }
+
     BOOST_AUTO_TEST_CASE(pq_asset_program_canonical_parser_test)
     {
         SelectParams(CBaseChainParams::MAIN);
