@@ -11,7 +11,7 @@ from test_framework.blocktools import create_block, create_coinbase
 from test_framework.mininode import CTransaction, from_hex, to_hex
 from test_framework.test_framework import RavenTestFramework
 from test_framework import util as test_util
-from test_framework.util import assert_equal, disconnect_nodes
+from test_framework.util import assert_equal, connect_nodes_bi, disconnect_nodes
 
 
 class TransferSidebranchTest(RavenTestFramework):
@@ -47,6 +47,7 @@ class TransferSidebranchTest(RavenTestFramework):
         assert_equal(producer.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'active')
         assert_equal(verifier.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'active')
         active_tip = verifier.getbestblockhash()
+        original_activation = verifier.getblockhash(863)
         assert_equal(verifier.getblockcount(), 864)
 
         txid = producer.transfer(asset_name, 1, producer.getnewaddress(), 'ab' * 32, 123456789)[0]
@@ -73,6 +74,52 @@ class TransferSidebranchTest(RavenTestFramework):
         assert_equal(verifier.submitblock(block.serialize().hex()),
                      'bad-txns-transfer-asset-bad-deserialize')
         assert_equal(verifier.getbestblockhash(), active_tip)
+
+        # The producer's branch has a different height-862 parent history. Its
+        # transfer is mined only after bit 8 is active on that branch.
+        branch_start = producer.getblockhash(862)
+        transfer_block = producer.generate(1)[0]
+        assert txid in producer.getblock(transfer_block)['tx']
+        producer.generate(2)
+        branch_tip = producer.getbestblockhash()
+        assert_equal(producer.getblockcount(), 866)
+
+        # Connecting the previously unknown, longer branch must re-evaluate
+        # transfer scripts against its own ancestors, not the old active tip.
+        self.restart_node(1, ['-assetindex'])
+        verifier = self.nodes[1]
+        assert_equal(verifier.getbestblockhash(), active_tip)
+        connect_nodes_bi(self.nodes, 0, 1)
+        self.sync_all()
+        assert_equal(verifier.getbestblockhash(), branch_tip)
+        assert_equal(verifier.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'active')
+        assert txid in verifier.getblock(transfer_block)['tx']
+        assert_equal(verifier.verifychain(4, 6), True)
+
+        # Walk backward over both forks and the activation boundary, restart
+        # with the old policy, then reconsider both branches in turn.
+        disconnect_nodes(producer, 1)
+        disconnect_nodes(verifier, 0)
+        verifier.invalidateblock(branch_start)
+        assert_equal(verifier.getbestblockhash(), active_tip)
+        verifier.invalidateblock(original_activation)
+        assert_equal(verifier.getblockcount(), 862)
+        assert_equal(verifier.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'locked_in')
+        rollback_result = verifier.testmempoolaccept([transfer_raw])[0]
+        assert_equal(rollback_result['allowed'], False)
+        assert_equal(rollback_result['reject-reason'], '16: bad-txns-transfer-asset-bad-deserialize')
+
+        self.restart_node(1, ['-assetindex'])
+        verifier = self.nodes[1]
+        assert_equal(verifier.getblockcount(), 862)
+        assert_equal(verifier.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'locked_in')
+        verifier.reconsiderblock(original_activation)
+        assert_equal(verifier.getbestblockhash(), active_tip)
+        verifier.reconsiderblock(branch_start)
+        assert_equal(verifier.getbestblockhash(), branch_tip)
+        assert_equal(verifier.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'active')
+        assert txid in verifier.getblock(transfer_block)['tx']
+        assert_equal(verifier.verifychain(4, 6), True)
 
 
 if __name__ == '__main__':
