@@ -442,6 +442,8 @@ static bool IsCurrentForFeeEstimation()
  * and instead just erase from the mempool as needed.
  */
 
+static TxAssetDeploymentContext GetTxAssetDeploymentContextLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params);
+
 void UpdateMempoolForReorg(DisconnectedBlockTransactions &disconnectpool, bool fAddToMempool)
 {
     AssertLockHeld(cs_main);
@@ -475,11 +477,12 @@ void UpdateMempoolForReorg(DisconnectedBlockTransactions &disconnectpool, bool f
     // the disconnectpool that were added back and cleans up the mempool state.
     mempool.UpdateTransactionsFromBlock(vHashUpdate);
 
-    // Remove transactions invalidated by the new tip's maturity, lock-time,
-    // or contextual pre-activation RIP-25 policy.
+    // Revalidate policy against the new tip after any chain change.
     const bool pqEnabled = IsPQHybridActiveLocked(chainActive.Tip(), GetParams().GetConsensus());
+    const TxAssetDeploymentContext assetContext = GetTxAssetDeploymentContextLocked(chainActive.Tip(), GetParams().GetConsensus());
     mempool.removeForReorg(pcoinsTip, chainActive.Tip()->nHeight + 1,
-                           STANDARD_LOCKTIME_VERIFY_FLAGS, pqEnabled);
+                           STANDARD_LOCKTIME_VERIFY_FLAGS, pqEnabled,
+                           assetContext);
     // Re-limit mempool size, in case we added any transactions
     LimitMempoolSize(mempool, gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000, gArgs.GetArg("-mempoolexpiry", DEFAULT_MEMPOOL_EXPIRY) * 60 * 60);
 }

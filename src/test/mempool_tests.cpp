@@ -701,12 +701,13 @@ BOOST_FIXTURE_TEST_SUITE(mempool_tests, TestingSetup)
         mempool.addUnchecked(unrelated.GetHash(), entry.FromTx(unrelated));
         BOOST_REQUIRE_EQUAL(mempool.size(), 7U);
 
+        const TxAssetDeploymentContext noAssets = {};
         mempool.removeForReorg(pcoinsTip, chainActive.Height() + 1,
-                               STANDARD_LOCKTIME_VERIFY_FLAGS, true);
+                               STANDARD_LOCKTIME_VERIFY_FLAGS, true, noAssets);
         BOOST_REQUIRE_EQUAL(mempool.size(), 7U);
 
         mempool.removeForReorg(pcoinsTip, chainActive.Height() + 1,
-                               STANDARD_LOCKTIME_VERIFY_FLAGS, false);
+                               STANDARD_LOCKTIME_VERIFY_FLAGS, false, noAssets);
 
         BOOST_CHECK(!mempool.exists(pqCreation.GetHash()));
         BOOST_CHECK(!mempool.exists(descendant.GetHash()));

@@ -788,7 +788,8 @@ void CTxMemPool::removeRecursive(const CTransaction &origTx, MemPoolRemovalReaso
 }
 
 void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMemPoolHeight,
-                                int flags, bool fPQHybridActive)
+                                int flags, bool fPQHybridActive,
+                                const TxAssetDeploymentContext& assetContext)
 {
     // Remove transactions spending a coinbase which are now immature and no-longer-final transactions
     LOCK(cs);
@@ -837,6 +838,25 @@ void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMem
             }
             if (removeForPQRollback)
                 txToRemove.insert(it);
+        }
+        if (!txToRemove.count(it)) {
+            CValidationState state;
+            bool valid = CheckTransaction(tx, state, true, true, false, &assetContext);
+            if (valid && !assetContext.fAssetsDeployed) {
+                for (const CTxOut& out : tx.vout) {
+                    if (out.scriptPubKey.IsAssetScript()) {
+                        valid = false;
+                        state.Invalid(false, REJECT_INVALID, "bad-txns-contained-asset-when-not-active");
+                        break;
+                    }
+                }
+            }
+            if (!valid) {
+                txToRemove.insert(it);
+                LogPrint(BCLog::MEMPOOL,
+                         "Removing tx %s after reorg contextual validation: %s\n",
+                         tx.GetHash().ToString(), state.GetRejectReason());
+            }
         }
         if (!validLP) {
             mapTx.modify(it, update_lock_points(lp));
