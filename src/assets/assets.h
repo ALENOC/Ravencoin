@@ -538,6 +538,8 @@ bool GetAssetData(const CScript& script, CAssetOutputEntry& data, const TxAssetD
 // Experimental PQ asset extension: recognize a canonical 32-byte program
 // tail without changing the legacy asset parser or script evaluator.
 bool GetPQAssetProgram(const CScript& script, uint256& program);
+/** Tag a canonical legacy P2PKH asset output for the dependent PQ asset rule. */
+bool BuildPQAssetTaggedScript(const CScript& legacyScript, const uint256& program, CScript& taggedScript);
 
 bool GetBestAssetAddressAmount(CAssetsCache& cache, const std::string& assetName, const std::string& address);
 

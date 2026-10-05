@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <algorithm>
 #include <regex>
 #include <script/script.h>
 #include <version.h>
@@ -3703,6 +3704,105 @@ bool GetPQAssetProgram(const CScript& script, uint256& program)
         return false;
 
     std::copy(script.end() - 32, script.end(), program.begin());
+    return true;
+}
+
+bool BuildPQAssetTaggedScript(const CScript& legacyScript, const uint256& program, CScript& taggedScript)
+{
+    // The legacy asset indexer requires the P2PKH envelope and a single,
+    // minimally encoded asset payload followed by OP_DROP.
+    if (legacyScript.size() < 32 ||
+        legacyScript[0] != OP_DUP || legacyScript[1] != OP_HASH160 ||
+        legacyScript[2] != 20 || legacyScript[23] != OP_EQUALVERIFY ||
+        legacyScript[24] != OP_CHECKSIG || legacyScript[25] != OP_RVN_ASSET ||
+        legacyScript.back() != OP_DROP) {
+        return false;
+    }
+
+    size_t payloadStart = 27;
+    size_t payloadSize = legacyScript[26];
+    if (legacyScript[26] == OP_PUSHDATA1) {
+        payloadStart = 28;
+        payloadSize = legacyScript[27];
+        if (payloadSize < OP_PUSHDATA1)
+            return false;
+    } else if (payloadSize == 0 || payloadSize >= OP_PUSHDATA1) {
+        return false;
+    }
+    if (payloadSize < 4 || payloadStart + payloadSize + 1 != legacyScript.size())
+        return false;
+
+    const TxAssetDeploymentContext parserContext{true, false, false, true, true, true};
+    CAssetOutputEntry before;
+    if (!GetAssetData(legacyScript, before, &parserContext))
+        return false;
+
+    std::vector<unsigned char> payload(legacyScript.begin() + payloadStart,
+                                       legacyScript.begin() + payloadStart + payloadSize);
+    if (payload[0] != RVN_R || payload[1] != RVN_V || payload[2] != RVN_N)
+        return false;
+
+    int type = 0;
+    bool isOwner = false;
+    if (!legacyScript.IsAssetScript(type, isOwner))
+        return false;
+    const std::vector<unsigned char> assetBytes(payload.begin() + 4, payload.end());
+    CDataStream stream(assetBytes, SER_NETWORK, PROTOCOL_VERSION);
+    CDataStream canonical(SER_NETWORK, PROTOCOL_VERSION);
+    bool needsZeroExpiry = false;
+    try {
+        if (payload[3] == RVN_T && type == TX_TRANSFER_ASSET) {
+            CAssetTransfer transfer;
+            stream >> transfer;
+            canonical << transfer;
+            needsZeroExpiry = !transfer.message.empty() && transfer.nExpireTime == 0;
+        } else if (payload[3] == RVN_Q && type == TX_NEW_ASSET && !isOwner) {
+            CNewAsset asset;
+            stream >> asset;
+            canonical << asset;
+        } else if (payload[3] == RVN_O && type == TX_NEW_ASSET && isOwner) {
+            std::string ownerName;
+            stream >> ownerName;
+            canonical << ownerName;
+        } else if (payload[3] == RVN_R && type == TX_REISSUE_ASSET) {
+            CReissueAsset reissue;
+            stream >> reissue;
+            canonical << reissue;
+        } else {
+            return false;
+        }
+    } catch (const std::exception&) {
+        return false;
+    }
+    if (!stream.empty() || canonical.size() != assetBytes.size() ||
+        !std::equal(canonical.begin(), canonical.end(), assetBytes.begin(),
+                    [](char actual, unsigned char expected) {
+                        return static_cast<unsigned char>(actual) == expected;
+                    }))
+        return false;
+
+    // The legacy serializer omits a zero expiry, but tagged transfers
+    // with a message need it to keep the program outside that field.
+    if (needsZeroExpiry)
+        payload.insert(payload.end(), sizeof(int64_t), 0);
+
+    CScript candidate;
+    candidate.insert(candidate.end(), legacyScript.begin(), legacyScript.begin() + 25);
+    candidate << OP_RVN_ASSET << payload;
+    const std::vector<unsigned char> programBytes = ToByteVector(program);
+    candidate.insert(candidate.end(), programBytes.begin(), programBytes.end());
+
+    uint256 parsedProgram;
+    CAssetOutputEntry after;
+    if (!GetPQAssetProgram(candidate, parsedProgram) || parsedProgram != program ||
+        !GetAssetData(candidate, after, &parserContext) ||
+        before.type != after.type || before.assetName != after.assetName ||
+        before.nAmount != after.nAmount || before.destination != after.destination ||
+        (before.type == TX_TRANSFER_ASSET &&
+         (before.message != after.message || before.expireTime != after.expireTime)))
+        return false;
+
+    taggedScript = std::move(candidate);
     return true;
 }
 
