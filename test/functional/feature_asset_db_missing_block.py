@@ -9,7 +9,7 @@ import os
 import shutil
 
 from test_framework.test_framework import RavenTestFramework
-from test_framework.util import assert_equal
+from test_framework.util import assert_equal, wait_until
 
 
 class AssetMissingBlockRecoveryTest(RavenTestFramework):
@@ -55,6 +55,11 @@ class AssetMissingBlockRecoveryTest(RavenTestFramework):
 
         self.start_node(0, ['-assetindex', '-dbcache=1000'])
         node = self.nodes[0]
+        # RPC can become available before background block import reaches
+        # the recovered tip. A persistently wrong tip must still fail.
+        wait_until(lambda: node.getbestblockhash() == asset_block,
+                   err_msg='recovery did not reach the expected asset block',
+                   timeout=60)
         assert_equal(node.getbestblockhash(), asset_block)
         assert_equal(node.getassetdata(asset_name), expected_asset)
 
