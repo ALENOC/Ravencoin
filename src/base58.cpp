@@ -394,6 +394,38 @@ CTxDestination DecodeDestination(const std::string& str)
     return CRavenAddress(str).Get();
 }
 
+std::string EncodePQAssetDestination(const CKeyID& classicalKey, const uint256& pqProgram)
+{
+    const std::string classicalAddress = EncodeDestination(classicalKey);
+    const std::string pqAddress = EncodeDestination(WitnessV2PQDestination(pqProgram));
+    if (classicalAddress.empty() || pqAddress.empty())
+        return std::string();
+    return classicalAddress + "|" + pqAddress;
+}
+
+bool DecodePQAssetDestination(const std::string& descriptor, CKeyID& classicalKey, uint256& pqProgram)
+{
+    const size_t separator = descriptor.find('|');
+    if (separator == std::string::npos || separator == 0 ||
+        separator + 1 == descriptor.size() ||
+        descriptor.find('|', separator + 1) != std::string::npos)
+        return false;
+
+    const std::string classicalAddress = descriptor.substr(0, separator);
+    const std::string pqAddress = descriptor.substr(separator + 1);
+    const CTxDestination classicalDestination = DecodeDestination(classicalAddress);
+    const CTxDestination pqDestination = DecodeDestination(pqAddress);
+    const CKeyID* classical = boost::get<CKeyID>(&classicalDestination);
+    const WitnessV2PQDestination* pq = boost::get<WitnessV2PQDestination>(&pqDestination);
+    if (!classical || !pq || EncodeDestination(*classical) != classicalAddress ||
+        EncodeDestination(*pq) != pqAddress)
+        return false;
+
+    classicalKey = *classical;
+    pqProgram = pq->witnessProgram;
+    return true;
+}
+
 bool IsValidDestinationString(const std::string& str, const CChainParams& params)
 {
     // Check bech32m first
