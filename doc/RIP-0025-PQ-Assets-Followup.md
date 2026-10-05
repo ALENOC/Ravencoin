@@ -109,6 +109,19 @@ No asset extension should be coupled silently to an already deployed RIP-25 bit.
 
 The wallet needs an explicit PQ asset destination type rather than reusing a native-RVN address without a defined asset meaning. The design must decide whether the same witness-v2 address can represent both native RVN and asset ownership or whether a distinct encoding is safer.
 
+The working branch now defines a wallet-facing, network-bound descriptor of
+the form `<classical-P2PKH-address>|<PQ-witness-v2-address>`. Its decoder
+requires exactly one separator, the expected destination types, and exact
+canonical re-encoding on the selected network. The descriptor is not a
+consensus script, not a native RVN payment address, and is not yet accepted
+by asset issuance or transfer RPCs. A single Bech32m address cannot be used
+for the two independent keys without defining a new encoding and changing
+the existing address-length assumptions. The descriptor must be split before
+restricted-asset verifier or qualifier-index lookups: those indexes remain
+keyed by the classical address. No asset RPC should accept the descriptor
+until tagged output construction, matching PQ anchor funding and selection,
+change, and signing are integrated and tested together.
+
 Required wallet behavior includes:
 
 - PQ asset ownership detection and balance attribution;
