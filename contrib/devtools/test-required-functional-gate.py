@@ -11,6 +11,10 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "test" / "functional"))
+from test_framework.util import (MAX_NODES, PORT_MIN, PORT_RANGE, PortSeed,
+                                 p2p_port, rpc_port)
+
 RUNNER = ROOT / "test" / "functional" / "test_runner.py"
 SPEC = importlib.util.spec_from_file_location("raven_test_runner", RUNNER)
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -18,6 +22,22 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RequiredFunctionalGateTests(unittest.TestCase):
+    def test_parallel_test_port_blocks_are_disjoint(self):
+        previous_seed = PortSeed.n
+        try:
+            used = set()
+            for seed in range(30):
+                PortSeed.n = seed
+                for node in range(MAX_NODES):
+                    for port in (p2p_port(node), rpc_port(node)):
+                        self.assertGreaterEqual(port, PORT_MIN)
+                        self.assertLess(port, PORT_MIN + 2 * PORT_RANGE)
+                        self.assertNotIn(port, used)
+                        used.add(port)
+            self.assertEqual(len(used), 30 * MAX_NODES * 2)
+        finally:
+            PortSeed.n = previous_seed
+
     def test_skipped_required_test_fails(self):
         skipped = MODULE.TestResult("required.py", "Skipped", 0, required=True)
         self.assertFalse(skipped.was_successful)
