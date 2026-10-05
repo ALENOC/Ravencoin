@@ -736,10 +736,8 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
 
         CTxOut legacy = MakeAssetTransferOutput("RAVENTEST!", OWNER_ASSET_AMOUNT);
         CTxOut tagged = legacy;
-        BOOST_REQUIRE_EQUAL(tagged.scriptPubKey.back(), OP_DROP);
-        tagged.scriptPubKey.pop_back();
-        const std::vector<unsigned char> programBytes = ToByteVector(program);
-        tagged.scriptPubKey.insert(tagged.scriptPubKey.end(), programBytes.begin(), programBytes.end());
+        BOOST_REQUIRE(BuildPQAssetTaggedScript(legacy.scriptPubKey, program,
+                                              tagged.scriptPubKey));
         uint256 parsed;
         BOOST_REQUIRE(GetPQAssetProgram(tagged.scriptPubKey, parsed));
         BOOST_CHECK(parsed == program);
@@ -769,9 +767,10 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
                                                     coins, activationHeight));
             BOOST_CHECK_EQUAL(oldOutput.GetRejectReason(), "bad-pq-asset-output");
 
-            BOOST_REQUIRE_EQUAL(script.back(), OP_DROP);
-            script.pop_back();
-            script.insert(script.end(), programBytes.begin(), programBytes.end());
+            CScript taggedClassScript;
+            BOOST_REQUIRE(BuildPQAssetTaggedScript(script, program,
+                                                  taggedClassScript));
+            script = taggedClassScript;
             check.vout[0].scriptPubKey = script;
             uint256 hash;
             hash.SetNull();
@@ -806,6 +805,10 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         CScript reissueOutput = classDestination;
         CReissueAsset("RAVENTEST", COIN, 0, 1, "").ConstructTransaction(reissueOutput);
         checkClassRule(reissueOutput);
+        CScript messageTransfer = classDestination;
+        CAssetTransfer("RAVENTEST", COIN, std::string(32, 'x'))
+            .ConstructTransaction(messageTransfer);
+        checkClassRule(messageTransfer);
 
         CMutableTransaction spend;
         spend.vin.emplace_back(legacyOut);
