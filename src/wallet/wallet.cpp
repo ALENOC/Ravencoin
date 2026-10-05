@@ -3995,11 +3995,11 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
             nFeeRet = 0;
             bool pick_new_inputs = true;
             CAmount nValueIn = 0;
+            std::map<std::string, CAmount> mapAssetsIn;
 
             // Start with no fee and loop until there is enough fee
             while (true)
             {
-                std::map<std::string, CAmount> mapAssetsIn;
                 nChangePosInOut = nChangePosRequest;
                 txNew.vin.clear();
                 txNew.vout.clear();

@@ -4,6 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "wallet/wallet.h"
+#include "assets/assets.h"
 #include "chainparams.h"
 
 #include <set>
@@ -884,6 +885,61 @@ BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
         wallet->LockCoin(COutPoint(wtx.GetHash(), firstInvalid));
         wallet->LockCoin(COutPoint(wtx.GetHash(), UINT32_MAX));
         BOOST_CHECK(wallet->ListAssets().empty());
+    }
+
+    BOOST_FIXTURE_TEST_CASE(asset_change_survives_fee_subtraction_retry, ListCoinsTestingSetup)
+    {
+        const bool assetsWereDeployed = AreAssetsDeployed();
+        struct RestoreAssetsDeployment {
+            bool previous;
+            ~RestoreAssetsDeployment() { SetAssetsDeployed(previous); }
+        } restore{assetsWereDeployed};
+        SetAssetsDeployed(true);
+
+        const CKeyID keyID = coinbaseKey.GetPubKey().GetID();
+        CScript inputAssetScript = GetScriptForDestination(keyID);
+        CAssetTransfer("FEELOOP", 5 * COIN).ConstructTransaction(inputAssetScript);
+        CMutableTransaction assetFunding;
+        assetFunding.vout.emplace_back(0, inputAssetScript);
+        CWalletTx assetCoin(wallet.get(), MakeTransactionRef(std::move(assetFunding)));
+        {
+            LOCK(cs_main);
+            assetCoin.SetMerkleBranch(chainActive.Tip(), 1);
+        }
+        BOOST_REQUIRE(wallet->AddToWallet(assetCoin));
+
+        CScript recipientAssetScript = GetScriptForDestination(keyID);
+        CAssetTransfer("FEELOOP", 2 * COIN).ConstructTransaction(recipientAssetScript);
+        const std::vector<CRecipient> recipients{
+            {GetScriptForDestination(keyID), 1 * COIN, true},
+            {recipientAssetScript, 0, false}
+        };
+
+        CWalletTx created;
+        CReserveKey reservekey(wallet.get());
+        CAmount fee = 0;
+        int changePosition = -1;
+        std::string error;
+        CCoinControl coinControl;
+        BOOST_REQUIRE_MESSAGE(
+            wallet->CreateTransactionWithTransferAsset(
+                recipients, created, reservekey, fee, changePosition,
+                error, coinControl, false), error);
+        BOOST_CHECK_GT(fee, 0);
+
+        CAmount sent = 0;
+        CAmount change = 0;
+        for (const CTxOut& output : created.tx->vout) {
+            CAssetOutputEntry asset;
+            if (!GetAssetData(output.scriptPubKey, asset) || asset.assetName != "FEELOOP")
+                continue;
+            if (asset.nAmount == 2 * COIN)
+                sent += asset.nAmount;
+            else
+                change += asset.nAmount;
+        }
+        BOOST_CHECK_EQUAL(sent, 2 * COIN);
+        BOOST_CHECK_EQUAL(change, 3 * COIN);
     }
 
 BOOST_AUTO_TEST_SUITE_END()
