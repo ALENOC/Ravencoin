@@ -3933,6 +3933,23 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
         std::set<CInputCoin> setAssets;
         LOCK2(cs_main, cs_wallet);
         {
+            const int pqAssetActivationHeight =
+                GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
+            const bool pqAssetsActive = pqAssetActivationHeight >= 0 &&
+                chainActive.Height() + 1 >= pqAssetActivationHeight;
+            const auto tagPQAssetOutput = [&](CScript& script,
+                                             const boost::optional<uint256>& program) {
+                if (!pqAssetsActive)
+                    return true;
+                CScript tagged;
+                if (!program || !BuildPQAssetTaggedScript(script, *program, tagged)) {
+                    strFailReason = _("Active PQ asset output requires a canonical classical|PQ asset destination");
+                    return false;
+                }
+                script = std::move(tagged);
+                return true;
+            };
+
             /** RVN START */
             std::vector<COutput> vAvailableCoins;
             std::map<std::string, std::vector<COutput> > mapAssetCoins;
@@ -4015,6 +4032,14 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                 for (const auto& recipient : vecSend)
                 {
                     CTxOut txout(recipient.nAmount, recipient.scriptPubKey);
+
+                    if (pqAssetsActive && recipient.scriptPubKey.IsAssetScript()) {
+                        uint256 program;
+                        if (!GetPQAssetProgram(recipient.scriptPubKey, program)) {
+                            strFailReason = _("Active PQ asset recipient is missing a canonical program");
+                            return false;
+                        }
+                    }
 
                     /** RVN START */
                     // Check to see if you need to make an asset data outpoint OP_RVN_ASSET data
@@ -4133,6 +4158,8 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                                                 CAssetTransfer assetTransfer(assetChange.first, assetChange.second);
 
                                                 assetTransfer.ConstructTransaction(scriptAssetChange);
+                                                if (!tagPQAssetOutput(scriptAssetChange, coin_control.pqAssetChangeProgram))
+                                                    return false;
                                                 CTxOut newAssetTxOut(0, scriptAssetChange);
 
                                                 txNew.vout.emplace_back(newAssetTxOut);
@@ -4146,6 +4173,8 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                                     CAssetTransfer assetTransfer(assetChange.first, assetChange.second);
 
                                     assetTransfer.ConstructTransaction(scriptAssetChange);
+                                    if (!tagPQAssetOutput(scriptAssetChange, coin_control.pqAssetChangeProgram))
+                                        return false;
                                     CTxOut newAssetTxOut(0, scriptAssetChange);
 
                                     txNew.vout.emplace_back(newAssetTxOut);
@@ -4159,6 +4188,8 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                                 CAssetTransfer assetTransfer(assetChange.first, assetChange.second);
 
                                 assetTransfer.ConstructTransaction(scriptAssetChange);
+                                if (!tagPQAssetOutput(scriptAssetChange, coin_control.pqAssetChangeProgram))
+                                    return false;
                                 CTxOut newAssetTxOut(0, scriptAssetChange);
 
                                 txNew.vout.emplace_back(newAssetTxOut);
@@ -4208,6 +4239,8 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                             if (assetType != AssetType::UNIQUE && assetType != AssetType::MSGCHANNEL && assetType != AssetType::QUALIFIER && assetType != AssetType::SUB_QUALIFIER && assetType != AssetType::RESTRICTED) {
                                 CScript ownerScript = GetScriptForDestination(destination);
                                 asset.ConstructOwnerTransaction(ownerScript);
+                                if (!tagPQAssetOutput(ownerScript, coin_control.pqAssetDestinationProgram))
+                                    return false;
                                 CTxOut ownerTxOut(0, ownerScript);
                                 txNew.vout.push_back(ownerTxOut);
                             }
@@ -4215,6 +4248,8 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                             // Create the asset transaction and push it back so it is the last CTxOut in the transaction
                             CScript scriptPubKey = GetScriptForDestination(destination);
                             asset.ConstructTransaction(scriptPubKey);
+                            if (!tagPQAssetOutput(scriptPubKey, coin_control.pqAssetDestinationProgram))
+                                return false;
                             CTxOut newTxOut(0, scriptPubKey);
                             txNew.vout.push_back(newTxOut);
                         }
@@ -4224,6 +4259,8 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
 
                         // Create the scriptPubKeys for the reissue data, and that owner asset
                         reissueAsset.ConstructTransaction(reissueScript);
+                        if (!tagPQAssetOutput(reissueScript, coin_control.pqAssetDestinationProgram))
+                            return false;
 
                         CTxOut reissueTxOut(0, reissueScript);
                         txNew.vout.push_back(reissueTxOut);

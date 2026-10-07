@@ -67,7 +67,8 @@ class PQAssetAnchorTest(RavenTestFramework):
         node.generate(1)
         assert_equal(node.getblockcount(), 863)
         assert_equal(node.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'active')
-        assert_raises_rpc_error(-4, 'bad-pq-asset-output', node.issue,
+
+        assert_raises_rpc_error(-5, 'canonical classical|PQ asset destination', node.issue,
                                 'PQAFTERACTIVE', 1, legacy_address)
 
         # A rollback to the last pre-activation tip permits a legacy issue.
@@ -189,6 +190,22 @@ class PQAssetAnchorTest(RavenTestFramework):
         spend_txid = node.sendrawtransaction(spend_signed['hex'])
         mined = node.generate(1)
         assert spend_txid in node.getblock(mined[0])['tx']
+
+        # Wallet issuance must tag both the root asset and its owner token.
+        composite_address = legacy_address + '|' + pq_address
+        root_txid = node.issue('PQROOTRECIPIENT', 1, composite_address)[0]
+        root_tx = from_hex(CTransaction(), node.getrawtransaction(root_txid))
+        tagged_asset_outputs = [output for output in root_tx.vout
+                                if len(output.scriptPubKey) >= 32 and
+                                output.scriptPubKey[-32:] == program]
+        assert_equal(len(tagged_asset_outputs), 2)
+        for output in tagged_asset_outputs:
+            assert_equal(output.scriptPubKey[25], ASSET_OPCODE)
+        node.generate(1)
+        for owned_asset in ('PQROOTRECIPIENT', 'PQROOTRECIPIENT!'):
+            owned_info = node.listmyassets(owned_asset, True)[owned_asset]
+            assert_equal(owned_info['balance'], 1)
+            assert_equal(owned_info['outpoints'][0]['txid'], root_txid)
 
 
 if __name__ == '__main__':

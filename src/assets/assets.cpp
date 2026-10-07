@@ -4140,6 +4140,13 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
 {
     std::string change_address = EncodeDestination(coinControl.destChange);
 
+    bool pqAssetsActive;
+    {
+        LOCK(cs_main);
+        const int activationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
+        pqAssetsActive = activationHeight >= 0 && chainActive.Height() + 1 >= activationHeight;
+    }
+
     auto currentActiveAssetCache = GetCurrentAssetCache();
     // Validate the assets data
     std::string strError;
@@ -4150,7 +4157,18 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
         }
     }
 
-    if (!CheckSupportedAssetAddress(address, error)) {
+    CTxDestination assetDestination = DecodeDestination(address);
+    if (pqAssetsActive) {
+        CKeyID classicalKey;
+        uint256 program;
+        if (!DecodePQAssetDestination(address, classicalKey, program)) {
+            error = std::make_pair(RPC_INVALID_ADDRESS_OR_KEY,
+                "Active PQ asset issuance requires a canonical classical|PQ asset destination");
+            return false;
+        }
+        assetDestination = classicalKey;
+        coinControl.pqAssetDestinationProgram = program;
+    } else if (!CheckSupportedAssetAddress(address, error)) {
         return false;
     }
 
@@ -4305,7 +4323,7 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
         vecSend.push_back(rec);
     }
 
-    if (!pwallet->CreateTransactionWithAssets(vecSend, wtxNew, reservekey, nFeeRequired, nChangePosRet, strTxError, coinControl, assets, DecodeDestination(address), assetType)) {
+    if (!pwallet->CreateTransactionWithAssets(vecSend, wtxNew, reservekey, nFeeRequired, nChangePosRet, strTxError, coinControl, assets, assetDestination, assetType)) {
         if (!fSubtractFeeFromAmount && burnAmount + nFeeRequired > curBalance)
             strTxError = strprintf("Error: This transaction requires a transaction fee of at least %s", FormatMoney(nFeeRequired));
         error = std::make_pair(RPC_WALLET_ERROR, strTxError);
