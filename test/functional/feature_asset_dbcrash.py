@@ -8,7 +8,7 @@ import http.client
 import os
 
 from test_framework.test_framework import RavenTestFramework
-from test_framework.util import assert_equal
+from test_framework.util import assert_equal, wait_until
 
 
 class AssetReplayCrashTest(RavenTestFramework):
@@ -19,6 +19,12 @@ class AssetReplayCrashTest(RavenTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
+        def wait_for_recovered_tip(expected):
+            # RPC can respond before background import connects the final tip.
+            wait_until(lambda: self.nodes[0].getbestblockhash() == expected,
+                       err_msg='asset replay did not reach the expected tip',
+                       timeout=60)
+
         node.generate(432)
         assert_equal(node.getblockchaininfo()['bip9_softforks']['assets']['status'], 'active')
 
@@ -47,6 +53,7 @@ class AssetReplayCrashTest(RavenTestFramework):
 
         self.start_node(0, ['-assetindex', '-dbbatchsize=1', '-dbcache=1000'])
         node = self.nodes[0]
+        wait_for_recovered_tip(asset_block)
         assert_equal(node.getbestblockhash(), asset_block)
         with open(os.path.join(node.datadir, 'regtest', 'debug.log'), encoding='utf-8') as log:
             debug_log = log.read()
@@ -61,6 +68,7 @@ class AssetReplayCrashTest(RavenTestFramework):
         node.process.wait(timeout=10)
         self.start_node(0, ['-assetindex', '-dbbatchsize=1', '-dbcache=1000'])
         node = self.nodes[0]
+        wait_for_recovered_tip(asset_block)
         assert_equal(node.getbestblockhash(), asset_block)
         assert_equal(node.getassetdata(asset_name), asset_data)
 
@@ -82,6 +90,7 @@ class AssetReplayCrashTest(RavenTestFramework):
         node.wait_until_stopped()
         self.start_node(0, ['-assetindex', '-dbbatchsize=1', '-dbcache=1000'])
         node = self.nodes[0]
+        wait_for_recovered_tip(reissue_block)
         assert_equal(node.getbestblockhash(), reissue_block)
         assert_equal(node.getassetdata(asset_name), reissue_data)
 
@@ -106,6 +115,7 @@ class AssetReplayCrashTest(RavenTestFramework):
 
         self.start_node(0, ['-assetindex', '-dbcache=1000'])
         node = self.nodes[0]
+        wait_for_recovered_tip(later_block)
         assert_equal(node.getbestblockhash(), later_block)
         assert_equal(node.getassetdata(later_asset_name), later_asset_data)
 
