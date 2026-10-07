@@ -4098,6 +4098,68 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                             strFailReason = _("Insufficient asset funds");
                             return false;
                         }
+
+                        if (pqAssetsActive) {
+                            std::set<uint256> requiredPrograms;
+                            for (const CInputCoin& asset : setAssets) {
+                                const auto walletTx = mapWallet.find(asset.outpoint.hash);
+                                if (walletTx == mapWallet.end()) {
+                                    strFailReason = _("Selected asset input is missing from the wallet");
+                                    return false;
+                                }
+                                const CBlockIndex* originBlock = nullptr;
+                                const int depth = walletTx->second.GetDepthInMainChain(originBlock);
+                                if (depth > 0 && originBlock &&
+                                    originBlock->nHeight < pqAssetActivationHeight)
+                                    continue;
+                                uint256 program;
+                                if (!GetPQAssetProgram(asset.txout.scriptPubKey, program)) {
+                                    strFailReason = _("Active PQ asset input has no canonical program");
+                                    return false;
+                                }
+                                requiredPrograms.insert(program);
+                            }
+
+                            for (const uint256& program : requiredPrograms) {
+                                bool hasAnchor = false;
+                                for (const CInputCoin& coin : setCoins) {
+                                    int version = -1;
+                                    std::vector<unsigned char> witnessProgram;
+                                    if (coin.txout.scriptPubKey.IsWitnessProgram(version, witnessProgram) &&
+                                        version == 2 && witnessProgram.size() == 32 &&
+                                        std::equal(witnessProgram.begin(), witnessProgram.end(), program.begin())) {
+                                        hasAnchor = true;
+                                        break;
+                                    }
+                                }
+                                if (hasAnchor)
+                                    continue;
+
+                                for (const COutput& output : vAvailableCoins) {
+                                    if (!output.fSpendable)
+                                        continue;
+                                    const CInputCoin candidate(output.tx, output.i);
+                                    if (setCoins.count(candidate) ||
+                                        (coin_control.HasSelected() && !coin_control.fAllowOtherInputs &&
+                                         !coin_control.IsSelected(candidate.outpoint)))
+                                        continue;
+                                    int version = -1;
+                                    std::vector<unsigned char> witnessProgram;
+                                    if (!candidate.txout.scriptPubKey.IsWitnessProgram(version, witnessProgram) ||
+                                        version != 2 || witnessProgram.size() != 32 ||
+                                        !std::equal(witnessProgram.begin(), witnessProgram.end(), program.begin()))
+                                        continue;
+                                    setCoins.insert(candidate);
+                                    nValueIn += candidate.txout.nValue;
+                                    hasAnchor = true;
+                                    break;
+                                }
+                                if (!hasAnchor) {
+                                    strFailReason = _("Protected asset input requires a funded matching PQ anchor");
+                                    return false;
+                                }
+                            }
+                        }
                     }
                     /** RVN END */
                 }
@@ -4116,6 +4178,77 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
 
                     for (auto assetChange : mapAssetChange) {
                         if (assetChange.second > 0) {
+                            if (pqAssetsActive) {
+                                CTxDestination changeDestination;
+                                uint256 changeProgram;
+                                bool foundChange = false;
+                                if (!boost::get<CNoDestination>(&coin_control.assetDestChange)) {
+                                    if (!IsSupportedAssetDestination(coin_control.assetDestChange) ||
+                                        !coin_control.pqAssetChangeProgram) {
+                                        strFailReason = _("Active PQ asset change requires a canonical classical|PQ destination");
+                                        return false;
+                                    }
+                                    changeDestination = coin_control.assetDestChange;
+                                    changeProgram = *coin_control.pqAssetChangeProgram;
+                                    foundChange = true;
+                                } else {
+                                    for (const CInputCoin& asset : setAssets) {
+                                        CAssetOutputEntry source;
+                                        uint256 program;
+                                        if (!GetAssetData(asset.txout.scriptPubKey, source) ||
+                                            source.assetName != assetChange.first ||
+                                            !GetPQAssetProgram(asset.txout.scriptPubKey, program) ||
+                                            !HavePQKey(program))
+                                            continue;
+                                        const auto walletTx = mapWallet.find(asset.outpoint.hash);
+                                        if (walletTx == mapWallet.end())
+                                            continue;
+                                        const CBlockIndex* originBlock = nullptr;
+                                        const int depth = walletTx->second.GetDepthInMainChain(originBlock);
+                                        if (depth > 0 && originBlock &&
+                                            originBlock->nHeight < pqAssetActivationHeight)
+                                            continue;
+                                        if (IsAssetNameAnRestricted(assetChange.first)) {
+                                            CNullAssetTxVerifierString verifier;
+                                            if (!passets->GetAssetVerifierStringIfExists(assetChange.first, verifier)) {
+                                                strFailReason = _("Verifier string for restricted asset change not found");
+                                                return false;
+                                            }
+                                            std::string verifierError;
+                                            if (!ContextualCheckVerifierString(
+                                                    passets, verifier.verifier_string,
+                                                    EncodeDestination(source.destination), verifierError))
+                                                continue;
+                                        }
+                                        changeDestination = source.destination;
+                                        changeProgram = program;
+                                        foundChange = true;
+                                        break;
+                                    }
+                                }
+                                if (!foundChange) {
+                                    strFailReason = _("Active PQ asset change requires a protected source or explicit PQ change destination");
+                                    return false;
+                                }
+                                if (IsAssetNameAnRestricted(assetChange.first)) {
+                                    CNullAssetTxVerifierString verifier;
+                                    if (!passets->GetAssetVerifierStringIfExists(assetChange.first, verifier) ||
+                                        !ContextualCheckVerifierString(
+                                            passets, verifier.verifier_string,
+                                            EncodeDestination(changeDestination), strFailReason))
+                                        return false;
+                                }
+                                CScript scriptAssetChange = GetScriptForDestination(changeDestination);
+                                CAssetTransfer assetTransfer(assetChange.first, assetChange.second);
+                                assetTransfer.ConstructTransaction(scriptAssetChange);
+                                CScript tagged;
+                                if (!BuildPQAssetTaggedScript(scriptAssetChange, changeProgram, tagged)) {
+                                    strFailReason = _("Could not construct canonical PQ asset change");
+                                    return false;
+                                }
+                                txNew.vout.emplace_back(0, tagged);
+                                continue;
+                            }
                             if (IsAssetNameAnRestricted(assetChange.first))
                             {
                                 // Get the verifier string for the restricted asset

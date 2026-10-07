@@ -4525,6 +4525,13 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
 // nullGlobalRestrictionData -> Use this to globally freeze/unfreeze a restricted asset.
 bool CreateTransferAssetTransaction(CWallet* pwallet, const CCoinControl& coinControl, const std::vector< std::pair<CAssetTransfer, std::string> >vTransfers, const std::string& changeAddress, std::pair<int, std::string>& error, CWalletTx& wtxNew, CReserveKey& reservekey, CAmount& nFeeRequired, std::vector<std::pair<CNullAssetTxData, std::string> >* nullAssetTxData, std::vector<CNullAssetTxData>* nullGlobalRestrictionData)
 {
+    bool pqAssetsActive;
+    {
+        LOCK(cs_main);
+        const int activationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
+        pqAssetsActive = activationHeight >= 0 && chainActive.Height() + 1 >= activationHeight;
+    }
+
     // Initialize Values for transaction
     std::string strTxError;
     std::vector<CRecipient> vecSend;
@@ -4560,9 +4567,20 @@ bool CreateTransferAssetTransaction(CWallet* pwallet, const CCoinControl& coinCo
         CAmount nAmount = transfer.first.nAmount;
         int64_t expireTime = transfer.first.nExpireTime;
 
-        if (!CheckSupportedAssetAddress(address, error)) {
+        CTxDestination assetDestination = DecodeDestination(address);
+        uint256 pqProgram;
+        if (pqAssetsActive) {
+            CKeyID classicalKey;
+            if (!DecodePQAssetDestination(address, classicalKey, pqProgram)) {
+                error = std::make_pair(RPC_INVALID_ADDRESS_OR_KEY,
+                    "Active PQ asset transfer requires a canonical classical|PQ asset destination");
+                return false;
+            }
+            assetDestination = classicalKey;
+        } else if (!CheckSupportedAssetAddress(address, error)) {
             return false;
         }
+        const std::string classicalAddress = EncodeDestination(assetDestination);
         auto currentActiveAssetCache = GetCurrentAssetCache();
         if (!currentActiveAssetCache) {
             error = std::make_pair(RPC_DATABASE_ERROR, std::string("passets isn't initialized"));
@@ -4591,7 +4609,7 @@ bool CreateTransferAssetTransaction(CWallet* pwallet, const CCoinControl& coinCo
                 return false;
             }
 
-            if (!transfer.first.ContextualCheckAgainstVerifyString(passets, address, strError)) {
+            if (!transfer.first.ContextualCheckAgainstVerifyString(passets, classicalAddress, strError)) {
                 error = std::make_pair(RPC_INVALID_PARAMETER, strError);
                 return false;
             }
@@ -4613,11 +4631,20 @@ bool CreateTransferAssetTransaction(CWallet* pwallet, const CCoinControl& coinCo
         }
 
         // Get the script for the burn address
-        CScript scriptPubKey = GetScriptForDestination(DecodeDestination(address));
+        CScript scriptPubKey = GetScriptForDestination(assetDestination);
 
         // Update the scriptPubKey with the transfer asset information
         CAssetTransfer assetTransfer(asset_name, nAmount, message, expireTime);
         assetTransfer.ConstructTransaction(scriptPubKey);
+        if (pqAssetsActive) {
+            CScript tagged;
+            if (!BuildPQAssetTaggedScript(scriptPubKey, pqProgram, tagged)) {
+                error = std::make_pair(RPC_TRANSACTION_ERROR,
+                    "Could not construct a canonical PQ asset transfer output");
+                return false;
+            }
+            scriptPubKey = std::move(tagged);
+        }
 
         CRecipient recipient = {scriptPubKey, 0, fSubtractFeeFromAmount};
         vecSend.push_back(recipient);

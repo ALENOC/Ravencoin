@@ -1193,7 +1193,10 @@ UniValue transfer(const JSONRPCRequest& request)
 
     std::string to_address = request.params[2].get_str();
     CTxDestination to_dest = DecodeDestination(to_address);
-    if (!IsValidDestination(to_dest)) {
+    CKeyID classicalKey;
+    uint256 pqProgram;
+    if (!IsValidDestination(to_dest) &&
+        !DecodePQAssetDestination(to_address, classicalKey, pqProgram)) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + to_address);
     }
 
@@ -1236,8 +1239,23 @@ UniValue transfer(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_INVALID_PARAMETER, std::string("RVN change address must be a valid address. Invalid address: ") + rvn_change_address);
 
     CTxDestination asset_change_dest = DecodeDestination(asset_change_address);
-    if (!asset_change_address.empty() && !IsValidDestination(asset_change_dest))
-        throw JSONRPCError(RPC_INVALID_PARAMETER, std::string("Asset change address must be a valid address. Invalid address: ") + asset_change_address);
+    uint256 assetChangeProgram;
+    bool hasPQAssetChange = false;
+    if (!asset_change_address.empty()) {
+        const int activationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
+        const bool pqAssetsActive = activationHeight >= 0 && chainActive.Height() + 1 >= activationHeight;
+        if (pqAssetsActive) {
+            CKeyID classicalKey;
+            if (!DecodePQAssetDestination(asset_change_address, classicalKey, assetChangeProgram))
+                throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                    "Active PQ asset change requires a canonical classical|PQ asset destination");
+            asset_change_dest = classicalKey;
+            hasPQAssetChange = true;
+        } else if (!IsValidDestination(asset_change_dest)) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                std::string("Asset change address must be a valid address. Invalid address: ") + asset_change_address);
+        }
+    }
 
     std::pair<int, std::string> error;
     std::vector< std::pair<CAssetTransfer, std::string> >vTransfers;
@@ -1252,6 +1270,8 @@ UniValue transfer(const JSONRPCRequest& request)
     CCoinControl ctrl;
     ctrl.destChange = rvn_change_dest;
     ctrl.assetDestChange = asset_change_dest;
+    if (hasPQAssetChange)
+        ctrl.pqAssetChangeProgram = assetChangeProgram;
 
     // Create the Transaction
     if (!CreateTransferAssetTransaction(pwallet, ctrl, vTransfers, "", error, transaction, reservekey, nRequiredFee))

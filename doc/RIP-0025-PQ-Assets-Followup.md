@@ -113,18 +113,19 @@ The working branch now defines a wallet-facing, network-bound descriptor of
 the form `<classical-P2PKH-address>|<PQ-witness-v2-address>`. Its decoder
 requires exactly one separator, the expected destination types, and exact
 canonical re-encoding on the selected network. The descriptor is not a
-consensus script, not a native RVN payment address, and is not yet accepted
-by transfer or reissue RPCs. Active bit 13 root issuance accepts it, and
+consensus script, not a native RVN payment address. Active bit 13 root
+issuance and the basic `transfer` RPC accept it, and
 `getnewpqassetaddress` generates both wallet keys only after the dependent
 asset rule is active. A single Bech32m address cannot be used
 for the two independent keys without defining a new encoding and changing
 the existing address-length assumptions. The descriptor must be split before
 restricted-asset verifier or qualifier-index lookups: those indexes remain
-keyed by the classical address. Root issuance is the only wallet RPC that
-currently accepts the descriptor, since it creates no protected asset input.
-Other asset RPCs must not accept it until tagged output construction,
-matching PQ anchor funding and selection, change, and signing are integrated
-and tested together.
+keyed by the classical address. The basic transfer path selects a matching
+funded native PQ anchor and returns partial asset change to a protected
+source or an explicit change descriptor. It does not replenish a consumed
+anchor. Reissue, subasset, unique, restricted, qualifier, administrative,
+and raw asset RPCs must not claim complete support until their tagged outputs,
+anchor handling, change, and signing are integrated and tested together.
 
 Required wallet behavior includes:
 
@@ -306,10 +307,11 @@ check, but template selection and package policy still need boundary tests.
 
 The candidate permits one valid native witness-v2 anchor input to authorize
 several protected asset inputs with the identical program. A different
-program requires a different anchor input. An output does not itself have to
-create a funded anchor, so wallet design must guarantee that the recipient
-can obtain and refresh one before a protected spend. This is a release-blocking
-funding and usability question. Bit 13 is assigned but dormant.
+program requires a different anchor input. The basic wallet transfer path
+now selects a funded matching anchor and signs it, but an output does not
+itself create a fresh anchor. The recipient must fund one, and an asset
+holder must replenish it after a protected spend. Automatic funding and
+refresh remain release-blocking. Bit 13 is assigned but dormant.
 
 ## 15. 4.8.1 Integration Candidate and Release Gate
 

@@ -202,7 +202,7 @@ class PQAssetAnchorTest(RavenTestFramework):
         descriptor_script = bytes.fromhex(node.validateaddress(pq_part)['scriptPubKey'])
         assert_equal(descriptor_script[:2], b'\x52\x20')
         descriptor_program = descriptor_script[2:]
-        root_txid = node.issue('PQROOTRECIPIENT', 1, composite_address)[0]
+        root_txid = node.issue('PQROOTRECIPIENT', 10, composite_address)[0]
         root_tx = from_hex(CTransaction(), node.getrawtransaction(root_txid))
         tagged_asset_outputs = [output for output in root_tx.vout
                                 if len(output.scriptPubKey) >= 32 and
@@ -211,10 +211,101 @@ class PQAssetAnchorTest(RavenTestFramework):
         for output in tagged_asset_outputs:
             assert_equal(output.scriptPubKey[25], ASSET_OPCODE)
         node.generate(1)
-        for owned_asset in ('PQROOTRECIPIENT', 'PQROOTRECIPIENT!'):
+        for owned_asset, expected_balance in (('PQROOTRECIPIENT', 10),
+                                              ('PQROOTRECIPIENT!', 1)):
             owned_info = node.listmyassets(owned_asset, True)[owned_asset]
-            assert_equal(owned_info['balance'], 1)
+            assert_equal(owned_info['balance'], expected_balance)
             assert_equal(owned_info['outpoints'][0]['txid'], root_txid)
+
+        # Spending the issued asset must consume a funded native input with
+        # the source program, even when the recipient uses a different key.
+        destination_descriptor = node.getnewpqassetaddress()
+        _, destination_pq = destination_descriptor.split('|')
+        destination_script = bytes.fromhex(node.validateaddress(destination_pq)['scriptPubKey'])
+        destination_program = destination_script[2:]
+        assert_raises_rpc_error(-25, 'funded matching PQ anchor',
+                                node.transfer, 'PQROOTRECIPIENT', 1,
+                                destination_descriptor)
+        source_anchor_txid = node.sendtoaddress(pq_part, Decimal('1'))
+        node.generate(1)
+        source_anchor_vout = self.output_index(
+            node.getrawtransaction(source_anchor_txid),
+            lambda script: script == descriptor_script)
+        other_native_coins = [
+            {'txid': coin['txid'], 'vout': coin['vout']}
+            for coin in node.listunspent()
+            if (coin['txid'], coin['vout']) !=
+            (source_anchor_txid, source_anchor_vout) and not coin.get('assetName')
+        ]
+        assert other_native_coins
+        assert_equal(node.lockunspent(False, other_native_coins), True)
+        transfer_txid = node.transfer('PQROOTRECIPIENT', 1,
+                                    destination_descriptor)[0]
+        transfer_tx = from_hex(CTransaction(), node.getrawtransaction(transfer_txid))
+        anchor_vin = [index for index, txin in enumerate(transfer_tx.vin)
+                      if txin.prevout.hash == int(source_anchor_txid, 16) and
+                      txin.prevout.n == source_anchor_vout]
+        assert_equal(len(anchor_vin), 1)
+        assert_equal(len(transfer_tx.wit.vtxinwit[anchor_vin[0]].scriptWitness.stack), 2)
+        transferred = [output for output in transfer_tx.vout
+                       if len(output.scriptPubKey) > 57 and
+                       output.scriptPubKey[25] == ASSET_OPCODE and
+                       output.scriptPubKey[-32:] == destination_program]
+        assert_equal(len(transferred), 1)
+        protected_change = [output for output in transfer_tx.vout
+                            if len(output.scriptPubKey) > 57 and
+                            output.scriptPubKey[25] == ASSET_OPCODE and
+                            output.scriptPubKey[-32:] == descriptor_program]
+        assert_equal(len(protected_change), 1)
+        node.generate(1)
+        assert_equal(node.listmyassets('PQROOTRECIPIENT', True)
+                     ['PQROOTRECIPIENT']['balance'], 10)
+
+        # Owner tokens use the same protected transfer and anchor rules.
+        assert_raises_rpc_error(-25, 'funded matching PQ anchor',
+                                node.transfer, 'PQROOTRECIPIENT!', 1,
+                                destination_descriptor)
+        assert_equal(node.lockunspent(True), True)
+        node.sendtoaddress(pq_part, Decimal('1'))
+        node.generate(1)
+        owner_transfer_txid = node.transfer(
+            'PQROOTRECIPIENT!', 1, destination_descriptor)[0]
+        owner_transfer = from_hex(
+            CTransaction(), node.getrawtransaction(owner_transfer_txid))
+        owner_outputs = [
+            output for output in owner_transfer.vout
+            if len(output.scriptPubKey) > 57 and
+            output.scriptPubKey[25] == ASSET_OPCODE and
+            output.scriptPubKey[-32:] == destination_program
+        ]
+        assert_equal(len(owner_outputs), 1)
+        node.generate(1)
+        assert_equal(node.listmyassets('PQROOTRECIPIENT!', True)
+                     ['PQROOTRECIPIENT!']['balance'], 1)
+
+        # An explicit asset change descriptor must preserve its own PQ key.
+        assert_equal(node.lockunspent(True), True)
+        node.sendtoaddress(pq_part, Decimal('1'))
+        node.generate(1)
+        explicit_change = node.getnewpqassetaddress()
+        _, explicit_change_pq = explicit_change.split('|')
+        explicit_change_script = bytes.fromhex(
+            node.validateaddress(explicit_change_pq)['scriptPubKey'])
+        next_destination = node.getnewpqassetaddress()
+        explicit_transfer_txid = node.transfer(
+            'PQROOTRECIPIENT', 2, next_destination, '', 0, '', explicit_change)[0]
+        explicit_transfer = from_hex(
+            CTransaction(), node.getrawtransaction(explicit_transfer_txid))
+        explicit_change_outputs = [
+            output for output in explicit_transfer.vout
+            if len(output.scriptPubKey) > 57 and
+            output.scriptPubKey[25] == ASSET_OPCODE and
+            output.scriptPubKey[-32:] == explicit_change_script[2:]
+        ]
+        assert_equal(len(explicit_change_outputs), 1)
+        node.generate(1)
+        assert_equal(node.listmyassets('PQROOTRECIPIENT', True)
+                     ['PQROOTRECIPIENT']['balance'], 10)
 
 
 if __name__ == '__main__':
