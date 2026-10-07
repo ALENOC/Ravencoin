@@ -259,6 +259,38 @@ UniValue getnewpqaddress(const JSONRPCRequest& request)
     return EncodeDestination(dest);
 }
 
+UniValue getnewpqassetaddress(const JSONRPCRequest& request)
+{
+    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) return NullUniValue;
+    if (request.fHelp || request.params.size() > 1)
+        throw std::runtime_error("getnewpqassetaddress ( \"account\" )\nReturns a classical|PQ asset destination for active RIP-25 asset rules.\n");
+    LOCK2(cs_main, pwallet->cs_wallet);
+
+    const int activationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
+    if (activationHeight < 0 || chainActive.Height() + 1 < activationHeight)
+        throw JSONRPCError(RPC_WALLET_ERROR, "PQ asset rules are not active; refusing to generate an unprotected asset destination");
+    EnsureWalletIsUnlocked(pwallet);
+
+    std::string account;
+    if (!request.params[0].isNull()) account = AccountFromValue(request.params[0]);
+    pwallet->TopUpKeyPool();
+    CReserveKey reserveClassicalKey(pwallet);
+    CPubKey classicalPubKey;
+    if (!reserveClassicalKey.GetReservedKey(classicalPubKey))
+        throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out, please call keypoolrefill first");
+    CPQPubKey pqPubKey;
+    if (!pwallet->GenerateNewPQKey(pqPubKey))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to derive and persist ML-DSA-44 keypair");
+    reserveClassicalKey.KeepKey();
+
+    const CKeyID classicalKey = classicalPubKey.GetID();
+    const WitnessV2PQDestination pqDestination(pqPubKey.GetWitnessProgram());
+    pwallet->SetAddressBook(classicalKey, account, "receive");
+    pwallet->SetAddressBook(pqDestination, account, "receive");
+    return EncodePQAssetDestination(classicalKey, pqDestination.witnessProgram);
+}
+
 CTxDestination GetAccountAddress(CWallet* const pwallet, std::string strAccount, bool bForceNew=false)
 {
     CPubKey pubKey;
@@ -3588,6 +3620,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "getmywords",               &getmywords,                        {} },
     { "wallet",             "getnewaddress",            &getnewaddress,            {"account"} },
     { "wallet",             "getnewpqaddress",          &getnewpqaddress,          {"account"} },
+    { "wallet",             "getnewpqassetaddress",     &getnewpqassetaddress,     {"account"} },
     { "wallet",             "getrawchangeaddress",      &getrawchangeaddress,      {} },
     { "wallet",             "getreceivedbyaccount",     &getreceivedbyaccount,     {"account","minconf"} },
     { "wallet",             "getreceivedbyaddress",     &getreceivedbyaddress,     {"address","minconf"} },

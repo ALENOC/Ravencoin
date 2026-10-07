@@ -63,6 +63,8 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(node.getblockcount(), 862)
         assert_equal(node.getblockchaininfo()['bip9_softforks']['pq_assets']['status'], 'active')
         assert_equal(node.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'locked_in')
+        assert_raises_rpc_error(-4, 'PQ asset rules are not active',
+                                node.getnewpqassetaddress)
 
         node.generate(1)
         assert_equal(node.getblockcount(), 863)
@@ -192,12 +194,19 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert spend_txid in node.getblock(mined[0])['tx']
 
         # Wallet issuance must tag both the root asset and its owner token.
-        composite_address = legacy_address + '|' + pq_address
+        composite_address = node.getnewpqassetaddress()
+        assert_equal(composite_address.count('|'), 1)
+        classical_part, pq_part = composite_address.split('|')
+        assert_equal(node.validateaddress(classical_part)['ismine'], True)
+        assert_equal(node.validateaddress(pq_part)['ismine'], True)
+        descriptor_script = bytes.fromhex(node.validateaddress(pq_part)['scriptPubKey'])
+        assert_equal(descriptor_script[:2], b'\x52\x20')
+        descriptor_program = descriptor_script[2:]
         root_txid = node.issue('PQROOTRECIPIENT', 1, composite_address)[0]
         root_tx = from_hex(CTransaction(), node.getrawtransaction(root_txid))
         tagged_asset_outputs = [output for output in root_tx.vout
                                 if len(output.scriptPubKey) >= 32 and
-                                output.scriptPubKey[-32:] == program]
+                                output.scriptPubKey[-32:] == descriptor_program]
         assert_equal(len(tagged_asset_outputs), 2)
         for output in tagged_asset_outputs:
             assert_equal(output.scriptPubKey[25], ASSET_OPCODE)

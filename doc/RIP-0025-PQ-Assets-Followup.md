@@ -114,13 +114,17 @@ the form `<classical-P2PKH-address>|<PQ-witness-v2-address>`. Its decoder
 requires exactly one separator, the expected destination types, and exact
 canonical re-encoding on the selected network. The descriptor is not a
 consensus script, not a native RVN payment address, and is not yet accepted
-by asset issuance or transfer RPCs. A single Bech32m address cannot be used
+by transfer or reissue RPCs. Active bit 13 root issuance accepts it, and
+`getnewpqassetaddress` generates both wallet keys only after the dependent
+asset rule is active. A single Bech32m address cannot be used
 for the two independent keys without defining a new encoding and changing
 the existing address-length assumptions. The descriptor must be split before
 restricted-asset verifier or qualifier-index lookups: those indexes remain
-keyed by the classical address. No asset RPC should accept the descriptor
-until tagged output construction, matching PQ anchor funding and selection,
-change, and signing are integrated and tested together.
+keyed by the classical address. Root issuance is the only wallet RPC that
+currently accepts the descriptor, since it creates no protected asset input.
+Other asset RPCs must not accept it until tagged output construction,
+matching PQ anchor funding and selection, change, and signing are integrated
+and tested together.
 
 Required wallet behavior includes:
 
