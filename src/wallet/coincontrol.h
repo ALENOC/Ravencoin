@@ -28,6 +28,8 @@ public:
 
     //! If false, allows unselected inputs, but requires all selected inputs be used
     bool fAllowOtherInputs;
+    //! Restrict asset inputs to selected outpoints without changing native RVN input selection.
+    bool fRequireSelectedAssetInputs;
     //! Includes watch only addresses which match the ISMINE_WATCH_SOLVABLE criteria
     bool fAllowWatchOnly;
     //! Override automatic min/max checks on fee, m_feerate must be set if true
@@ -58,6 +60,7 @@ public:
         pqAssetDestinationProgram.reset();
         pqAssetChangeProgram.reset();
         fAllowOtherInputs = false;
+        fRequireSelectedAssetInputs = false;
         fAllowWatchOnly = false;
         setSelected.clear();
         m_feerate.reset();

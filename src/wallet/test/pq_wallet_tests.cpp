@@ -579,6 +579,110 @@ struct PQWalletDatabaseTestingSetup : public TestingSetup
 
 BOOST_FIXTURE_TEST_SUITE(pq_wallet_tests, PQWalletDatabaseTestingSetup)
 
+BOOST_AUTO_TEST_CASE(protected_asset_destination_pair_survives_reload)
+{
+    const std::string filename = "pq-asset-destination-pair-wallet.dat";
+    CKey classicalKey;
+    CKey otherClassicalKey;
+    classicalKey.MakeNewKey(true);
+    otherClassicalKey.MakeNewKey(true);
+    CPQKey pqKey;
+    CPQKey otherPQKey;
+    pqKey.MakeNewKey();
+    otherPQKey.MakeNewKey();
+    BOOST_REQUIRE(pqKey.IsValid());
+    BOOST_REQUIRE(otherPQKey.IsValid());
+    const uint256 pqProgram = pqKey.GetPubKey().GetWitnessProgram();
+    const uint256 otherProgram = otherPQKey.GetPubKey().GetWitnessProgram();
+    const std::string descriptor = EncodePQAssetDestination(classicalKey.GetPubKey().GetID(), pqProgram);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        LOCK(wallet->cs_wallet);
+        BOOST_REQUIRE(wallet->AddKeyPubKey(classicalKey, classicalKey.GetPubKey()));
+        BOOST_REQUIRE(wallet->AddKeyPubKey(otherClassicalKey, otherClassicalKey.GetPubKey()));
+        BOOST_REQUIRE(wallet->AddPQKeyPubKey(pqKey, pqKey.GetPubKey()));
+        BOOST_REQUIRE(wallet->AddPQKeyPubKey(otherPQKey, otherPQKey.GetPubKey()));
+        BOOST_REQUIRE(wallet->StoreOwnedPQAssetDestination(classicalKey.GetPubKey().GetID(), pqProgram));
+        BOOST_CHECK(wallet->StoreOwnedPQAssetDestination(classicalKey.GetPubKey().GetID(), pqProgram));
+        BOOST_CHECK(!wallet->StoreOwnedPQAssetDestination(classicalKey.GetPubKey().GetID(), otherProgram));
+        BOOST_CHECK(!wallet->StoreOwnedPQAssetDestination(otherClassicalKey.GetPubKey().GetID(), pqProgram));
+        BOOST_CHECK(wallet->GetOwnedPQAssetDestinations() == std::vector<std::string>{descriptor});
+    }
+    bitdb.Flush(false);
+
+    std::unique_ptr<CWallet> reloaded = LoadPQWallet(filename);
+    BOOST_CHECK(reloaded->GetOwnedPQAssetDestinations() == std::vector<std::string>{descriptor});
+    BOOST_REQUIRE(reloaded->LoadDestData(
+        otherClassicalKey.GetPubKey().GetID(), "pqasset:destination:v1", descriptor));
+    BOOST_CHECK(reloaded->GetOwnedPQAssetDestinations() == std::vector<std::string>{descriptor});
+
+    CWallet unrelatedWallet;
+    BOOST_REQUIRE(unrelatedWallet.LoadDestData(
+        classicalKey.GetPubKey().GetID(), "pqasset:destination:v1", descriptor));
+    BOOST_CHECK(unrelatedWallet.GetOwnedPQAssetDestinations().empty());
+}
+
+BOOST_AUTO_TEST_CASE(protected_asset_destination_pair_survives_key_only_recovery)
+{
+    const std::string filename = "pq-asset-pair-salvage-wallet.dat";
+    CKey classicalKey;
+    classicalKey.MakeNewKey(true);
+    CPQKey pqKey;
+    pqKey.MakeNewKey();
+    BOOST_REQUIRE(pqKey.IsValid());
+    const CKeyID classicalId = classicalKey.GetPubKey().GetID();
+    const uint256 pqProgram = pqKey.GetPubKey().GetWitnessProgram();
+    const std::string descriptor = EncodePQAssetDestination(classicalId, pqProgram);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        LOCK(wallet->cs_wallet);
+        BOOST_REQUIRE(wallet->AddKeyPubKey(classicalKey, classicalKey.GetPubKey()));
+        BOOST_REQUIRE(wallet->AddPQKeyPubKey(pqKey, pqKey.GetPubKey()));
+        BOOST_REQUIRE(wallet->StoreOwnedPQAssetDestination(classicalId, pqProgram));
+    }
+    bitdb.Flush(false);
+
+    CWallet dummyWallet;
+    std::string backupFilename;
+    BOOST_REQUIRE(CWalletDB::Recover(
+        filename, &dummyWallet, CWalletDB::RecoverKeysOnlyFilter, backupFilename));
+    bitdb.Flush(false);
+
+    std::unique_ptr<CWallet> recovered = LoadPQWallet(filename);
+    BOOST_CHECK(recovered->GetOwnedPQAssetDestinations() ==
+                std::vector<std::string>{descriptor});
+
+    auto retainedDestData = [&](const std::string& address, const std::string& key,
+                                const std::string& value, bool trailing) {
+        CWallet filterWallet;
+        CDataStream dbKey(SER_DISK, CLIENT_VERSION);
+        CDataStream dbValue(SER_DISK, CLIENT_VERSION);
+        dbKey << std::string("destdata") << address << key;
+        dbValue << value;
+        if (trailing)
+            dbValue << uint8_t{1};
+        return CWalletDB::RecoverKeysOnlyFilter(
+            &filterWallet, std::move(dbKey), std::move(dbValue));
+    };
+    BOOST_CHECK(retainedDestData(EncodeDestination(classicalId),
+                                 "pqasset:destination:v1", descriptor, false));
+    BOOST_CHECK(!retainedDestData(EncodeDestination(classicalId),
+                                  "pqasset:destination:v1", "invalid", false));
+    CKey otherClassicalKey;
+    otherClassicalKey.MakeNewKey(true);
+    BOOST_CHECK(!retainedDestData(
+        EncodeDestination(otherClassicalKey.GetPubKey().GetID()),
+        "pqasset:destination:v1", descriptor, false));
+    BOOST_CHECK(!retainedDestData(EncodeDestination(classicalId),
+                                  "pqasset:destination:v1", descriptor, true));
+    BOOST_CHECK(!retainedDestData(EncodeDestination(classicalId),
+                                  "pqasset:destination:v1", std::string(300, 'x'), false));
+    BOOST_CHECK(!retainedDestData(EncodeDestination(classicalId),
+                                  "unrelated:metadata", descriptor, false));
+}
+
 BOOST_AUTO_TEST_CASE(pending_mnemonic_input_is_single_consumption)
 {
     ScopedMnemonicInput restoreInput;

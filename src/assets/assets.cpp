@@ -3707,6 +3707,24 @@ bool GetPQAssetProgram(const CScript& script, uint256& program)
     return true;
 }
 
+std::string EncodeContextualAssetDestination(const CScript& script,
+                                             int originHeight, int pqAssetActivationHeight)
+{
+    CTxDestination destination;
+    if (!ExtractDestination(script, destination))
+        return std::string();
+
+    if (pqAssetActivationHeight >= 0 &&
+        (originHeight < 0 || originHeight >= pqAssetActivationHeight)) {
+        const CKeyID* classicalKey = boost::get<CKeyID>(&destination);
+        uint256 program;
+        if (!classicalKey || !GetPQAssetProgram(script, program))
+            return std::string();
+        return EncodePQAssetDestination(*classicalKey, program);
+    }
+    return EncodeDestination(destination);
+}
+
 bool BuildPQAssetTaggedScript(const CScript& legacyScript, const uint256& program, CScript& taggedScript)
 {
     // The legacy asset indexer requires the P2PKH envelope and a single,
@@ -4129,13 +4147,33 @@ bool SelectSupportedAssetChangeAddress(CWallet* pwallet, CCoinControl& coinContr
 
 bool SelectProtectedAssetReturn(CWallet* pwallet, const std::string& authorityName,
                                 CTxDestination& destination, uint256& program,
-                                std::pair<int, std::string>& error)
+                                std::pair<int, std::string>& error,
+                                CCoinControl* coinControl = nullptr)
 {
+    LOCK2(cs_main, pwallet->cs_wallet);
+    const int activationHeight = GetPQAssetActivationHeightForPrev(
+        chainActive.Tip(), GetParams().GetConsensus());
     std::map<std::string, std::vector<COutput>> available;
     pwallet->AvailableAssets(available);
+    std::vector<COutput> nativeCoins;
+    pwallet->AvailableCoins(nativeCoins, true, coinControl);
+    std::vector<COutPoint> selectedAssets;
+    if (coinControl && coinControl->HasAssetSelected()) {
+        coinControl->ListSelectedAssets(selectedAssets);
+        if (selectedAssets.size() != 1) {
+            error = std::make_pair(RPC_WALLET_ERROR,
+                "Active PQ authority operation requires exactly one selected authority input");
+            return false;
+        }
+    }
+
+    bool hasProtectedAuthority = false;
     const auto ownerCoins = available.find(authorityName);
     if (ownerCoins != available.end()) {
         for (const COutput& output : ownerCoins->second) {
+            const COutPoint outpoint(output.tx->GetHash(), output.i);
+            if (!selectedAssets.empty() && selectedAssets.front() != outpoint)
+                continue;
             if (!output.fSpendable ||
                 !GetPQAssetProgram(output.tx->tx->vout[output.i].scriptPubKey, program) ||
                 !pwallet->HavePQKey(program))
@@ -4145,12 +4183,36 @@ bool SelectProtectedAssetReturn(CWallet* pwallet, const std::string& authorityNa
                 authority.assetName != authorityName ||
                 !IsSupportedAssetDestination(authority.destination))
                 continue;
+            hasProtectedAuthority = true;
+            const CBlockIndex* originBlock = nullptr;
+            const int depth = output.tx->GetDepthInMainChain(originBlock);
+            const bool historical = depth > 0 && originBlock &&
+                originBlock->nHeight < activationHeight;
+            const bool hasAnchor = std::any_of(nativeCoins.begin(), nativeCoins.end(),
+                [&](const COutput& coin) {
+                    if (!coin.fSpendable)
+                        return false;
+                    int version = -1;
+                    std::vector<unsigned char> witnessProgram;
+                    return coin.tx->tx->vout[coin.i].scriptPubKey.IsWitnessProgram(version, witnessProgram) &&
+                           version == 2 && witnessProgram.size() == 32 &&
+                           std::equal(witnessProgram.begin(), witnessProgram.end(), program.begin());
+                });
+            if (!historical && !hasAnchor)
+                continue;
             destination = authority.destination;
+            if (coinControl) {
+                coinControl->SelectAsset(outpoint);
+                coinControl->fRequireSelectedAssetInputs = true;
+            }
             return true;
         }
     }
-    error = std::make_pair(RPC_WALLET_ERROR,
-        "Active PQ asset operation requires an owned protected authority asset; migrate the legacy authority first");
+    error = hasProtectedAuthority
+        ? std::make_pair(RPC_WALLET_ERROR,
+            "Active PQ authority operation requires a funded matching PQ anchor")
+        : std::make_pair(RPC_WALLET_ERROR,
+            "Active PQ asset operation requires an owned protected authority asset; migrate the legacy authority first");
     return false;
 }
 
@@ -4221,7 +4283,7 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
             error = std::make_pair(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + change_address);
             return false;
         }
-    } else {
+    } else if (!pqAssetsActive) {
         // no coin control: send change to newly generated address
         CKeyID keyID;
         std::string strFailReason;
@@ -4270,7 +4332,7 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
             : (assetType == AssetType::RESTRICTED ? parentName.substr(1) : parentName) + OWNER_TAG;
         if (!SelectProtectedAssetReturn(pwallet, authorityName,
                                         parentDestination, protectedParentProgram,
-                                        error))
+                                        error, &coinControl))
             return false;
         asset_change_address = EncodeDestination(parentDestination);
         coinControl.assetDestChange = parentDestination;
@@ -4467,7 +4529,7 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
             error = std::make_pair(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + change_address);
             return false;
         }
-    } else {
+    } else if (!pqAssetsActive) {
         CKeyID keyID;
         std::string strFailReason;
         if (!pwallet->CreateNewChangeAddress(reservekey, keyID, strFailReason)) {
@@ -4561,7 +4623,7 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
     uint256 ownerReturnProgram;
     if (pqAssetsActive &&
         !SelectProtectedAssetReturn(pwallet, ownerName, ownerReturnDestination,
-                                    ownerReturnProgram, error))
+                                    ownerReturnProgram, error, &coinControl))
         return false;
     CScript scriptTransferOwnerAsset = GetScriptForDestination(ownerReturnDestination);
     CAssetTransfer ownerTransfer(ownerName, OWNER_ASSET_AMOUNT);
@@ -4660,6 +4722,7 @@ bool CreateTransferAssetTransaction(CWallet* pwallet, const CCoinControl& coinCo
     std::vector<CRecipient> vecSend;
     int nChangePosRet = -1;
     bool fSubtractFeeFromAmount = false;
+    CCoinControl selectedCoinControl = coinControl;
 
     if (!boost::get<CNoDestination>(&coinControl.assetDestChange) &&
         !IsSupportedAssetDestination(coinControl.assetDestChange)) {
@@ -4837,8 +4900,24 @@ bool CreateTransferAssetTransaction(CWallet* pwallet, const CCoinControl& coinCo
         }
     }
 
+    // Administrative commands spend one protected authority outpoint. Pin
+    // that outpoint to a funded matching native PQ anchor before coin selection.
+    if (pqAssetsActive && (nullAssetTxData || nullGlobalRestrictionData)) {
+        if (vTransfers.size() != 1) {
+            error = std::make_pair(RPC_INVALID_PARAMETER,
+                "Active PQ administrative operation requires one authority transfer");
+            return false;
+        }
+        CTxDestination authorityDestination;
+        uint256 authorityProgram;
+        if (!SelectProtectedAssetReturn(pwallet, vTransfers.front().first.strName,
+                                        authorityDestination, authorityProgram,
+                                        error, &selectedCoinControl))
+            return false;
+    }
+
     // Create and send the transaction
-    if (!pwallet->CreateTransactionWithTransferAsset(vecSend, wtxNew, reservekey, nFeeRequired, nChangePosRet, strTxError, coinControl)) {
+    if (!pwallet->CreateTransactionWithTransferAsset(vecSend, wtxNew, reservekey, nFeeRequired, nChangePosRet, strTxError, selectedCoinControl)) {
         if (!fSubtractFeeFromAmount && nFeeRequired > curBalance) {
             error = std::make_pair(RPC_WALLET_ERROR, strprintf("Error: This transaction requires a transaction fee of at least %s", FormatMoney(nFeeRequired)));
             return false;

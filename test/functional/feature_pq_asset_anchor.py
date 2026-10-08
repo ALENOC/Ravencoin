@@ -247,7 +247,40 @@ class PQAssetAnchorTest(RavenTestFramework):
                             output.scriptPubKey[25] == ASSET_OPCODE and
                             output.scriptPubKey[-32:] == descriptor_program]
         assert_equal(len(protected_change), 1)
+        refreshed_anchor_vouts = [index for index, output in enumerate(transfer_tx.vout)
+                                  if output.scriptPubKey == descriptor_script and
+                                  output.nValue > 0]
+        assert_equal(len(refreshed_anchor_vouts), 1)
         node.generate(1)
+        transfer_details = node.gettransaction(transfer_txid)['asset_details']
+        assert any(detail.get('category') == 'send' and
+                   detail.get('destination') == destination_descriptor
+                   for detail in transfer_details)
+        assert not any(detail.get('category') == 'receive' and
+                       detail.get('address') == pq_part
+                       for detail in node.gettransaction(transfer_txid)['details'])
+        self.restart_node(0, self.extra_args[0])
+        assert not any(detail.get('category') == 'receive' and
+                       detail.get('address') == pq_part
+                       for detail in node.gettransaction(transfer_txid)['details'])
+        second_transfer_txid = node.transferfromaddress(
+            'PQROOTRECIPIENT', composite_address, 1,
+            destination_descriptor)[0]
+        second_transfer = from_hex(CTransaction(),
+                                   node.getrawtransaction(second_transfer_txid))
+        refreshed_anchor_vin = [index for index, txin in enumerate(second_transfer.vin)
+                                if txin.prevout.hash == int(transfer_txid, 16) and
+                                txin.prevout.n == refreshed_anchor_vouts[0]]
+        assert_equal(len(refreshed_anchor_vin), 1)
+        assert_equal(len(second_transfer.wit.vtxinwit[refreshed_anchor_vin[0]]
+                         .scriptWitness.stack), 2)
+        next_anchor_vouts = [index for index, output in enumerate(second_transfer.vout)
+                             if output.scriptPubKey == descriptor_script and
+                             output.nValue > 0]
+        assert_equal(len(next_anchor_vouts), 1)
+        node.generate(1)
+        assert_equal(node.lockunspent(False, [
+            {'txid': second_transfer_txid, 'vout': next_anchor_vouts[0]}]), True)
         assert_equal(node.listmyassets('PQROOTRECIPIENT', True)
                      ['PQROOTRECIPIENT']['balance'], 10)
 
@@ -283,7 +316,19 @@ class PQAssetAnchorTest(RavenTestFramework):
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == descriptor_program
                          for output in reissue_tx.vout if len(output.scriptPubKey) > 57), 1)
+        reissue_refresh_vouts = [index for index, output in enumerate(reissue_tx.vout)
+                                 if output.scriptPubKey == descriptor_script and
+                                 output.nValue > 0]
+        assert_equal(len(reissue_refresh_vouts), 1)
         node.generate(1)
+        other_reissue_anchors = [
+            {'txid': coin['txid'], 'vout': coin['vout']}
+            for coin in node.listunspent(0)
+            if coin['scriptPubKey'] == descriptor_script.hex() and
+            (coin['txid'], coin['vout']) !=
+            (reissue_txid, reissue_refresh_vouts[0])]
+        if other_reissue_anchors:
+            assert_equal(node.lockunspent(False, other_reissue_anchors), True)
         assert_equal(node.listmyassets('PQROOTRECIPIENT', True)
                      ['PQROOTRECIPIENT']['balance'], 12)
         assert_equal(node.listmyassets('PQROOTRECIPIENT!', True)
@@ -292,22 +337,18 @@ class PQAssetAnchorTest(RavenTestFramework):
         # A subasset uses the root owner token as authority. Its return and
         # the new subasset and sub-owner outputs must all remain tagged.
         sub_name = 'PQROOTRECIPIENT/SUB'
-        assert_raises_rpc_error(-4, 'funded matching PQ anchor',
-                                node.issue, sub_name, 3,
-                                destination_descriptor)
-        sub_anchor_txid = node.sendtoaddress(pq_part, Decimal('1'))
-        node.generate(1)
-        sub_anchor_vout = self.output_index(
-            node.getrawtransaction(sub_anchor_txid),
-            lambda script: script == descriptor_script)
         sub_issue_txid = node.issue(sub_name, 3, destination_descriptor)[0]
         sub_issue = from_hex(CTransaction(), node.getrawtransaction(sub_issue_txid))
         sub_anchor_vin = [index for index, txin in enumerate(sub_issue.vin)
-                          if txin.prevout.hash == int(sub_anchor_txid, 16) and
-                          txin.prevout.n == sub_anchor_vout]
+                          if txin.prevout.hash == int(reissue_txid, 16) and
+                          txin.prevout.n == reissue_refresh_vouts[0]]
         assert_equal(len(sub_anchor_vin), 1)
         assert_equal(len(sub_issue.wit.vtxinwit[sub_anchor_vin[0]]
                          .scriptWitness.stack), 2)
+        sub_refresh_vouts = [index for index, output in enumerate(sub_issue.vout)
+                             if output.scriptPubKey == descriptor_script and
+                             output.nValue > 0]
+        assert_equal(len(sub_refresh_vouts), 1)
         assert_equal(sum(output.scriptPubKey[:25] == classical_script and
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == descriptor_program
@@ -318,6 +359,8 @@ class PQAssetAnchorTest(RavenTestFramework):
                          for output in sub_issue.vout
                          if len(output.scriptPubKey) > 57), 2)
         node.generate(1)
+        assert_equal(node.lockunspent(False, [
+            {'txid': sub_issue_txid, 'vout': sub_refresh_vouts[0]}]), True)
         assert_equal(node.listmyassets(sub_name, True)[sub_name]['balance'], 3)
         assert_equal(node.listmyassets(sub_name + '!', True)
                      [sub_name + '!']['balance'], 1)
@@ -409,6 +452,12 @@ class PQAssetAnchorTest(RavenTestFramework):
                      ['$' + restricted_base]['balance'], 2)
 
         # Owner tokens use the same protected transfer and anchor rules.
+        owner_anchors = [
+            {'txid': coin['txid'], 'vout': coin['vout']}
+            for coin in node.listunspent(0)
+            if coin['scriptPubKey'] == descriptor_script.hex()]
+        if owner_anchors:
+            assert_equal(node.lockunspent(False, owner_anchors), True)
         assert_raises_rpc_error(-25, 'funded matching PQ anchor',
                                 node.transfer, 'PQROOTRECIPIENT!', 1,
                                 destination_descriptor)
@@ -440,8 +489,9 @@ class PQAssetAnchorTest(RavenTestFramework):
         explicit_change_script = bytes.fromhex(
             node.validateaddress(explicit_change_pq)['scriptPubKey'])
         next_destination = node.getnewpqassetaddress()
-        explicit_transfer_txid = node.transfer(
-            'PQROOTRECIPIENT', 4, next_destination, '', 0, '', explicit_change)[0]
+        explicit_transfer_txid = node.transferfromaddress(
+            'PQROOTRECIPIENT', composite_address, 7,
+            next_destination, '', 0, '', explicit_change)[0]
         explicit_transfer = from_hex(
             CTransaction(), node.getrawtransaction(explicit_transfer_txid))
         explicit_change_outputs = [
@@ -596,6 +646,8 @@ class PQAssetAnchorTest(RavenTestFramework):
                          output.scriptPubKey[-32:] == descriptor_program
                          for output in tag_tx.vout
                          if len(output.scriptPubKey) > 57), 1)
+        assert_equal(sum(output.scriptPubKey == descriptor_script and
+                         output.nValue > 0 for output in tag_tx.vout), 1)
         node.generate(1)
 
         # Qualifier lookup must use the classical address inside the PQ

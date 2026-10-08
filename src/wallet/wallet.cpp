@@ -29,6 +29,7 @@
 #include "timedata.h"
 #include "txmempool.h"
 #include "util.h"
+#include "utilstrencodings.h"
 #include "ui_interface.h"
 #include "utilmoneystr.h"
 #include "wallet/fees.h"
@@ -53,6 +54,7 @@ bool fWalletRbf = DEFAULT_WALLET_RBF;
 
 const char * DEFAULT_WALLET_DAT = "wallet.dat";
 const uint32_t BIP32_HARDENED_KEY_LIMIT = 0x80000000;
+static const char* const PQ_ASSET_ANCHOR_CHANGE_VOUT_KEY = "pq_asset_anchor_change_vout";
 static_assert(CPQHDChain::MAX_COUNTER == pqderivation::HARDENED_LIMIT,
               "PQ HD counter limit mismatch");
 static_assert(CPQHDChain::SEED_SOURCE_LEGACY_HD ==
@@ -1654,7 +1656,14 @@ bool CWallet::AddToWalletIfInvolvingMe(const CTransactionRef& ptx, const CBlockI
 
         bool fExisted = mapWallet.count(tx.GetHash()) != 0;
         if (fExisted && !fUpdate) return false;
-        if (fExisted || IsMine(tx) || IsFromMe(tx))
+        bool hasOwnedOutput = false;
+        for (const CTxOut& txout : tx.vout) {
+            if (IsMine(txout, pIndex)) {
+                hasOwnedOutput = true;
+                break;
+            }
+        }
+        if (fExisted || hasOwnedOutput || IsFromMe(tx))
         {
             /* Check if any keys in the wallet keypool that were supposed to be unused
              * have appeared in a new transaction. If so, remove those keys from the keypool.
@@ -1871,16 +1880,23 @@ void CWallet::BlockDisconnected(const std::shared_ptr<const CBlock>& pblock) {
 
 
 
+static bool HasRequiredPQAssetKey(const CWallet& wallet, const CTxOut& output,
+                                  int depth, const CBlockIndex* originBlock,
+                                  int activationHeight);
+
 isminetype CWallet::IsMine(const CTxIn &txin) const
 {
     {
-        LOCK(cs_wallet);
+        LOCK2(cs_main, cs_wallet);
         std::map<uint256, CWalletTx>::const_iterator mi = mapWallet.find(txin.prevout.hash);
         if (mi != mapWallet.end())
         {
             const CWalletTx& prev = (*mi).second;
-            if (txin.prevout.n < prev.tx->vout.size())
-                return IsMine(prev.tx->vout[txin.prevout.n]);
+            if (txin.prevout.n < prev.tx->vout.size()) {
+                const CBlockIndex* originBlock = nullptr;
+                prev.GetDepthInMainChain(originBlock);
+                return IsMine(prev.tx->vout[txin.prevout.n], originBlock);
+            }
         }
     }
     return ISMINE_NO;
@@ -1896,19 +1912,22 @@ CAmount CWallet::GetDebit(const CTxIn &txin, const isminefilter& filter) const {
 CAmount CWallet::GetDebit(const CTxIn &txin, const isminefilter& filter, CAssetOutputEntry& assetData) const
 {
     {
-        LOCK(cs_wallet);
+        LOCK2(cs_main, cs_wallet);
         std::map<uint256, CWalletTx>::const_iterator mi = mapWallet.find(txin.prevout.hash);
         if (mi != mapWallet.end())
         {
             const CWalletTx& prev = (*mi).second;
-            if (txin.prevout.n < prev.tx->vout.size())
-                if (IsMine(prev.tx->vout[txin.prevout.n]) & filter) {
+            if (txin.prevout.n < prev.tx->vout.size()) {
+                const CBlockIndex* originBlock = nullptr;
+                prev.GetDepthInMainChain(originBlock);
+                if (IsMine(prev.tx->vout[txin.prevout.n], originBlock) & filter) {
                     // if asset get that assets data from the scriptPubKey
                     if (prev.tx->vout[txin.prevout.n].scriptPubKey.IsAssetScript())
                         GetAssetData(prev.tx->vout[txin.prevout.n].scriptPubKey, assetData);
 
                     return prev.tx->vout[txin.prevout.n].nValue;
                 }
+            }
         }
     }
     return 0;
@@ -1919,11 +1938,32 @@ isminetype CWallet::IsMine(const CTxOut& txout) const
     return ::IsMine(*this, txout.scriptPubKey);
 }
 
+isminetype CWallet::IsMine(const CTxOut& txout, const CBlockIndex* originBlock) const
+{
+    LOCK2(cs_main, cs_wallet);
+    const isminetype mine = IsMine(txout);
+    if (!(mine & ISMINE_SPENDABLE) || !txout.scriptPubKey.IsAssetScript())
+        return mine;
+
+    const int activationHeight =
+        GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
+    return HasRequiredPQAssetKey(*this, txout, originBlock ? 1 : 0,
+                                 originBlock, activationHeight) ? mine : ISMINE_NO;
+}
+
 CAmount CWallet::GetCredit(const CTxOut& txout, const isminefilter& filter) const
 {
     if (!MoneyRange(txout.nValue))
         throw std::runtime_error(std::string(__func__) + ": value out of range");
     return ((IsMine(txout) & filter) ? txout.nValue : 0);
+}
+
+CAmount CWallet::GetCredit(const CTxOut& txout, const isminefilter& filter,
+                           const CBlockIndex* originBlock) const
+{
+    if (!MoneyRange(txout.nValue))
+        throw std::runtime_error(std::string(__func__) + ": value out of range");
+    return ((IsMine(txout, originBlock) & filter) ? txout.nValue : 0);
 }
 
 bool CWallet::IsChange(const CTxOut& txout) const
@@ -1948,6 +1988,46 @@ bool CWallet::IsChange(const CTxOut& txout) const
     return false;
 }
 
+bool CWallet::IsChange(const CTxOut& txout, const CBlockIndex* originBlock) const
+{
+    if (IsMine(txout, originBlock)) {
+        CTxDestination address;
+        if (!ExtractDestination(txout.scriptPubKey, address))
+            return true;
+
+        LOCK(cs_wallet);
+        if (!mapAddressBook.count(address))
+            return true;
+    }
+    return false;
+}
+
+bool CWallet::IsChange(const CWalletTx& wtx, unsigned int outputIndex,
+                       const CBlockIndex* originBlock) const
+{
+    if (outputIndex >= wtx.tx->vout.size())
+        return false;
+
+    const auto marker = wtx.mapValue.find(PQ_ASSET_ANCHOR_CHANGE_VOUT_KEY);
+    if (marker != wtx.mapValue.end()) {
+        int markedIndex = -1;
+        if (ParseInt32(marker->second, &markedIndex) && markedIndex >= 0 &&
+            static_cast<size_t>(markedIndex) < wtx.tx->vout.size() &&
+            static_cast<unsigned int>(markedIndex) == outputIndex) {
+            const CTxOut& markedOutput = wtx.tx->vout[outputIndex];
+            int version = -1;
+            std::vector<unsigned char> program;
+            if (markedOutput.nValue > 0 &&
+                markedOutput.scriptPubKey.IsWitnessProgram(version, program) &&
+                version == 2 && program.size() == 32 &&
+                (IsMine(markedOutput, originBlock) & ISMINE_SPENDABLE))
+                return true;
+        }
+    }
+
+    return IsChange(wtx.tx->vout[outputIndex], originBlock);
+}
+
 CAmount CWallet::GetChange(const CTxOut& txout) const
 {
     if (!MoneyRange(txout.nValue))
@@ -1957,8 +2037,13 @@ CAmount CWallet::GetChange(const CTxOut& txout) const
 
 bool CWallet::IsMine(const CTransaction& tx) const
 {
+    LOCK2(cs_main, cs_wallet);
+    const CBlockIndex* originBlock = nullptr;
+    const auto known = mapWallet.find(tx.GetHash());
+    if (known != mapWallet.end())
+        known->second.GetDepthInMainChain(originBlock);
     for (const CTxOut& txout : tx.vout)
-        if (IsMine(txout))
+        if (IsMine(txout, originBlock))
             return true;
     return false;
 }
@@ -1995,7 +2080,7 @@ CAmount CWallet::GetDebit(const CTransaction& tx, const isminefilter& filter) co
 
 bool CWallet::IsAllFromMe(const CTransaction& tx, const isminefilter& filter) const
 {
-    LOCK(cs_wallet);
+    LOCK2(cs_main, cs_wallet);
 
     for (const CTxIn& txin : tx.vin)
     {
@@ -2008,7 +2093,9 @@ bool CWallet::IsAllFromMe(const CTransaction& tx, const isminefilter& filter) co
         if (txin.prevout.n >= prev.tx->vout.size())
             return false; // invalid input!
 
-        if (!(IsMine(prev.tx->vout[txin.prevout.n]) & filter))
+        const CBlockIndex* originBlock = nullptr;
+        prev.GetDepthInMainChain(originBlock);
+        if (!(IsMine(prev.tx->vout[txin.prevout.n], originBlock) & filter))
             return false;
     }
     return true;
@@ -2016,10 +2103,15 @@ bool CWallet::IsAllFromMe(const CTransaction& tx, const isminefilter& filter) co
 
 CAmount CWallet::GetCredit(const CTransaction& tx, const isminefilter& filter) const
 {
+    LOCK2(cs_main, cs_wallet);
+    const CBlockIndex* originBlock = nullptr;
+    const auto known = mapWallet.find(tx.GetHash());
+    if (known != mapWallet.end())
+        known->second.GetDepthInMainChain(originBlock);
     CAmount nCredit = 0;
     for (const CTxOut& txout : tx.vout)
     {
-        nCredit += GetCredit(txout, filter);
+        nCredit += GetCredit(txout, filter, originBlock);
         if (!MoneyRange(nCredit))
             throw std::runtime_error(std::string(__func__) + ": value out of range");
     }
@@ -2028,14 +2120,43 @@ CAmount CWallet::GetCredit(const CTransaction& tx, const isminefilter& filter) c
 
 CAmount CWallet::GetChange(const CTransaction& tx) const
 {
+    LOCK2(cs_main, cs_wallet);
+    const CBlockIndex* originBlock = nullptr;
+    const auto known = mapWallet.find(tx.GetHash());
+    if (known != mapWallet.end())
+        known->second.GetDepthInMainChain(originBlock);
     CAmount nChange = 0;
-    for (const CTxOut& txout : tx.vout)
+    for (unsigned int i = 0; i < tx.vout.size(); ++i)
     {
-        nChange += GetChange(txout);
+        const CTxOut& txout = tx.vout[i];
+        if (!MoneyRange(txout.nValue))
+            throw std::runtime_error(std::string(__func__) + ": value out of range");
+        const bool isChange = known != mapWallet.end()
+            ? IsChange(known->second, i, originBlock)
+            : IsChange(txout, originBlock);
+        nChange += isChange ? txout.nValue : 0;
         if (!MoneyRange(nChange))
             throw std::runtime_error(std::string(__func__) + ": value out of range");
     }
     return nChange;
+}
+
+CAmount CWallet::GetChange(const CWalletTx& wtx) const
+{
+    LOCK2(cs_main, cs_wallet);
+    const CBlockIndex* originBlock = nullptr;
+    wtx.GetDepthInMainChain(originBlock);
+    CAmount change = 0;
+    for (unsigned int i = 0; i < wtx.tx->vout.size(); ++i) {
+        const CTxOut& output = wtx.tx->vout[i];
+        if (!MoneyRange(output.nValue))
+            throw std::runtime_error(std::string(__func__) + ": value out of range");
+        if (IsChange(wtx, i, originBlock))
+            change += output.nValue;
+        if (!MoneyRange(change))
+            throw std::runtime_error(std::string(__func__) + ": value out of range");
+    }
+    return change;
 }
 
 CPubKey CWallet::GenerateNewSeed()
@@ -2207,17 +2328,22 @@ void CWalletTx::GetAmounts(std::list<COutputEntry>& listReceived,
     }
 
     // Sent/received.
+    const CBlockIndex* originBlock = nullptr;
+    {
+        LOCK(cs_main);
+        GetDepthInMainChain(originBlock);
+    }
     for (unsigned int i = 0; i < tx->vout.size(); ++i)
     {
         const CTxOut& txout = tx->vout[i];
-        isminetype fIsMine = pwallet->IsMine(txout);
+        isminetype fIsMine = pwallet->IsMine(txout, originBlock);
         // Only need to handle txouts if AT LEAST one of these is true:
         //   1) they debit from us (sent)
         //   2) the output is to us (received)
         if (nDebit > 0)
         {
             // Don't report 'change' txouts
-            if (pwallet->IsChange(txout))
+            if (pwallet->IsChange(*this, i, originBlock))
                 continue;
         }
         else if (!(fIsMine & filter))
@@ -2615,7 +2741,9 @@ bool CWalletTx::IsTrusted() const
         if (parent == nullptr)
             return false;
         const CTxOut& parentOut = parent->tx->vout[txin.prevout.n];
-        if (pwallet->IsMine(parentOut) != ISMINE_SPENDABLE)
+        const CBlockIndex* originBlock = nullptr;
+        parent->GetDepthInMainChain(originBlock);
+        if (pwallet->IsMine(parentOut, originBlock) != ISMINE_SPENDABLE)
             return false;
     }
     return true;
@@ -2792,7 +2920,8 @@ CAmount CWallet::GetLegacyBalance(const isminefilter& filter, int minDepth, cons
     CAmount balance = 0;
     for (const auto& entry : mapWallet) {
         const CWalletTx& wtx = entry.second;
-        const int depth = wtx.GetDepthInMainChain();
+        const CBlockIndex* originBlock = nullptr;
+        const int depth = wtx.GetDepthInMainChain(originBlock);
         if (depth < 0 || !CheckFinalTx(*wtx.tx) || wtx.GetBlocksToMaturity() > 0) {
             continue;
         }
@@ -2801,10 +2930,11 @@ CAmount CWallet::GetLegacyBalance(const isminefilter& filter, int minDepth, cons
         // treat change outputs specially, as part of the amount debited.
         CAmount debit = wtx.GetDebit(filter);
         const bool outgoing = debit > 0;
-        for (const CTxOut& out : wtx.tx->vout) {
-            if (outgoing && IsChange(out)) {
+        for (unsigned int i = 0; i < wtx.tx->vout.size(); ++i) {
+            const CTxOut& out = wtx.tx->vout[i];
+            if (outgoing && IsChange(wtx, i, originBlock)) {
                 debit -= out.nValue;
-            } else if (IsMine(out) & filter && depth >= minDepth && (!account || *account == GetAccountName(out.scriptPubKey))) {
+            } else if (IsMine(out, originBlock) & filter && depth >= minDepth && (!account || *account == GetAccountName(out.scriptPubKey))) {
                 balance += out.nValue;
             }
         }
@@ -2973,7 +3103,9 @@ void CWallet::AvailableCoinsAll(std::vector<COutput>& vCoins, std::map<std::stri
                 if (coinControl && !isAssetScript && coinControl->HasSelected() && !coinControl->fAllowOtherInputs && !coinControl->IsSelected(COutPoint((*it).first, i)))
                     continue;
 
-                if (coinControl && isAssetScript && coinControl->HasAssetSelected() && !coinControl->fAllowOtherInputs && !coinControl->IsAssetSelected(COutPoint((*it).first, i)))
+                if (coinControl && isAssetScript && coinControl->HasAssetSelected() &&
+                    (!coinControl->fAllowOtherInputs || coinControl->fRequireSelectedAssetInputs) &&
+                    !coinControl->IsAssetSelected(COutPoint((*it).first, i)))
                     continue;
 
                 if (IsLockedCoin((*it).first, i))
@@ -3117,7 +3249,7 @@ std::map<CTxDestination, std::vector<COutput>> CWallet::ListAssets() const
                 continue;
             const CBlockIndex* originBlock = nullptr;
             int depth = it->second.GetDepthInMainChain(originBlock);
-            if (depth >= 0 && IsMine(txout) == ISMINE_SPENDABLE &&
+            if (depth >= 0 && IsMine(txout, originBlock) == ISMINE_SPENDABLE &&
                 HasRequiredPQAssetKey(*this, txout, depth, originBlock,
                                       pqAssetActivationHeight)) {
                 CTxDestination address;
@@ -3184,13 +3316,24 @@ const CTxOut& CWallet::FindNonChangeParentOutput(const CTransaction& tx, int out
 {
     const CTransaction* ptx = &tx;
     int n = output;
-    while (IsChange(ptx->vout[n]) && ptx->vin.size() > 0) {
+    while (ptx->vin.size() > 0) {
+        const CBlockIndex* originBlock = nullptr;
+        const auto current = mapWallet.find(ptx->GetHash());
+        if (current != mapWallet.end())
+            current->second.GetDepthInMainChain(originBlock);
+        if (current != mapWallet.end()
+                ? !IsChange(current->second, n, originBlock)
+                : !IsChange(ptx->vout[n], originBlock))
+            break;
         const COutPoint& prevout = ptx->vin[0].prevout;
         auto it = mapWallet.find(prevout.hash);
-        if (it == mapWallet.end() || it->second.tx->vout.size() <= prevout.n ||
-            !IsMine(it->second.tx->vout[prevout.n])) {
+        if (it == mapWallet.end() || it->second.tx->vout.size() <= prevout.n) {
             break;
         }
+        const CBlockIndex* parentOrigin = nullptr;
+        it->second.GetDepthInMainChain(parentOrigin);
+        if (!IsMine(it->second.tx->vout[prevout.n], parentOrigin))
+            break;
         ptx = it->second.tx.get();
         n = prevout.n;
     }
@@ -3927,6 +4070,7 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
     FeeCalculation feeCalc;
     CAmount nFeeNeeded;
     unsigned int nBytes;
+    bool returnReservedKeyForPQChange = false;
     {
         std::set<CInputCoin> setCoins;
 
@@ -4005,6 +4149,7 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
             }
             /** RVN END */
 
+            const CScript defaultScriptChange = scriptChange;
             CTxOut change_prototype_txout(0, scriptChange);
             size_t change_prototype_size = GetSerializeSize(change_prototype_txout, SER_DISK, 0);
 
@@ -4013,10 +4158,12 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
             bool pick_new_inputs = true;
             CAmount nValueIn = 0;
             std::map<std::string, CAmount> mapAssetsIn;
+            std::set<uint256> requiredAnchorPrograms;
 
             // Start with no fee and loop until there is enough fee
             while (true)
             {
+                scriptChange = defaultScriptChange;
                 nChangePosInOut = nChangePosRequest;
                 txNew.vin.clear();
                 txNew.vout.clear();
@@ -4100,7 +4247,7 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                         }
 
                         if (pqAssetsActive) {
-                            std::set<uint256> requiredPrograms;
+                            requiredAnchorPrograms.clear();
                             for (const CInputCoin& asset : setAssets) {
                                 const auto walletTx = mapWallet.find(asset.outpoint.hash);
                                 if (walletTx == mapWallet.end()) {
@@ -4117,10 +4264,10 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                                     strFailReason = _("Active PQ asset input has no canonical program");
                                     return false;
                                 }
-                                requiredPrograms.insert(program);
+                                requiredAnchorPrograms.insert(program);
                             }
 
-                            for (const uint256& program : requiredPrograms) {
+                            for (const uint256& program : requiredAnchorPrograms) {
                                 bool hasAnchor = false;
                                 for (const CInputCoin& coin : setCoins) {
                                     int version = -1;
@@ -4163,6 +4310,14 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                     }
                     /** RVN END */
                 }
+
+                if (pqAssetsActive && requiredAnchorPrograms.size() == 1 &&
+                    boost::get<CNoDestination>(&coin_control.destChange)) {
+                    scriptChange = GetScriptForDestination(
+                        WitnessV2PQDestination(*requiredAnchorPrograms.begin()));
+                }
+                change_prototype_txout.scriptPubKey = scriptChange;
+                change_prototype_size = GetSerializeSize(change_prototype_txout, SER_DISK, 0);
 
                 const CAmount nChange = nValueIn - nValueToSelect;
 
@@ -4512,9 +4667,12 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                 nFeeRet = nFeeNeeded;
                 continue;
             }
+            returnReservedKeyForPQChange = pqAssetsActive && requiredAnchorPrograms.size() == 1 &&
+                boost::get<CNoDestination>(&coin_control.destChange);
         }
 
-        if (nChangePosInOut == -1) reservekey.ReturnKey(); // Return any reserved key if we don't have change
+        if (nChangePosInOut == -1 || returnReservedKeyForPQChange)
+            reservekey.ReturnKey();
 
         if (sign)
         {
@@ -4561,6 +4719,22 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                 }
             }
             /** RVN END */
+        }
+
+        // Record the exact native PQ anchor change output. Its address is a
+        // published receive address, so address-book heuristics cannot identify
+        // this change safely after a wallet reload.
+        wtxNew.mapValue.erase(PQ_ASSET_ANCHOR_CHANGE_VOUT_KEY);
+        if (returnReservedKeyForPQChange && nChangePosInOut >= 0 &&
+            static_cast<size_t>(nChangePosInOut) < txNew.vout.size()) {
+            int version = -1;
+            std::vector<unsigned char> program;
+            const CTxOut& output = txNew.vout[nChangePosInOut];
+            if (output.nValue > 0 &&
+                output.scriptPubKey.IsWitnessProgram(version, program) &&
+                version == 2 && program.size() == 32)
+                wtxNew.mapValue[PQ_ASSET_ANCHOR_CHANGE_VOUT_KEY] =
+                    std::to_string(nChangePosInOut);
         }
 
         // Embed the constructed transaction data in wtxNew.
@@ -5111,14 +5285,15 @@ std::map<CTxDestination, CAmount> CWallet::GetAddressBalances()
             if (pcoin->IsCoinBase() && pcoin->GetBlocksToMaturity() > 0)
                 continue;
 
-            int nDepth = pcoin->GetDepthInMainChain();
+            const CBlockIndex* originBlock = nullptr;
+            int nDepth = pcoin->GetDepthInMainChain(originBlock);
             if (nDepth < (pcoin->IsFromMe(ISMINE_ALL) ? 0 : 1))
                 continue;
 
             for (unsigned int i = 0; i < pcoin->tx->vout.size(); i++)
             {
                 CTxDestination addr;
-                if (!IsMine(pcoin->tx->vout[i]))
+                if (!IsMine(pcoin->tx->vout[i], originBlock))
                     continue;
                 if(!ExtractDestination(pcoin->tx->vout[i].scriptPubKey, addr))
                     continue;
@@ -5144,6 +5319,8 @@ std::set< std::set<CTxDestination> > CWallet::GetAddressGroupings()
     for (const auto& walletEntry : mapWallet)
     {
         const CWalletTx *pcoin = &walletEntry.second;
+        const CBlockIndex* originBlock = nullptr;
+        pcoin->GetDepthInMainChain(originBlock);
 
         if (pcoin->tx->vin.size() > 0)
         {
@@ -5163,10 +5340,11 @@ std::set< std::set<CTxDestination> > CWallet::GetAddressGroupings()
             // group change with input addresses
             if (any_mine)
             {
-               for (CTxOut txout : pcoin->tx->vout)
-                   if (IsChange(txout))
+               for (unsigned int i = 0; i < pcoin->tx->vout.size(); ++i)
+                   if (IsChange(*pcoin, i, originBlock))
                    {
                        CTxDestination txoutAddr;
+                       const CTxOut& txout = pcoin->tx->vout[i];
                        if(!ExtractDestination(txout.scriptPubKey, txoutAddr))
                            continue;
                        grouping.insert(txoutAddr);
@@ -5181,7 +5359,7 @@ std::set< std::set<CTxDestination> > CWallet::GetAddressGroupings()
 
         // group lone addrs by themselves
         for (const auto& txout : pcoin->tx->vout)
-            if (IsMine(txout))
+            if (IsMine(txout, originBlock))
             {
                 CTxDestination address;
                 if(!ExtractDestination(txout.scriptPubKey, address))
@@ -5517,6 +5695,75 @@ std::vector<std::string> CWallet::GetDestValues(const std::string& prefix) const
         }
     }
     return values;
+}
+
+namespace {
+const char* const PQ_ASSET_DESTDATA_KEY = "pqasset:destination:v1";
+}
+
+bool CWallet::StoreOwnedPQAssetDestination(const CKeyID& classicalKey, const uint256& pqProgram)
+{
+    LOCK(cs_wallet);
+    if (!HaveKey(classicalKey) || !HavePQKey(pqProgram))
+        return false;
+
+    const std::string descriptor = EncodePQAssetDestination(classicalKey, pqProgram);
+    CKeyID decodedClassical;
+    uint256 decodedProgram;
+    if (descriptor.empty() ||
+        !DecodePQAssetDestination(descriptor, decodedClassical, decodedProgram) ||
+        decodedClassical != classicalKey || decodedProgram != pqProgram)
+        return false;
+
+    const auto existingAddress = mapAddressBook.find(classicalKey);
+    if (existingAddress != mapAddressBook.end()) {
+        const auto existingPair = existingAddress->second.destdata.find(PQ_ASSET_DESTDATA_KEY);
+        if (existingPair != existingAddress->second.destdata.end())
+            return existingPair->second == descriptor;
+    }
+
+    // A PQ key must not be silently reused by a different classical owner.
+    for (const auto& address : mapAddressBook) {
+        const auto existingPair = address.second.destdata.find(PQ_ASSET_DESTDATA_KEY);
+        if (existingPair == address.second.destdata.end())
+            continue;
+        CKeyID pairedClassical;
+        uint256 pairedProgram;
+        if (DecodePQAssetDestination(existingPair->second, pairedClassical, pairedProgram) &&
+            pairedProgram == pqProgram)
+            return false;
+    }
+
+    if (!CWalletDB(*dbw).WriteDestData(
+            EncodeDestination(classicalKey), PQ_ASSET_DESTDATA_KEY, descriptor))
+        return false;
+    mapAddressBook[classicalKey].destdata.emplace(PQ_ASSET_DESTDATA_KEY, descriptor);
+    return true;
+}
+
+std::vector<std::string> CWallet::GetOwnedPQAssetDestinations() const
+{
+    LOCK(cs_wallet);
+    std::vector<std::string> descriptors;
+    std::set<uint256> usedPrograms;
+    for (const auto& address : mapAddressBook) {
+        const CKeyID* associatedClassical = boost::get<CKeyID>(&address.first);
+        if (!associatedClassical)
+            continue;
+        const auto pair = address.second.destdata.find(PQ_ASSET_DESTDATA_KEY);
+        if (pair == address.second.destdata.end())
+            continue;
+        CKeyID decodedClassical;
+        uint256 decodedProgram;
+        if (!DecodePQAssetDestination(pair->second, decodedClassical, decodedProgram) ||
+            decodedClassical != *associatedClassical ||
+            EncodePQAssetDestination(decodedClassical, decodedProgram) != pair->second ||
+            !HaveKey(decodedClassical) || !HavePQKey(decodedProgram) ||
+            !usedPrograms.insert(decodedProgram).second)
+            continue;
+        descriptors.push_back(pair->second);
+    }
+    return descriptors;
 }
 
 CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)

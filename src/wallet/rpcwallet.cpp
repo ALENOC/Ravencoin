@@ -5,6 +5,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "amount.h"
+#include "assets/assets.h"
 #include "base58.h"
 #include "bech32.h"
 #include "chain.h"
@@ -282,13 +283,34 @@ UniValue getnewpqassetaddress(const JSONRPCRequest& request)
     CPQPubKey pqPubKey;
     if (!pwallet->GenerateNewPQKey(pqPubKey))
         throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to derive and persist ML-DSA-44 keypair");
-    reserveClassicalKey.KeepKey();
-
     const CKeyID classicalKey = classicalPubKey.GetID();
     const WitnessV2PQDestination pqDestination(pqPubKey.GetWitnessProgram());
+    if (!pwallet->StoreOwnedPQAssetDestination(classicalKey, pqDestination.witnessProgram))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to persist protected asset destination pairing");
+    reserveClassicalKey.KeepKey();
     pwallet->SetAddressBook(classicalKey, account, "receive");
     pwallet->SetAddressBook(pqDestination, account, "receive");
     return EncodePQAssetDestination(classicalKey, pqDestination.witnessProgram);
+}
+
+UniValue listpqassetaddresses(const JSONRPCRequest& request)
+{
+    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) return NullUniValue;
+    if (request.fHelp || request.params.size() != 0)
+        throw std::runtime_error(
+            "listpqassetaddresses\nReturns saved wallet-owned classical|PQ asset destinations and whether PQ asset rules are active for the next block. An inactive destination is not safe for receiving assets.\n");
+    LOCK2(cs_main, pwallet->cs_wallet);
+
+    const int activationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
+    const bool active = activationHeight >= 0 && chainActive.Height() + 1 >= activationHeight;
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("active", active);
+    UniValue addresses(UniValue::VARR);
+    for (const std::string& descriptor : pwallet->GetOwnedPQAssetDestinations())
+        addresses.push_back(descriptor);
+    result.pushKV("addresses", addresses);
+    return result;
 }
 
 CTxDestination GetAccountAddress(CWallet* const pwallet, std::string strAccount, bool bForceNew=false)
@@ -1710,6 +1732,21 @@ static void MaybePushAddress(UniValue & entry, const CTxDestination &dest)
     }
 }
 
+static std::string AssetHistoryDestination(const CWalletTx& wtx,
+                                           const CAssetOutputEntry& data)
+{
+    if (data.vout < 0 || static_cast<size_t>(data.vout) >= wtx.tx->vout.size())
+        return std::string();
+    LOCK(cs_main);
+    const CBlockIndex* originBlock = nullptr;
+    const int depth = wtx.GetDepthInMainChain(originBlock);
+    const int originHeight = depth > 0 && originBlock ? originBlock->nHeight : -1;
+    const int activationHeight = GetPQAssetActivationHeightForPrev(
+        chainActive.Tip(), GetParams().GetConsensus());
+    return EncodeContextualAssetDestination(
+        wtx.tx->vout[data.vout].scriptPubKey, originHeight, activationHeight);
+}
+
 /**
  * List transactions based on the given criteria.
  *
@@ -1819,7 +1856,7 @@ void ListTransactions(CWallet* const pwallet, const CWalletTx& wtx, const std::s
                 entry.push_back(Pair("message", EncodeAssetData(data.message)));
                 if (!data.message.empty() && data.expireTime > 0)
                     entry.push_back(Pair("message_expires", DateTimeStrFormat("%Y-%m-%d %H:%M:%S", data.expireTime)));
-                entry.push_back(Pair("destination", EncodeDestination(data.destination)));
+                entry.push_back(Pair("destination", AssetHistoryDestination(wtx, data)));
                 entry.push_back(Pair("vout", data.vout));
                 entry.push_back(Pair("category", "receive"));
                 if (fLong)
@@ -1843,7 +1880,7 @@ void ListTransactions(CWallet* const pwallet, const CWalletTx& wtx, const std::s
                 entry.push_back(Pair("message", EncodeAssetData(data.message)));
                 if (!data.message.empty() && data.expireTime > 0)
                     entry.push_back(Pair("message_expires", DateTimeStrFormat("%Y-%m-%d %H:%M:%S", data.expireTime)));
-                entry.push_back(Pair("destination", EncodeDestination(data.destination)));
+                entry.push_back(Pair("destination", AssetHistoryDestination(wtx, data)));
                 entry.push_back(Pair("vout", data.vout));
                 entry.push_back(Pair("category", "send"));
                 if (fLong)
@@ -3621,6 +3658,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "getnewaddress",            &getnewaddress,            {"account"} },
     { "wallet",             "getnewpqaddress",          &getnewpqaddress,          {"account"} },
     { "wallet",             "getnewpqassetaddress",     &getnewpqassetaddress,     {"account"} },
+    { "wallet",             "listpqassetaddresses",     &listpqassetaddresses,     {} },
     { "wallet",             "getrawchangeaddress",      &getrawchangeaddress,      {} },
     { "wallet",             "getreceivedbyaccount",     &getreceivedbyaccount,     {"account","minconf"} },
     { "wallet",             "getreceivedbyaddress",     &getreceivedbyaddress,     {"address","minconf"} },

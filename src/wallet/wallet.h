@@ -991,6 +991,10 @@ public:
     bool GetDestData(const CTxDestination &dest, const std::string &key, std::string *value) const;
     //! Get all destination values matching a prefix.
     std::vector<std::string> GetDestValues(const std::string& prefix) const;
+    //! Persist a canonical asset destination only when both private keys belong to this wallet.
+    bool StoreOwnedPQAssetDestination(const CKeyID& classicalKey, const uint256& pqProgram);
+    //! Return persisted asset destinations whose pairing and private-key ownership still validate.
+    std::vector<std::string> GetOwnedPQAssetDestinations() const;
 
     //! Adds a watch-only address to the store, and saves it to disk.
     bool AddWatchOnly(const CScript& dest, int64_t nCreateTime);
@@ -1115,8 +1119,14 @@ public:
     CAmount GetDebit(const CTxIn& txin, const isminefilter& filter) const;
     CAmount GetDebit(const CTxIn& txin, const isminefilter& filter, CAssetOutputEntry& assetData) const;
     isminetype IsMine(const CTxOut& txout) const;
+    isminetype IsMine(const CTxOut& txout, const CBlockIndex* originBlock) const;
     CAmount GetCredit(const CTxOut& txout, const isminefilter& filter) const;
+    CAmount GetCredit(const CTxOut& txout, const isminefilter& filter,
+                      const CBlockIndex* originBlock) const;
     bool IsChange(const CTxOut& txout) const;
+    bool IsChange(const CTxOut& txout, const CBlockIndex* originBlock) const;
+    bool IsChange(const CWalletTx& wtx, unsigned int outputIndex,
+                  const CBlockIndex* originBlock) const;
     CAmount GetChange(const CTxOut& txout) const;
     bool IsMine(const CTransaction& tx) const;
     /** should probably be renamed to IsRelevantToMe */
@@ -1127,6 +1137,7 @@ public:
     bool IsAllFromMe(const CTransaction& tx, const isminefilter& filter) const;
     CAmount GetCredit(const CTransaction& tx, const isminefilter& filter) const;
     CAmount GetChange(const CTransaction& tx) const;
+    CAmount GetChange(const CWalletTx& wtx) const;
     void SetBestChain(const CBlockLocator& loc) override;
 
     bool IsFirstRun();

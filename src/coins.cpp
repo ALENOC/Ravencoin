@@ -18,6 +18,30 @@
 #include <assets/assets.h>
 #include <wallet/wallet.h>
 
+#ifdef ENABLE_WALLET
+static bool WalletOwnsAssetForMessageSubscription(const CTxOut& output,
+                                                  int height, const uint256& blockHash)
+{
+    if (vpwallets.empty())
+        return false;
+
+    LOCK(cs_main);
+    const auto candidate = mapBlockIndex.find(blockHash);
+    if (candidate == mapBlockIndex.end() || candidate->second->nHeight != height)
+        return false;
+    if (vpwallets[0]->IsMine(output) != ISMINE_SPENDABLE)
+        return false;
+
+    const int activationHeight = GetPQAssetActivationHeightForPrev(
+        candidate->second->pprev, GetParams().GetConsensus());
+    if (activationHeight < 0 || height < activationHeight)
+        return true;
+
+    uint256 program;
+    return GetPQAssetProgram(output.scriptPubKey, program) && vpwallets[0]->HavePQKey(program);
+}
+#endif
+
 bool CCoinsView::GetCoin(const COutPoint &outpoint, Coin &coin) const { return false; }
 uint256 CCoinsView::GetBestBlock() const { return uint256(); }
 std::vector<uint256> CCoinsView::GetHeadBlocks() const { return std::vector<uint256>(); }
@@ -282,8 +306,9 @@ void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint2
                         /** Subscribe to new message channels if they are sent to a new address, or they are the owner token or message channel */
 #ifdef ENABLE_WALLET
                         if (fMessaging && pMessageSubscribedChannelsCache) {
+                            const bool ownedAsset = WalletOwnsAssetForMessageSubscription(tx.vout[i], nHeight, blockHash);
                             LOCK(cs_messaging);
-                            if (vpwallets.size() && vpwallets[0]->IsMine(tx.vout[i]) == ISMINE_SPENDABLE) {
+                            if (ownedAsset) {
                                 AssetType aType;
                                 IsAssetNameValid(assetTransfer.strName, aType);
 
@@ -305,11 +330,12 @@ void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint2
                         /** Subscribe to new message channels if they are assets you created, or are new msgchannels of channels already being watched */
 #ifdef ENABLE_WALLET
                         if (fMessaging && pMessageSubscribedChannelsCache) {
+                            const bool ownedAsset = WalletOwnsAssetForMessageSubscription(tx.vout[i], nHeight, blockHash);
                             LOCK(cs_messaging);
                             if (vpwallets.size()) {
                                 AssetType aType;
                                 IsAssetNameValid(assetData.assetName, aType);
-                                if (vpwallets[0]->IsMine(tx.vout[i]) == ISMINE_SPENDABLE) {
+                                if (ownedAsset) {
                                     if (aType == AssetType::ROOT || aType == AssetType::SUB) {
                                         AddChannel(assetData.assetName + OWNER_TAG);
                                         AddAddressSeen(EncodeDestination(assetData.destination));

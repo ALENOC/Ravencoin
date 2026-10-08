@@ -78,13 +78,25 @@ class PQAssetWalletOwnershipTest(RavenTestFramework):
         historical_tagged = self.tag_asset_outputs(historical_raw, program, 1)
         historical_signed = sender.signrawtransaction(historical_tagged)
         assert_equal(historical_signed['complete'], True)
-        sender.sendrawtransaction(historical_signed['hex'])
+        historical_txid = sender.sendrawtransaction(historical_signed['hex'])
         sender.generate(2)
         self.sync_all()
         assert_equal(sender.getblockcount(), 863)
         assert_equal(sender.getblockchaininfo()['bip9_softforks']['pq_assets']['status'], 'active')
         assert_equal(sender.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'active')
         assert_equal(recipient.listmyassets(historical_name, True)[historical_name]['balance'], 1)
+        assert historical_name + '!' in recipient.viewallmessagechannels()
+        assert_equal([entry['asset_name'] for entry in recipient.gettransaction(
+            historical_txid)['asset_details'] if entry['category'] == 'receive'],
+            [historical_name])
+        assert_equal([entry['destination'] for entry in recipient.gettransaction(
+            historical_txid)['asset_details'] if entry['category'] == 'receive'],
+            [historical_recipient])
+        recipient.removeprunedfunds(historical_txid)
+        recipient.importprunedfunds(historical_signed['hex'],
+                                    sender.gettxoutproof([historical_txid]))
+        assert_equal(recipient.listmyassets(historical_name, True)
+                     [historical_name]['balance'], 1)
 
         asset_outpoint = sender.listmyassets(asset_name, True)[asset_name]['outpoints'][0]
         owner_name = asset_name + '!'
@@ -97,14 +109,13 @@ class PQAssetWalletOwnershipTest(RavenTestFramework):
             {'txid': native_coin['txid'], 'vout': native_coin['vout']},
         ]
         outputs = {
-            recipient_asset_address: {'transfer': {asset_name: 1}},
-            recipient_owner_address: {'transfer': {owner_name: 1}},
+            recipient_asset_address + '|' + pq_address: {'transfer': {asset_name: 1}},
+            recipient_owner_address + '|' + pq_address: {'transfer': {owner_name: 1}},
             pq_address: Decimal('1'),
             sender.getnewaddress(): native_coin['amount'] - Decimal('1.01'),
         }
         migration = sender.createrawtransaction(inputs, outputs)
-        tagged = self.tag_asset_outputs(migration, program, 2)
-        signed = sender.signrawtransaction(tagged)
+        signed = sender.signrawtransaction(migration)
         assert_equal(signed['complete'], True)
         migration_txid = sender.sendrawtransaction(signed['hex'])
         sender.generate(1)
@@ -113,6 +124,12 @@ class PQAssetWalletOwnershipTest(RavenTestFramework):
         # A classical key alone is not ownership of a protected asset.
         assert_equal(recipient.listmyassets(asset_name, True), {})
         assert_equal(recipient.listmyassets(owner_name, True), {})
+        assert_raises_rpc_error(-5, 'Invalid or non-wallet transaction id',
+                                recipient.gettransaction, migration_txid)
+        assert owner_name not in recipient.viewallmessagechannels()
+        assert_raises_rpc_error(-5, 'No addresses in wallet',
+                                recipient.importprunedfunds, signed['hex'],
+                                sender.gettxoutproof([migration_txid]))
         assert all(bytes.fromhex(coin['scriptPubKey']) != pq_script
                    for coin in recipient.listunspent())
 
@@ -127,8 +144,8 @@ class PQAssetWalletOwnershipTest(RavenTestFramework):
             asset_input = {'txid': migration_txid, 'vout': asset_vouts[name]}
             spend = recipient.createrawtransaction(
                 [{'txid': asset_input['txid'], 'vout': asset_input['vout']}],
-                {recipient.getnewaddress(): {'transfer': {name: 1}}})
-            spend = self.tag_asset_outputs(spend, program, 1)
+                {recipient.getnewaddress() + '|' + pq_address:
+                 {'transfer': {name: 1}}})
             spend_signed = recipient.signrawtransaction(spend)
             assert_equal(spend_signed['complete'], True)
             assert_raises_rpc_error(-26, 'bad-pq-asset-anchor',

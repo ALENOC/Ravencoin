@@ -584,6 +584,32 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         BOOST_CHECK_EQUAL(parsed.begin()[0], OP_DROP);
     }
 
+    BOOST_AUTO_TEST_CASE(pq_asset_history_destination_uses_origin_height_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        const CTxDestination destination = DecodeDestination(GetParams().GlobalBurnAddress());
+        const CKeyID* classicalKey = boost::get<CKeyID>(&destination);
+        BOOST_REQUIRE(classicalKey);
+        CScript legacy = GetScriptForDestination(destination);
+        CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(legacy);
+        const uint256 program = uint256S("03");
+        CScript tagged;
+        BOOST_REQUIRE(BuildPQAssetTaggedScript(legacy, program, tagged));
+        const std::string classicalAddress = EncodeDestination(destination);
+        const std::string protectedAddress =
+            EncodePQAssetDestination(*classicalKey, program);
+
+        BOOST_CHECK_EQUAL(EncodeContextualAssetDestination(tagged, 899, 900),
+                          classicalAddress);
+        BOOST_CHECK_EQUAL(EncodeContextualAssetDestination(tagged, 900, 900),
+                          protectedAddress);
+        BOOST_CHECK_EQUAL(EncodeContextualAssetDestination(tagged, -1, 900),
+                          protectedAddress);
+        BOOST_CHECK_EQUAL(EncodeContextualAssetDestination(tagged, 900, -1),
+                          classicalAddress);
+        BOOST_CHECK(EncodeContextualAssetDestination(legacy, 900, 900).empty());
+    }
+
     BOOST_AUTO_TEST_CASE(pq_asset_tagged_script_builder_preserves_legacy_data_test)
     {
         SelectParams(CBaseChainParams::MAIN);

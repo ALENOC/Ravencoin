@@ -1326,6 +1326,27 @@ bool CWalletDB::RecoverKeysOnlyFilter(void *callbackData, CDataStream ssKey, CDa
     // of the recovery protocol.
     if (strType == "encryption_rewrite_pending")
         return false;
+    if (strType == "destdata") {
+        // Keep only the bounded, canonical PQ asset key association. Generic
+        // address-book metadata does not belong in key-only recovery.
+        if (ssKey.size() > 256 || ssValue.size() > 256)
+            return false;
+        try {
+            std::string parsedType, address, key, descriptor;
+            ssKey >> parsedType >> address >> key;
+            ssValue >> descriptor;
+            if (parsedType != "destdata" || key != "pqasset:destination:v1" ||
+                !ssKey.empty() || !ssValue.empty())
+                return false;
+            CKeyID classicalKey;
+            uint256 pqProgram;
+            return DecodePQAssetDestination(descriptor, classicalKey, pqProgram) &&
+                address == EncodeDestination(classicalKey) &&
+                descriptor == EncodePQAssetDestination(classicalKey, pqProgram);
+        } catch (...) {
+            return false;
+        }
+    }
     if (!IsKeyType(strType))
         return false;
 
