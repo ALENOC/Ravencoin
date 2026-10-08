@@ -8,6 +8,7 @@
 import configparser
 from decimal import Decimal
 import os
+import shutil
 
 from test_framework.blocktools import create_block, create_coinbase
 from test_framework.mininode import CTransaction, from_hex, to_hex
@@ -774,6 +775,49 @@ class PQAssetAnchorTest(RavenTestFramework):
         split_tx = from_hex(CTransaction(), split_raw)
         assert_equal(sorted(output.scriptPubKey[-32:] for output in split_tx.vout),
                      sorted((descriptor_program, destination_program)))
+
+        # A backed-up encrypted wallet must recover both halves of the
+        # descriptor and sign a matching PQ anchor after a fresh restart.
+        passphrase = 'regtest-only-pq-asset-passphrase'
+        node.node_encrypt_wallet(passphrase)
+        self.start_node(0)
+        assert_equal(node.validateaddress(classical_part)['ismine'], True)
+        assert_equal(node.validateaddress(pq_part)['ismine'], True)
+        assert_equal(node.listmyassets(qualifier_name, True)
+                     [qualifier_name]['balance'], 1)
+        assert_raises_rpc_error(-13, 'walletpassphrase first',
+                                node.transferqualifier, qualifier_name, 1,
+                                composite_address)
+        backup_path = os.path.join(node.datadir, 'pq-asset-wallet.bak')
+        node.backupwallet(backup_path)
+        self.stop_node(0)
+        shutil.copyfile(backup_path,
+                        os.path.join(node.datadir, 'regtest', 'wallet.dat'))
+        self.start_node(0)
+        assert_equal(node.validateaddress(classical_part)['ismine'], True)
+        assert_equal(node.validateaddress(pq_part)['ismine'], True)
+        assert_equal(node.listmyassets(qualifier_name, True)
+                     [qualifier_name]['balance'], 1)
+        node.walletpassphrase(passphrase, 600)
+        node.sendtoaddress(pq_part, Decimal('1'))
+        node.generate(1)
+        recovered_anchors = {
+            (coin['txid'], coin['vout']) for coin in node.listunspent()
+            if coin['scriptPubKey'] == descriptor_script.hex()
+        }
+        recovered_txid = node.transferqualifier(
+            qualifier_name, 1, composite_address)[0]
+        recovered_tx = from_hex(CTransaction(),
+                                node.getrawtransaction(recovered_txid))
+        recovered_vin = [index for index, txin in enumerate(recovered_tx.vin)
+                         if (format(txin.prevout.hash, '064x'), txin.prevout.n)
+                         in recovered_anchors]
+        assert_equal(len(recovered_vin), 1)
+        assert_equal(len(recovered_tx.wit.vtxinwit[recovered_vin[0]]
+                         .scriptWitness.stack), 2)
+        node.generate(1)
+        assert_equal(node.listmyassets(qualifier_name, True)
+                     [qualifier_name]['balance'], 1)
 
 
 if __name__ == '__main__':
