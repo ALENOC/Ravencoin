@@ -4239,10 +4239,23 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
     }
 
     std::string asset_change_address = change_address;
+    uint256 protectedParentProgram;
     const bool needsAssetChange = assetType == AssetType::SUB || assetType == AssetType::UNIQUE ||
                                   assetType == AssetType::MSGCHANNEL || assetType == AssetType::SUB_QUALIFIER ||
                                   assetType == AssetType::RESTRICTED;
-    if (needsAssetChange &&
+    const bool protectedOwnerReturn = pqAssetsActive &&
+        (assetType == AssetType::SUB || assetType == AssetType::UNIQUE ||
+         assetType == AssetType::MSGCHANNEL);
+    if (protectedOwnerReturn) {
+        CTxDestination parentDestination;
+        if (!SelectProtectedOwnerReturn(pwallet, parentName + OWNER_TAG,
+                                        parentDestination, protectedParentProgram,
+                                        error))
+            return false;
+        asset_change_address = EncodeDestination(parentDestination);
+        coinControl.assetDestChange = parentDestination;
+        coinControl.pqAssetChangeProgram = protectedParentProgram;
+    } else if (needsAssetChange &&
         !SelectSupportedAssetChangeAddress(pwallet, coinControl, reservekey, change_address, asset_change_address, error)) {
         return false;
     }
@@ -4282,6 +4295,16 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
 
         CAssetTransfer assetTransfer(parentName + OWNER_TAG, OWNER_ASSET_AMOUNT);
         assetTransfer.ConstructTransaction(scriptTransferOwnerAsset);
+        if (protectedOwnerReturn) {
+            CScript tagged;
+            if (!BuildPQAssetTaggedScript(scriptTransferOwnerAsset,
+                                          protectedParentProgram, tagged)) {
+                error = std::make_pair(RPC_WALLET_ERROR,
+                    "Could not construct protected parent owner-token return");
+                return false;
+            }
+            scriptTransferOwnerAsset = std::move(tagged);
+        }
         CRecipient rec = {scriptTransferOwnerAsset, 0, fSubtractFeeFromAmount};
         vecSend.push_back(rec);
     }

@@ -303,6 +303,75 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(node.listmyassets('PQROOTRECIPIENT!', True)
                      ['PQROOTRECIPIENT!']['balance'], 1)
 
+        # A subasset uses the root owner token as authority. Its return and
+        # the new subasset and sub-owner outputs must all remain tagged.
+        sub_name = 'PQROOTRECIPIENT/SUB'
+        assert_raises_rpc_error(-4, 'funded matching PQ anchor',
+                                node.issue, sub_name, 3,
+                                destination_descriptor)
+        sub_anchor_txid = node.sendtoaddress(pq_part, Decimal('1'))
+        node.generate(1)
+        sub_anchor_vout = self.output_index(
+            node.getrawtransaction(sub_anchor_txid),
+            lambda script: script == descriptor_script)
+        sub_issue_txid = node.issue(sub_name, 3, destination_descriptor)[0]
+        sub_issue = from_hex(CTransaction(), node.getrawtransaction(sub_issue_txid))
+        sub_anchor_vin = [index for index, txin in enumerate(sub_issue.vin)
+                          if txin.prevout.hash == int(sub_anchor_txid, 16) and
+                          txin.prevout.n == sub_anchor_vout]
+        assert_equal(len(sub_anchor_vin), 1)
+        assert_equal(len(sub_issue.wit.vtxinwit[sub_anchor_vin[0]]
+                         .scriptWitness.stack), 2)
+        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+                         output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == descriptor_program
+                         for output in sub_issue.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        assert_equal(sum(output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == destination_program
+                         for output in sub_issue.vout
+                         if len(output.scriptPubKey) > 57), 2)
+        node.generate(1)
+        assert_equal(node.listmyassets(sub_name, True)[sub_name]['balance'], 3)
+        assert_equal(node.listmyassets(sub_name + '!', True)
+                     [sub_name + '!']['balance'], 1)
+
+        # A batched unique issue returns the same protected parent owner
+        # token while placing every unique asset under the recipient program.
+        assert_raises_rpc_error(-4, 'funded matching PQ anchor',
+                                node.issueunique, 'PQROOTRECIPIENT',
+                                ['first', 'second'], None,
+                                destination_descriptor)
+        unique_anchor_txid = node.sendtoaddress(pq_part, Decimal('1'))
+        node.generate(1)
+        unique_anchor_vout = self.output_index(
+            node.getrawtransaction(unique_anchor_txid),
+            lambda script: script == descriptor_script)
+        unique_txid = node.issueunique(
+            'PQROOTRECIPIENT', ['first', 'second'], None,
+            destination_descriptor)[0]
+        unique_tx = from_hex(CTransaction(), node.getrawtransaction(unique_txid))
+        unique_anchor_vin = [index for index, txin in enumerate(unique_tx.vin)
+                             if txin.prevout.hash == int(unique_anchor_txid, 16) and
+                             txin.prevout.n == unique_anchor_vout]
+        assert_equal(len(unique_anchor_vin), 1)
+        assert_equal(len(unique_tx.wit.vtxinwit[unique_anchor_vin[0]]
+                         .scriptWitness.stack), 2)
+        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+                         output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == descriptor_program
+                         for output in unique_tx.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        assert_equal(sum(output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == destination_program
+                         for output in unique_tx.vout
+                         if len(output.scriptPubKey) > 57), 2)
+        node.generate(1)
+        for tag in ('first', 'second'):
+            unique_name = 'PQROOTRECIPIENT#' + tag
+            assert_equal(node.listmyassets(unique_name, True)
+                         [unique_name]['balance'], 1)
+
         # A legacy root owner can first be migrated to a protected output.
         # The restricted-asset reissue then returns that protected owner token.
         # A nontrivial qualifier verifier still needs separate coverage.

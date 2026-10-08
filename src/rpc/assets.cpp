@@ -658,7 +658,10 @@ UniValue issueunique(const JSONRPCRequest& request)
 
     if (!address.empty()) {
         CTxDestination destination = DecodeDestination(address);
-        if (!IsValidDestination(destination)) {
+        CKeyID classicalKey;
+        uint256 pqProgram;
+        if (!IsValidDestination(destination) &&
+            !DecodePQAssetDestination(address, classicalKey, pqProgram)) {
             throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + address);
         }
     } else {
