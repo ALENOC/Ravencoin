@@ -486,6 +486,43 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(node.listmyassets(qualifier_name, True)
                      [qualifier_name]['balance'], 1)
 
+        # Restricted issuance is authorized by ROOT!, not by $ROOT!.
+        # That owner token now uses the destination program after transfer.
+        node.sendtoaddress(destination_pq, Decimal('1'))
+        node.generate(1)
+        available_issue_anchors = {
+            (coin['txid'], coin['vout']) for coin in node.listunspent()
+            if coin['scriptPubKey'] == destination_script.hex()
+        }
+        assert available_issue_anchors
+        restricted_issue_name = '$PQROOTRECIPIENT'
+        restricted_issue_txid = node.issuerestrictedasset(
+            restricted_issue_name, 1, 'true', composite_address)[0]
+        restricted_issue = from_hex(
+            CTransaction(), node.getrawtransaction(restricted_issue_txid))
+        issue_anchor_vin = [index for index, txin in enumerate(restricted_issue.vin)
+                            if (format(txin.prevout.hash, '064x'),
+                                txin.prevout.n) in available_issue_anchors]
+        assert_equal(len(issue_anchor_vin), 1)
+        assert_equal(len(restricted_issue.wit.vtxinwit[issue_anchor_vin[0]]
+                         .scriptWitness.stack), 2)
+        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+                         output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == descriptor_program
+                         for output in restricted_issue.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        destination_classical, _ = destination_descriptor.split('|')
+        destination_classical_script = bytes.fromhex(
+            node.validateaddress(destination_classical)['scriptPubKey'])
+        assert_equal(sum(output.scriptPubKey[:25] == destination_classical_script and
+                         output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == destination_program
+                         for output in restricted_issue.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        node.generate(1)
+        assert_equal(node.listmyassets(restricted_issue_name, True)
+                     [restricted_issue_name]['balance'], 1)
+
 
 if __name__ == '__main__':
     PQAssetAnchorTest().main()

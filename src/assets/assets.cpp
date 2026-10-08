@@ -4245,10 +4245,12 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
                                   assetType == AssetType::RESTRICTED;
     const bool protectedOwnerReturn = pqAssetsActive &&
         (assetType == AssetType::SUB || assetType == AssetType::UNIQUE ||
-         assetType == AssetType::MSGCHANNEL);
+         assetType == AssetType::MSGCHANNEL || assetType == AssetType::RESTRICTED);
     if (protectedOwnerReturn) {
         CTxDestination parentDestination;
-        if (!SelectProtectedOwnerReturn(pwallet, parentName + OWNER_TAG,
+        const std::string ownerName =
+            (assetType == AssetType::RESTRICTED ? parentName.substr(1) : parentName) + OWNER_TAG;
+        if (!SelectProtectedOwnerReturn(pwallet, ownerName,
                                         parentDestination, protectedParentProgram,
                                         error))
             return false;
@@ -4354,6 +4356,16 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
 
         CAssetTransfer assetTransfer(strStripped + OWNER_TAG, OWNER_ASSET_AMOUNT);
         assetTransfer.ConstructTransaction(scriptTransferOwnerAsset);
+        if (protectedOwnerReturn) {
+            CScript tagged;
+            if (!BuildPQAssetTaggedScript(scriptTransferOwnerAsset,
+                                          protectedParentProgram, tagged)) {
+                error = std::make_pair(RPC_WALLET_ERROR,
+                    "Could not construct protected restricted owner-token return");
+                return false;
+            }
+            scriptTransferOwnerAsset = std::move(tagged);
+        }
 
         CRecipient ownerRec = {scriptTransferOwnerAsset, 0, fSubtractFeeFromAmount};
         vecSend.push_back(ownerRec);

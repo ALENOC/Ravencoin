@@ -2581,7 +2581,11 @@ UniValue issuerestrictedasset(const JSONRPCRequest& request)
 
     // Validate the address
     CTxDestination destination = DecodeDestination(to_address);
-    if (!IsValidDestination(destination)) {
+    CKeyID classicalKey;
+    uint256 pqProgram;
+    const bool isPQAssetDestination =
+        DecodePQAssetDestination(to_address, classicalKey, pqProgram);
+    if (!IsValidDestination(destination) && !isPQAssetDestination) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + to_address);
     }
 
@@ -2590,7 +2594,10 @@ UniValue issuerestrictedasset(const JSONRPCRequest& request)
 
     // Validate the verifier string with the given to_address
     std::string strError = "";
-    if (!ContextualCheckVerifierString(passets, verifierStripped, to_address, strError))
+    if (!ContextualCheckVerifierString(
+            passets, verifierStripped,
+            isPQAssetDestination ? EncodeDestination(classicalKey) : to_address,
+            strError))
         throw JSONRPCError(RPC_INVALID_PARAMETER, strError);
 
     // Get the change address if one was given
