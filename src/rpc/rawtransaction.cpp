@@ -354,6 +354,10 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
             "Returns hex-encoded raw transaction.\n"
             "Note that the transaction's inputs are not signed, and\n"
             "it is not stored in the wallet or transmitted to the network.\n"
+            "After PQ asset activation, asset output keys and owner/root change fields\n"
+            "must use canonical classical|PQ descriptors. Spending a protected asset\n"
+            "also requires a supplied, funded native witness-v2 input with the same\n"
+            "PQ program; this RPC does not select or fund that anchor.\n"
 
             "\nPaying for Asset Operations:\n"
             "  Some operations require an amount of RVN to be sent to a burn address:\n"
@@ -660,6 +664,41 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
 
     auto currentActiveAssetCache = GetCurrentAssetCache();
 
+    bool pqAssetsActive;
+    {
+        LOCK(cs_main);
+        const int activationHeight = GetPQAssetActivationHeightForPrev(
+            chainActive.Tip(), GetParams().GetConsensus());
+        pqAssetsActive = activationHeight >= 0 && chainActive.Height() + 1 >= activationHeight;
+    }
+
+    const auto decodeAssetChange = [&](const std::string& address, const std::string& field,
+                                       uint256& program) -> CTxDestination {
+        if (pqAssetsActive) {
+            CKeyID classicalKey;
+            if (!DecodePQAssetDestination(address, classicalKey, program))
+                throw JSONRPCError(RPC_INVALID_PARAMETER,
+                    "Invalid parameter, " + field + " must be a canonical classical|PQ asset destination");
+            return classicalKey;
+        }
+        const CTxDestination destination = DecodeDestination(address);
+        if (!IsValidDestination(destination))
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                "Invalid parameter, " + field + " is not a valid Ravencoin address");
+        if (!IsSupportedAssetDestination(destination))
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                "Invalid parameter, " + field + " must be a legacy P2PKH address");
+        return destination;
+    };
+
+    const auto tagAssetScript = [](CScript& script, const uint256& program) {
+        CScript tagged;
+        if (!BuildPQAssetTaggedScript(script, program, tagged))
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                "Could not construct a canonical PQ asset output");
+        script = std::move(tagged);
+    };
+
     std::set<CTxDestination> destinations;
     std::vector<std::string> addrList = sendTo.getKeys();
     for (const std::string& name_ : addrList) {
@@ -670,12 +709,24 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
             CTxOut out(0, CScript() << OP_RETURN << data);
             rawTx.vout.push_back(out);
         } else {
-            CTxDestination destination = DecodeDestination(name_);
+            const bool isAssetOutput = sendTo[name_].type() == UniValue::VOBJ;
+            CTxDestination destination;
+            uint256 assetProgram;
+            if (pqAssetsActive && isAssetOutput) {
+                CKeyID classicalKey;
+                if (!DecodePQAssetDestination(name_, classicalKey, assetProgram))
+                    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                        "Active PQ asset output requires a canonical classical|PQ asset destination");
+                destination = classicalKey;
+            } else {
+                destination = DecodeDestination(name_);
+            }
             if (!IsValidDestination(destination)) {
                 throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + name_);
             }
 
-            if (!destinations.insert(destination).second) {
+            if (!(pqAssetsActive && isAssetOutput) &&
+                !destinations.insert(destination).second) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, std::string("Invalid parameter, duplicated address: ") + name_);
             }
 
@@ -690,6 +741,7 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
             }
             /** RVN COIN START **/
             else if (sendTo[name_].type() == UniValue::VOBJ) {
+                const size_t firstAssetOutput = rawTx.vout.size();
                 if (!IsSupportedAssetDestination(destination)) {
                     throw JSONRPCError(
                         RPC_INVALID_ADDRESS_OR_KEY,
@@ -896,13 +948,11 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                         fHasOwnerChange = true;
                     }
 
-                    if (fHasOwnerChange) {
-                        const CTxDestination ownerChangeDestination = DecodeDestination(owner_change_address.get_str());
-                        if (!IsValidDestination(ownerChangeDestination))
-                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, owner_change_address is not a valid Ravencoin address");
-                        if (!IsSupportedAssetDestination(ownerChangeDestination))
-                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, owner_change_address must be a legacy P2PKH address");
-                    }
+                    CTxDestination ownerChangeDestination;
+                    uint256 ownerChangeProgram;
+                    if (fHasOwnerChange)
+                        ownerChangeDestination = decodeAssetChange(
+                            owner_change_address.get_str(), "owner_change_address", ownerChangeProgram);
 
                     if (IsAssetNameAnRestricted(asset_name.get_str()))
                         throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, asset_name can't be a restricted asset name. Please use reissue_restricted with the correct parameters");
@@ -919,12 +969,14 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                     // Create the scripts for the change of the ownership token
                     CScript owner_asset_transfer_script;
                     if (fHasOwnerChange)
-                        owner_asset_transfer_script = GetScriptForDestination(DecodeDestination(owner_change_address.get_str()));
+                        owner_asset_transfer_script = GetScriptForDestination(ownerChangeDestination);
                     else
                         owner_asset_transfer_script = GetScriptForDestination(destination);
 
                     CAssetTransfer transfer_owner(asset_name.get_str() + OWNER_TAG, OWNER_ASSET_AMOUNT);
                     transfer_owner.ConstructTransaction(owner_asset_transfer_script);
+                    if (pqAssetsActive && fHasOwnerChange)
+                        tagAssetScript(owner_asset_transfer_script, ownerChangeProgram);
 
                     // Create the scripts for the reissued assets
                     CScript scriptReissueAsset = GetScriptForDestination(destination);
@@ -1068,13 +1120,11 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                         fHasOwnerChange = true;
                     }
 
-                    if (fHasOwnerChange) {
-                        const CTxDestination ownerChangeDestination = DecodeDestination(owner_change_address.get_str());
-                        if (!IsValidDestination(ownerChangeDestination))
-                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, owner_change_address is not a valid Ravencoin address");
-                        if (!IsSupportedAssetDestination(ownerChangeDestination))
-                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, owner_change_address must be a legacy P2PKH address");
-                    }
+                    CTxDestination ownerChangeDestination;
+                    uint256 ownerChangeProgram;
+                    if (fHasOwnerChange)
+                        ownerChangeDestination = decodeAssetChange(
+                            owner_change_address.get_str(), "owner_change_address", ownerChangeProgram);
 
                     UniValue ipfs_hash = "";
                     if (has_ipfs.get_int() == 1) {
@@ -1114,12 +1164,14 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                     // Construct the owner change script
                     CScript owner_asset_transfer_script;
                     if (fHasOwnerChange)
-                        owner_asset_transfer_script = GetScriptForDestination(DecodeDestination(owner_change_address.get_str()));
+                        owner_asset_transfer_script = GetScriptForDestination(ownerChangeDestination);
                     else
                         owner_asset_transfer_script = GetScriptForDestination(destination);
 
                     CAssetTransfer transfer_owner(strAssetName.substr(1, strAssetName.size()) + OWNER_TAG, OWNER_ASSET_AMOUNT);
                     transfer_owner.ConstructTransaction(owner_asset_transfer_script);
+                    if (pqAssetsActive && fHasOwnerChange)
+                        tagAssetScript(owner_asset_transfer_script, ownerChangeProgram);
 
                     // Construct the verifier string script
                     CScript verifier_string_script;
@@ -1198,15 +1250,11 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                         fHasOwnerChange = true;
                     }
 
-                    if (fHasOwnerChange) {
-                        const CTxDestination ownerChangeDestination = DecodeDestination(owner_change_address.get_str());
-                        if (!IsValidDestination(ownerChangeDestination))
-                            throw JSONRPCError(RPC_INVALID_PARAMETER,
-                                               "Invalid parameter, owner_change_address is not a valid Ravencoin address");
-                        if (!IsSupportedAssetDestination(ownerChangeDestination))
-                            throw JSONRPCError(RPC_INVALID_PARAMETER,
-                                               "Invalid parameter, owner_change_address must be a legacy P2PKH address");
-                    }
+                    CTxDestination ownerChangeDestination;
+                    uint256 ownerChangeProgram;
+                    if (fHasOwnerChange)
+                        ownerChangeDestination = decodeAssetChange(
+                            owner_change_address.get_str(), "owner_change_address", ownerChangeProgram);
 
                     std::string strAssetName = asset_name.get_str();
 
@@ -1240,13 +1288,14 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                     // Create the scripts for the change of the ownership token
                     CScript owner_asset_transfer_script;
                     if (fHasOwnerChange)
-                        owner_asset_transfer_script = GetScriptForDestination(
-                                DecodeDestination(owner_change_address.get_str()));
+                        owner_asset_transfer_script = GetScriptForDestination(ownerChangeDestination);
                     else
                         owner_asset_transfer_script = GetScriptForDestination(destination);
 
                     CAssetTransfer transfer_owner(RestrictedNameToOwnerName(asset_name.get_str()), OWNER_ASSET_AMOUNT);
                     transfer_owner.ConstructTransaction(owner_asset_transfer_script);
+                    if (pqAssetsActive && fHasOwnerChange)
+                        tagAssetScript(owner_asset_transfer_script, ownerChangeProgram);
 
                     // Create the scripts for the reissued assets
                     CScript scriptReissueAsset = GetScriptForDestination(destination);
@@ -1316,13 +1365,11 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                         fHasRootChange = true;
                     }
 
-                    if (fHasRootChange) {
-                        const CTxDestination rootChangeDestination = DecodeDestination(root_change_address.get_str());
-                        if (!IsValidDestination(rootChangeDestination))
-                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, root_change_address is not a valid Ravencoin address");
-                        if (!IsSupportedAssetDestination(rootChangeDestination))
-                            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, root_change_address must be a legacy P2PKH address");
-                    }
+                    CTxDestination rootChangeDestination;
+                    uint256 rootChangeProgram;
+                    if (fHasRootChange)
+                        rootChangeDestination = decodeAssetChange(
+                            root_change_address.get_str(), "root_change_address", rootChangeProgram);
 
                     CAmount nAmount = AmountFromValue(asset_quantity);
                     if (nAmount < QUALIFIER_ASSET_MIN_AMOUNT || nAmount > QUALIFIER_ASSET_MAX_AMOUNT)
@@ -1356,13 +1403,14 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                     CScript root_asset_transfer_script;
                     if (isSubQualifier) {
                         if (fHasRootChange)
-                            root_asset_transfer_script = GetScriptForDestination(
-                                    DecodeDestination(root_change_address.get_str()));
+                            root_asset_transfer_script = GetScriptForDestination(rootChangeDestination);
                         else
                             root_asset_transfer_script = GetScriptForDestination(destination);
 
                         CAssetTransfer transfer_root(GetParentName(strAssetName), changeQty);
                         transfer_root.ConstructTransaction(root_asset_transfer_script);
+                        if (pqAssetsActive && fHasRootChange)
+                            tagAssetScript(root_asset_transfer_script, rootChangeProgram);
                     }
 
                     // Create the CTxOut for each script we need to issue
@@ -1494,6 +1542,19 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
 
                 } else {
                     throw JSONRPCError(RPC_INVALID_PARAMETER, std::string("Invalid parameter, unknown output type: " + assetKey_));
+                }
+
+                if (pqAssetsActive) {
+                    for (size_t index = firstAssetOutput; index < rawTx.vout.size(); ++index) {
+                        CScript& outputScript = rawTx.vout[index].scriptPubKey;
+                        int type = 0;
+                        bool isOwner = false;
+                        if (!outputScript.IsAssetScript(type, isOwner))
+                            continue;
+                        uint256 existingProgram;
+                        if (!GetPQAssetProgram(outputScript, existingProgram))
+                            tagAssetScript(outputScript, assetProgram);
+                    }
                 }
             } else {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, std::string("Invalid parameter, Output must be of the type object"));

@@ -17,7 +17,6 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
 ASSET_OPCODE = 0xc0
-DROP_OPCODE = 0x75
 
 
 class PQAssetAnchorTest(RavenTestFramework):
@@ -25,19 +24,6 @@ class PQAssetAnchorTest(RavenTestFramework):
         self.setup_clean_chain = True
         self.num_nodes = 1
         self.extra_args = [['-assetindex', '-vbparams=pq_assets:0:999999999999']]
-
-    @staticmethod
-    def tagged_asset_hex(raw, program):
-        tx = from_hex(CTransaction(), raw)
-        tagged = 0
-        for output in tx.vout:
-            script = output.scriptPubKey
-            if len(script) > 31 and script[25] == ASSET_OPCODE:
-                assert_equal(script[-1], DROP_OPCODE)
-                output.scriptPubKey = script[:-1] + program
-                tagged += 1
-        assert_equal(tagged, 1)
-        return to_hex(tx)
 
     @staticmethod
     def output_index(raw, predicate):
@@ -136,14 +122,14 @@ class PQAssetAnchorTest(RavenTestFramework):
             {'txid': asset_outpoint['txid'], 'vout': asset_outpoint['vout']},
             {'txid': native_coin['txid'], 'vout': native_coin['vout']},
         ]
+        migration_descriptor = legacy_address + '|' + pq_address
         migration_outputs = {
-            legacy_address: {'transfer': {asset_name: 1}},
+            migration_descriptor: {'transfer': {asset_name: 1}},
             pq_address: Decimal('1'),
             native_change: native_coin['amount'] - Decimal('1.01'),
         }
         migration_raw = node.createrawtransaction(migration_inputs, migration_outputs)
-        migration_tagged = self.tagged_asset_hex(migration_raw, program)
-        migration_signed = node.signrawtransaction(migration_tagged)
+        migration_signed = node.signrawtransaction(migration_raw)
         assert_equal(migration_signed['complete'], True)
         migration_txid = node.sendrawtransaction(migration_signed['hex'])
         node.generate(1)
@@ -159,8 +145,8 @@ class PQAssetAnchorTest(RavenTestFramework):
         anchor_input = {'txid': migration_txid, 'vout': anchor_index}
 
         no_anchor = node.createrawtransaction(
-            [asset_input], {legacy_address: {'transfer': {asset_name: 1}}})
-        no_anchor = node.signrawtransaction(self.tagged_asset_hex(no_anchor, program))
+            [asset_input], {migration_descriptor: {'transfer': {asset_name: 1}}})
+        no_anchor = node.signrawtransaction(no_anchor)
         assert_equal(no_anchor['complete'], True)
         assert_raises_rpc_error(-26, 'bad-pq-asset-anchor',
                                 node.sendrawtransaction, no_anchor['hex'])
@@ -177,10 +163,9 @@ class PQAssetAnchorTest(RavenTestFramework):
 
         spend_raw = node.createrawtransaction(
             [asset_input, anchor_input],
-            {legacy_address: {'transfer': {asset_name: 1}},
+            {migration_descriptor: {'transfer': {asset_name: 1}},
              pq_address: Decimal('0.9')})
-        spend_tagged = self.tagged_asset_hex(spend_raw, program)
-        spend_signed = node.signrawtransaction(spend_tagged)
+        spend_signed = node.signrawtransaction(spend_raw)
         assert_equal(spend_signed['complete'], True)
         signed_tx = from_hex(CTransaction(), spend_signed['hex'])
         assert_equal(len(signed_tx.wit.vtxinwit[1].scriptWitness.stack), 2)
@@ -653,6 +638,101 @@ class PQAssetAnchorTest(RavenTestFramework):
             assert_protected_admin_return(
                 method, arguments, destination_pq, destination_script,
                 destination_classical_script, destination_program)
+
+        # Raw asset construction must tag every asset output. The separate
+        # owner/root return field must retain its own descriptor program.
+        dummy_input = [{'txid': '00' * 32, 'vout': 0}]
+        primary = (classical_script, descriptor_program)
+        alternate = (destination_classical_script, destination_program)
+
+        def assert_raw_asset_programs(asset_object, expected):
+            raw = node.createrawtransaction(
+                dummy_input, {composite_address: asset_object})
+            tx = from_hex(CTransaction(), raw)
+            actual = sorted((output.scriptPubKey[:25], output.scriptPubKey[-32:])
+                            for output in tx.vout
+                            if len(output.scriptPubKey) > 57 and
+                            output.scriptPubKey[25] == ASSET_OPCODE)
+            assert_equal(actual, sorted(expected))
+
+        assert_raw_asset_programs(
+            {'issue': {'asset_name': 'PQRAWROOT', 'asset_quantity': 1,
+                       'units': 0, 'reissuable': 1, 'has_ipfs': 0}},
+            [primary, primary])
+        assert_raw_asset_programs(
+            {'issue_unique': {'root_name': 'PQROOTRECIPIENT',
+                              'asset_tags': ['rawone', 'rawtwo']}},
+            [primary, primary, primary])
+        assert_raw_asset_programs(
+            {'reissue': {'asset_name': 'PQROOTRECIPIENT', 'asset_quantity': 1,
+                         'owner_change_address': destination_descriptor}},
+            [primary, alternate])
+        assert_raw_asset_programs(
+            {'transfer': {'PQROOTRECIPIENT': 1}}, [primary])
+        assert_raw_asset_programs(
+            {'transferwithmessage': {'PQROOTRECIPIENT': 1,
+                                     'message': 'ab' * 32,
+                                     'expire_time': 0}}, [primary])
+        assert_raw_asset_programs(
+            {'issue_restricted': {'asset_name': '$PQRAWROOT',
+                                  'asset_quantity': 1, 'verifier_string': 'true',
+                                  'units': 0, 'reissuable': 1, 'has_ipfs': 0,
+                                  'owner_change_address': destination_descriptor}},
+            [primary, alternate])
+        assert_raw_asset_programs(
+            {'reissue_restricted': {'asset_name': restricted_issue_name,
+                                    'asset_quantity': 1,
+                                    'owner_change_address': destination_descriptor}},
+            [primary, alternate])
+        assert_raw_asset_programs(
+            {'issue_qualifier': {'asset_name': '#PQRAWQUAL',
+                                 'asset_quantity': 1, 'has_ipfs': 0}},
+            [primary])
+        assert_raw_asset_programs(
+            {'issue_qualifier': {'asset_name': '#PQQUALROOT/#RAW',
+                                 'asset_quantity': 1, 'has_ipfs': 0,
+                                 'root_change_address': destination_descriptor}},
+            [primary, alternate])
+        assert_raw_asset_programs(
+            {'tag_addresses': {'qualifier': qualifier_name,
+                               'addresses': [classical_part]}}, [primary])
+        assert_raw_asset_programs(
+            {'untag_addresses': {'qualifier': qualifier_name,
+                                 'addresses': [classical_part]}}, [primary])
+        assert_raw_asset_programs(
+            {'freeze_addresses': {'asset_name': restricted_issue_name,
+                                  'addresses': [classical_part]}}, [primary])
+        assert_raw_asset_programs(
+            {'unfreeze_addresses': {'asset_name': restricted_issue_name,
+                                    'addresses': [classical_part]}}, [primary])
+        assert_raw_asset_programs(
+            {'freeze_asset': {'asset_name': restricted_issue_name}}, [primary])
+        assert_raw_asset_programs(
+            {'unfreeze_asset': {'asset_name': restricted_issue_name}}, [primary])
+        assert_raises_rpc_error(
+            -5, 'canonical classical|PQ asset destination',
+            node.createrawtransaction, dummy_input,
+            {classical_part: {'transfer': {'PQROOTRECIPIENT': 1}}})
+        assert_raises_rpc_error(
+            None, 'owner_change_address must be a canonical classical|PQ',
+            node.createrawtransaction, dummy_input,
+            {composite_address: {
+                'reissue': {'asset_name': 'PQROOTRECIPIENT',
+                            'asset_quantity': 1,
+                            'owner_change_address': classical_part}}})
+        mixed_raw = node.createrawtransaction(
+            dummy_input,
+            {composite_address: {'transfer': {'PQROOTRECIPIENT': 1}},
+             classical_part: Decimal('1')})
+        assert_equal(len(from_hex(CTransaction(), mixed_raw).vout), 2)
+        alternate_program_descriptor = classical_part + '|' + destination_pq
+        split_raw = node.createrawtransaction(
+            dummy_input,
+            {composite_address: {'transfer': {'PQROOTRECIPIENT': 1}},
+             alternate_program_descriptor: {'transfer': {'PQROOTRECIPIENT': 1}}})
+        split_tx = from_hex(CTransaction(), split_raw)
+        assert_equal(sorted(output.scriptPubKey[-32:] for output in split_tx.vout),
+                     sorted((descriptor_program, destination_program)))
 
 
 if __name__ == '__main__':
