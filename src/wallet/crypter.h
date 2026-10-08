@@ -71,6 +71,7 @@ typedef std::vector<unsigned char, secure_allocator<unsigned char> > CKeyingMate
 namespace wallet_crypto
 {
     class TestCrypter;
+    class TestKeyStore;
 }
 
 /** Encryption/decryption context with key information */
@@ -115,6 +116,7 @@ public:
  */
 class CCryptoKeyStore : public CBasicKeyStore
 {
+friend class wallet_crypto::TestKeyStore;
 private:
 
     CKeyingMaterial vMasterKey;
@@ -128,6 +130,15 @@ private:
 
 protected:
     bool SetCrypted();
+
+    /** Enter the locked state and release all plaintext secret storage.
+     *  Does not emit NotifyStatusChanged, so derived classes can complete
+     *  their own locked-state transition before publishing it. */
+    bool LockKeyStore();
+
+    /** Restore the initial unencrypted mode after the first encrypted-key
+     * persistence attempt failed and no encrypted entries remain. */
+    void ResetCryptedOnAddFailure();
 
     //! will encrypt previously unencrypted keys
     bool EncryptKeys(CKeyingMaterial& vMasterKeyIn);
@@ -166,7 +177,7 @@ public:
         return result;
     }
 
-    bool Lock();
+    virtual bool Lock();
 
     virtual bool AddCryptedKey(const CPubKey &vchPubKey, const std::vector<unsigned char> &vchCryptedSecret);
     virtual bool AddCryptedPQKey(const CPQPubKey &pqPubKey, const std::vector<unsigned char> &vchCryptedSecret);

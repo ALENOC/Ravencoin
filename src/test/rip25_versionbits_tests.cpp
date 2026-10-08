@@ -3,7 +3,16 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "chain.h"
+#include "chainparams.h"
+#include "assets/assets.h"
+#include "base58.h"
 #include "consensus/params.h"
+#include "consensus/tx_verify.h"
+#include "consensus/validation.h"
+#include "primitives/block.h"
+#include "script/standard.h"
+#include "test/test_raven.h"
+#include "validation.h"
 #include "versionbits.h"
 
 #include <boost/test/unit_test.hpp>
@@ -18,20 +27,23 @@ namespace {
 class SyntheticVersionBitsChain
 {
 private:
+    CBlockIndex* base;
     std::vector<std::unique_ptr<CBlockIndex>> blocks;
 
 public:
-    const CBlockIndex* Tip() const
+    explicit SyntheticVersionBitsChain(CBlockIndex* baseIn = nullptr) : base(baseIn) {}
+
+    CBlockIndex* Tip() const
     {
-        return blocks.empty() ? nullptr : blocks.back().get();
+        return blocks.empty() ? base : blocks.back().get();
     }
 
     void Mine(unsigned int count, int32_t version)
     {
         for (unsigned int i = 0; i < count; ++i) {
             auto block = std::make_unique<CBlockIndex>();
-            block->nHeight = static_cast<int>(blocks.size());
-            block->pprev = blocks.empty() ? nullptr : blocks.back().get();
+            block->pprev = Tip();
+            block->nHeight = block->pprev ? block->pprev->nHeight + 1 : 0;
             block->nTime = 100000 + block->nHeight;
             block->nVersion = version;
             block->BuildSkip();
@@ -59,6 +71,13 @@ Consensus::Params MakeRIP25VersionBitsParams()
     pq.nTimeout = std::numeric_limits<int64_t>::max();
     pq.nOverrideRuleChangeActivationThreshold = 3;
     pq.nOverrideMinerConfirmationWindow = 4;
+
+    auto& pqAssets = params.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS];
+    pqAssets.bit = 13;
+    pqAssets.nStartTime = 0;
+    pqAssets.nTimeout = std::numeric_limits<int64_t>::max();
+    pqAssets.nOverrideRuleChangeActivationThreshold = 3;
+    pqAssets.nOverrideMinerConfirmationWindow = 4;
 
     return params;
 }
@@ -120,6 +139,265 @@ BOOST_AUTO_TEST_CASE(overflow_bit11_does_not_signal_pq_bit12)
 
     BOOST_CHECK_EQUAL(VersionBitsState(chain.Tip(), params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW, cache), THRESHOLD_LOCKED_IN);
     BOOST_CHECK_EQUAL(VersionBitsState(chain.Tip(), params, Consensus::DEPLOYMENT_PQ_HYBRID, cache), THRESHOLD_STARTED);
+}
+
+BOOST_AUTO_TEST_CASE(pq_asset_bit13_is_distinct_and_rewinds_across_forks)
+{
+    Consensus::Params params = MakeRIP25VersionBitsParams();
+    VersionBitsCache cache;
+    SyntheticVersionBitsChain common;
+    const uint32_t overflowMask = VersionBitsMask(params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW);
+    const uint32_t nativeMask = VersionBitsMask(params, Consensus::DEPLOYMENT_PQ_HYBRID);
+    const uint32_t assetMask = VersionBitsMask(params, Consensus::DEPLOYMENT_PQ_ASSETS);
+    BOOST_CHECK_EQUAL(assetMask, 1U << 13);
+    BOOST_CHECK_EQUAL(assetMask & (overflowMask | nativeMask), 0U);
+
+    common.Mine(4, VERSIONBITS_TOP_BITS);
+    SyntheticVersionBitsChain signaled(common.Tip());
+    signaled.Mine(3, VERSIONBITS_TOP_BITS | assetMask);
+    signaled.Mine(1, VERSIONBITS_TOP_BITS);
+    BOOST_CHECK_EQUAL(VersionBitsState(signaled.Tip(), params, Consensus::DEPLOYMENT_PQ_ASSETS, cache), THRESHOLD_LOCKED_IN);
+    signaled.Mine(4, VERSIONBITS_TOP_BITS);
+    BOOST_CHECK_EQUAL(VersionBitsState(signaled.Tip(), params, Consensus::DEPLOYMENT_PQ_ASSETS, cache), THRESHOLD_ACTIVE);
+    BOOST_CHECK_EQUAL(VersionBitsStateSinceHeight(signaled.Tip(), params, Consensus::DEPLOYMENT_PQ_ASSETS, cache), 12);
+    BOOST_CHECK_EQUAL(VersionBitsState(signaled.Tip(), params, Consensus::DEPLOYMENT_PQ_HYBRID, cache), THRESHOLD_STARTED);
+
+    SyntheticVersionBitsChain unsignaled(common.Tip());
+    unsignaled.Mine(8, VERSIONBITS_TOP_BITS);
+    BOOST_CHECK_EQUAL(VersionBitsState(unsignaled.Tip(), params, Consensus::DEPLOYMENT_PQ_ASSETS, cache), THRESHOLD_STARTED);
+}
+
+BOOST_AUTO_TEST_CASE(transfer_overflow_state_rewinds_across_forks)
+{
+    Consensus::Params params = MakeRIP25VersionBitsParams();
+    VersionBitsCache cache;
+    SyntheticVersionBitsChain common;
+    const uint32_t overflowMask = VersionBitsMask(params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW);
+
+    common.Mine(4, VERSIONBITS_TOP_BITS);
+
+    SyntheticVersionBitsChain activeBranch(common.Tip());
+    activeBranch.Mine(3, VERSIONBITS_TOP_BITS | overflowMask);
+    activeBranch.Mine(1, VERSIONBITS_TOP_BITS);
+    activeBranch.Mine(4, VERSIONBITS_TOP_BITS);
+
+    SyntheticVersionBitsChain startedBranch(common.Tip());
+    startedBranch.Mine(8, VERSIONBITS_TOP_BITS);
+
+    // Query ACTIVE first using the same cache, then rewind to the alternate
+    // STARTED fork.  Activation must be a property of pindexPrev, not history.
+    BOOST_REQUIRE_EQUAL(VersionBitsState(activeBranch.Tip(), params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW, cache), THRESHOLD_ACTIVE);
+    BOOST_CHECK_EQUAL(VersionBitsState(startedBranch.Tip(), params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW, cache), THRESHOLD_STARTED);
+    BOOST_CHECK(IsTransferOverflowCheckActive(activeBranch.Tip(), params));
+    BOOST_CHECK(!IsTransferOverflowCheckActive(startedBranch.Tip(), params));
+}
+
+struct TransferOverflowRegtestSetup : BasicTestingSetup
+{
+    TransferOverflowRegtestSetup() : BasicTestingSetup(CBaseChainParams::REGTEST) {}
+};
+
+BOOST_FIXTURE_TEST_CASE(transfer_overflow_active_tip_policy_is_not_sticky, TransferOverflowRegtestSetup)
+{
+    const Consensus::Params& params = GetParams().GetConsensus();
+    const uint32_t overflowMask = VersionBitsMask(params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW);
+    const unsigned int period = params.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideMinerConfirmationWindow;
+    const unsigned int threshold = params.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideRuleChangeActivationThreshold;
+    BOOST_REQUIRE(period > 0);
+    BOOST_REQUIRE(threshold > 0);
+    BOOST_REQUIRE(threshold <= period);
+
+    SyntheticVersionBitsChain common;
+    common.Mine(period, VERSIONBITS_TOP_BITS);
+
+    SyntheticVersionBitsChain activeBranch(common.Tip());
+    activeBranch.Mine(threshold, VERSIONBITS_TOP_BITS | overflowMask);
+    activeBranch.Mine(period - threshold, VERSIONBITS_TOP_BITS);
+    activeBranch.Mine(period, VERSIONBITS_TOP_BITS);
+
+    SyntheticVersionBitsChain startedBranch(common.Tip());
+    startedBranch.Mine(2 * period, VERSIONBITS_TOP_BITS);
+
+    CBlockIndex* originalTip = nullptr;
+    {
+        LOCK(cs_main);
+        originalTip = chainActive.Tip();
+        // Synthetic indices from earlier tests may have reused addresses.
+        versionbitscache.Clear();
+        chainActive.SetTip(activeBranch.Tip());
+    }
+    BOOST_REQUIRE(IsTransferOverflowCheckDeployed());
+
+    {
+        LOCK(cs_main);
+        chainActive.SetTip(startedBranch.Tip());
+    }
+    BOOST_CHECK(!IsTransferOverflowCheckDeployed());
+
+    {
+        LOCK(cs_main);
+        chainActive.SetTip(originalTip);
+        versionbitscache.Clear();
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(asset_deployment_queries_rewind_after_active_tip, TransferOverflowRegtestSetup)
+{
+    struct DeploymentQuery {
+        Consensus::DeploymentPos deployment;
+        bool (*query)();
+        const char* name;
+    };
+    const DeploymentQuery queries[] = {
+        {Consensus::DEPLOYMENT_ASSETS, AreAssetsDeployed, "assets"},
+        {Consensus::DEPLOYMENT_MSG_REST_ASSETS, IsRip5Active, "restricted assets"},
+        {Consensus::DEPLOYMENT_TRANSFER_SCRIPT_SIZE, AreTransferScriptsSizeDeployed, "transfer script size"},
+        {Consensus::DEPLOYMENT_ENFORCE_VALUE, AreEnforcedValuesDeployed, "enforced values"},
+        {Consensus::DEPLOYMENT_COINBASE_ASSETS, AreCoinbaseCheckAssetsDeployed, "coinbase assets"},
+    };
+    const Consensus::Params& params = GetParams().GetConsensus();
+
+    for (const DeploymentQuery& check : queries) {
+        const auto& deployment = params.vDeployments[check.deployment];
+        const unsigned int period = deployment.nOverrideMinerConfirmationWindow;
+        const unsigned int threshold = deployment.nOverrideRuleChangeActivationThreshold;
+        BOOST_REQUIRE(period > 0);
+        BOOST_REQUIRE(threshold > 0);
+        BOOST_REQUIRE(threshold <= period);
+
+        SyntheticVersionBitsChain common;
+        common.Mine(period, VERSIONBITS_TOP_BITS);
+
+        SyntheticVersionBitsChain lockedBranch(common.Tip());
+        lockedBranch.Mine(threshold, VERSIONBITS_TOP_BITS | VersionBitsMask(params, check.deployment));
+        lockedBranch.Mine(period - threshold, VERSIONBITS_TOP_BITS);
+
+        SyntheticVersionBitsChain activeBranch(lockedBranch.Tip());
+        activeBranch.Mine(period, VERSIONBITS_TOP_BITS);
+
+        SyntheticVersionBitsChain startedBranch(common.Tip());
+        startedBranch.Mine(2 * period, VERSIONBITS_TOP_BITS);
+
+        VersionBitsCache expectedCache;
+        BOOST_REQUIRE_EQUAL(VersionBitsState(lockedBranch.Tip(), params, check.deployment, expectedCache), THRESHOLD_LOCKED_IN);
+        BOOST_REQUIRE_EQUAL(VersionBitsState(activeBranch.Tip(), params, check.deployment, expectedCache), THRESHOLD_ACTIVE);
+        BOOST_REQUIRE_EQUAL(VersionBitsState(startedBranch.Tip(), params, check.deployment, expectedCache), THRESHOLD_STARTED);
+
+        SetAssetsDeployed(false);
+        SetEnforcedValues(false);
+        SetEnforcedCoinbase(false);
+        CBlockIndex* originalTip = nullptr;
+        {
+            LOCK(cs_main);
+            originalTip = chainActive.Tip();
+            versionbitscache.Clear();
+            chainActive.SetTip(lockedBranch.Tip());
+        }
+        const bool lockedResult = check.query();
+
+        {
+            LOCK(cs_main);
+            chainActive.SetTip(activeBranch.Tip());
+        }
+        const bool activeResult = check.query();
+
+        {
+            LOCK(cs_main);
+            chainActive.SetTip(startedBranch.Tip());
+        }
+        const bool rewoundResult = check.query();
+
+        {
+            LOCK(cs_main);
+            chainActive.SetTip(originalTip);
+            versionbitscache.Clear();
+        }
+        const bool expectedLocked = check.deployment == Consensus::DEPLOYMENT_ENFORCE_VALUE;
+        BOOST_CHECK_MESSAGE(lockedResult == expectedLocked, check.name << " has the wrong LOCKED_IN rule");
+        BOOST_CHECK_MESSAGE(activeResult, check.name << " did not activate");
+        BOOST_CHECK_MESSAGE(!rewoundResult, check.name << " remained active after rewind");
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(checkblock_asset_result_does_not_depend_on_unrelated_tip, TransferOverflowRegtestSetup)
+{
+    const Consensus::Params& params = GetParams().GetConsensus();
+    const auto& deployment = params.vDeployments[Consensus::DEPLOYMENT_COINBASE_ASSETS];
+    const unsigned int period = deployment.nOverrideMinerConfirmationWindow;
+    const unsigned int threshold = deployment.nOverrideRuleChangeActivationThreshold;
+    BOOST_REQUIRE(period > 0);
+    BOOST_REQUIRE(threshold > 0);
+    BOOST_REQUIRE(threshold <= period);
+
+    SyntheticVersionBitsChain common;
+    common.Mine(period, VERSIONBITS_TOP_BITS);
+    SyntheticVersionBitsChain activeBranch(common.Tip());
+    activeBranch.Mine(threshold, VERSIONBITS_TOP_BITS | VersionBitsMask(params, Consensus::DEPLOYMENT_COINBASE_ASSETS));
+    activeBranch.Mine(period - threshold, VERSIONBITS_TOP_BITS);
+    activeBranch.Mine(period, VERSIONBITS_TOP_BITS);
+    SyntheticVersionBitsChain startedBranch(common.Tip());
+    startedBranch.Mine(2 * period, VERSIONBITS_TOP_BITS);
+
+    CScript assetScript = GetScriptForDestination(DecodeDestination(GetParams().GlobalBurnAddress()));
+    CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(assetScript);
+    BOOST_REQUIRE(assetScript.IsAssetScript());
+
+    CMutableTransaction coinbase;
+    coinbase.vin.resize(1);
+    coinbase.vin[0].prevout.SetNull();
+    coinbase.vin[0].scriptSig = CScript() << OP_1 << OP_1;
+    coinbase.vout.emplace_back(0, assetScript);
+    CBlock candidate;
+    candidate.vtx.emplace_back(MakeTransactionRef(coinbase));
+
+    SetEnforcedCoinbase(false);
+    CBlockIndex* originalTip = nullptr;
+    {
+        LOCK(cs_main);
+        originalTip = chainActive.Tip();
+        versionbitscache.Clear();
+        chainActive.SetTip(activeBranch.Tip());
+    }
+    CValidationState activeState;
+    const bool activeResult = CheckBlock(candidate, activeState, params, false, false);
+
+    {
+        LOCK(cs_main);
+        chainActive.SetTip(startedBranch.Tip());
+    }
+    CValidationState startedState;
+    const bool startedResult = CheckBlock(candidate, startedState, params, false, false);
+
+    {
+        LOCK(cs_main);
+        chainActive.SetTip(originalTip);
+        versionbitscache.Clear();
+    }
+    BOOST_CHECK_MESSAGE(activeResult == startedResult,
+                        "CheckBlock judged the same candidate differently after the active tip changed");
+}
+
+BOOST_FIXTURE_TEST_CASE(transfer_payload_uses_explicit_candidate_context, TransferOverflowRegtestSetup)
+{
+    CScript assetScript = GetScriptForDestination(DecodeDestination(GetParams().GlobalBurnAddress()));
+    CAssetTransfer("LONGASSETNAME12345678901234567", COIN, std::string(32, 'x')).ConstructTransaction(assetScript);
+    BOOST_REQUIRE(assetScript.IsAssetScript());
+
+    CMutableTransaction transfer;
+    transfer.vin.resize(1);
+    transfer.vin[0].prevout.n = 0;
+    transfer.vout.emplace_back(0, assetScript);
+    const CTransaction tx(transfer);
+
+    const TxAssetDeploymentContext before{false, false, false};
+    const TxAssetDeploymentContext after{true, false, false};
+    CValidationState beforeState;
+    CValidationState afterState;
+    CValidationState structuralState;
+    BOOST_CHECK(CheckTransaction(tx, structuralState, true, false, true, nullptr, true));
+    BOOST_CHECK(!CheckTransaction(tx, beforeState, true, false, true, &before));
+    BOOST_CHECK_EQUAL(beforeState.GetRejectReason(), "bad-txns-transfer-asset-bad-deserialize");
+    BOOST_CHECK(CheckTransaction(tx, afterState, true, false, true, &after));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

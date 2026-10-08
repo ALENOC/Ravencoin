@@ -5,7 +5,9 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "amount.h"
+#include "assets/assets.h"
 #include "base58.h"
+#include "bech32.h"
 #include "chain.h"
 #include "consensus/validation.h"
 #include "core_io.h"
@@ -24,6 +26,7 @@
 #include "util.h"
 #include "utiltime.h"
 #include "utilmoneystr.h"
+#include "pqkey.h"
 #include "wallet/coincontrol.h"
 #include "wallet/feebumper.h"
 #include "wallet/wallet.h"
@@ -62,7 +65,15 @@ std::string HelpRequiringPassphrase(CWallet * const pwallet)
 
 bool EnsureWalletIsAvailable(CWallet * const pwallet, bool avoidException)
 {
-    if (pwallet) return true;
+    if (pwallet) {
+        if (!pwallet->IsEncryptionRewritePending())
+            return true;
+        if (avoidException)
+            return false;
+        throw JSONRPCError(
+            RPC_WALLET_ERROR,
+            "Wallet encryption recovery is pending. Restart before using this wallet.");
+    }
     if (avoidException) return false;
     if (::vpwallets.empty()) {
         // Note: It isn't currently possible to trigger this error because
@@ -222,6 +233,85 @@ UniValue getnewaddress(const JSONRPCRequest& request)
     return EncodeDestination(keyID);
 }
 
+
+UniValue getnewpqaddress(const JSONRPCRequest& request)
+{
+    CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) return NullUniValue;
+    if (request.fHelp || request.params.size() > 1)
+        throw std::runtime_error("getnewpqaddress ( \"account\" )\nReturns a new post-quantum Raven address (witness v2, ML-DSA-44).\n");
+    LOCK2(cs_main, pwallet->cs_wallet);
+
+    // RIP-25 witness-v2 outputs are anyone-can-spend to pre-activation consensus.
+    // Do not let mainnet wallets generate addresses that are not yet protected.
+    if (!IsPQHybridDeployed())
+        throw JSONRPCError(RPC_WALLET_ERROR, "RIP-25 is not active on this network; refusing to generate an unprotected witness-v2 address");
+
+    EnsureWalletIsUnlocked(pwallet);
+
+    std::string strAccount;
+    if (!request.params[0].isNull()) strAccount = AccountFromValue(request.params[0]);
+    CPQPubKey pqPubKey;
+    if (!pwallet->GenerateNewPQKey(pqPubKey))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to derive and persist ML-DSA-44 keypair");
+    uint256 witnessProgram = pqPubKey.GetWitnessProgram();
+    WitnessV2PQDestination dest(witnessProgram);
+    pwallet->SetAddressBook(dest, strAccount, "receive");
+    return EncodeDestination(dest);
+}
+
+UniValue getnewpqassetaddress(const JSONRPCRequest& request)
+{
+    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) return NullUniValue;
+    if (request.fHelp || request.params.size() > 1)
+        throw std::runtime_error("getnewpqassetaddress ( \"account\" )\nReturns a classical|PQ asset destination for active RIP-25 asset rules.\n");
+    LOCK2(cs_main, pwallet->cs_wallet);
+
+    const int activationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
+    if (activationHeight < 0 || chainActive.Height() + 1 < activationHeight)
+        throw JSONRPCError(RPC_WALLET_ERROR, "PQ asset rules are not active; refusing to generate an unprotected asset destination");
+    EnsureWalletIsUnlocked(pwallet);
+
+    std::string account;
+    if (!request.params[0].isNull()) account = AccountFromValue(request.params[0]);
+    pwallet->TopUpKeyPool();
+    CReserveKey reserveClassicalKey(pwallet);
+    CPubKey classicalPubKey;
+    if (!reserveClassicalKey.GetReservedKey(classicalPubKey))
+        throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out, please call keypoolrefill first");
+    CPQPubKey pqPubKey;
+    if (!pwallet->GenerateNewPQKey(pqPubKey))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to derive and persist ML-DSA-44 keypair");
+    const CKeyID classicalKey = classicalPubKey.GetID();
+    const WitnessV2PQDestination pqDestination(pqPubKey.GetWitnessProgram());
+    if (!pwallet->StoreOwnedPQAssetDestination(classicalKey, pqDestination.witnessProgram))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to persist protected asset destination pairing");
+    reserveClassicalKey.KeepKey();
+    pwallet->SetAddressBook(classicalKey, account, "receive");
+    pwallet->SetAddressBook(pqDestination, account, "receive");
+    return EncodePQAssetDestination(classicalKey, pqDestination.witnessProgram);
+}
+
+UniValue listpqassetaddresses(const JSONRPCRequest& request)
+{
+    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) return NullUniValue;
+    if (request.fHelp || request.params.size() != 0)
+        throw std::runtime_error(
+            "listpqassetaddresses\nReturns saved wallet-owned classical|PQ asset destinations and whether PQ asset rules are active for the next block. An inactive destination is not safe for receiving assets.\n");
+    LOCK2(cs_main, pwallet->cs_wallet);
+
+    const int activationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
+    const bool active = activationHeight >= 0 && chainActive.Height() + 1 >= activationHeight;
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("active", active);
+    UniValue addresses(UniValue::VARR);
+    for (const std::string& descriptor : pwallet->GetOwnedPQAssetDestinations())
+        addresses.push_back(descriptor);
+    result.pushKV("addresses", addresses);
+    return result;
+}
 
 CTxDestination GetAccountAddress(CWallet* const pwallet, std::string strAccount, bool bForceNew=false)
 {
@@ -1369,6 +1459,7 @@ public:
         }
         return false;
     }
+    bool operator()(const WitnessV2PQDestination &dest) const { return false; }
 };
 
 UniValue addwitnessaddress(const JSONRPCRequest& request)
@@ -1641,6 +1732,21 @@ static void MaybePushAddress(UniValue & entry, const CTxDestination &dest)
     }
 }
 
+static std::string AssetHistoryDestination(const CWalletTx& wtx,
+                                           const CAssetOutputEntry& data)
+{
+    if (data.vout < 0 || static_cast<size_t>(data.vout) >= wtx.tx->vout.size())
+        return std::string();
+    LOCK(cs_main);
+    const CBlockIndex* originBlock = nullptr;
+    const int depth = wtx.GetDepthInMainChain(originBlock);
+    const int originHeight = depth > 0 && originBlock ? originBlock->nHeight : -1;
+    const int activationHeight = GetPQAssetActivationHeightForPrev(
+        chainActive.Tip(), GetParams().GetConsensus());
+    return EncodeContextualAssetDestination(
+        wtx.tx->vout[data.vout].scriptPubKey, originHeight, activationHeight);
+}
+
 /**
  * List transactions based on the given criteria.
  *
@@ -1750,7 +1856,7 @@ void ListTransactions(CWallet* const pwallet, const CWalletTx& wtx, const std::s
                 entry.push_back(Pair("message", EncodeAssetData(data.message)));
                 if (!data.message.empty() && data.expireTime > 0)
                     entry.push_back(Pair("message_expires", DateTimeStrFormat("%Y-%m-%d %H:%M:%S", data.expireTime)));
-                entry.push_back(Pair("destination", EncodeDestination(data.destination)));
+                entry.push_back(Pair("destination", AssetHistoryDestination(wtx, data)));
                 entry.push_back(Pair("vout", data.vout));
                 entry.push_back(Pair("category", "receive"));
                 if (fLong)
@@ -1774,7 +1880,7 @@ void ListTransactions(CWallet* const pwallet, const CWalletTx& wtx, const std::s
                 entry.push_back(Pair("message", EncodeAssetData(data.message)));
                 if (!data.message.empty() && data.expireTime > 0)
                     entry.push_back(Pair("message_expires", DateTimeStrFormat("%Y-%m-%d %H:%M:%S", data.expireTime)));
-                entry.push_back(Pair("destination", EncodeDestination(data.destination)));
+                entry.push_back(Pair("destination", AssetHistoryDestination(wtx, data)));
                 entry.push_back(Pair("vout", data.vout));
                 entry.push_back(Pair("category", "send"));
                 if (fLong)
@@ -2594,7 +2700,15 @@ UniValue encryptwallet(const JSONRPCRequest& request)
             "encryptwallet <passphrase>\n"
             "Encrypts the wallet with <passphrase>.");
 
+    const bool wasCrypted = pwallet->IsCrypted();
     if (!pwallet->EncryptWallet(strWalletPass)) {
+        if (!wasCrypted && pwallet->IsCrypted()) {
+            StartShutdown();
+            throw JSONRPCError(
+                RPC_WALLET_ENCRYPTION_FAILED,
+                "Error: Wallet encryption failed after the live key state changed. "
+                "The Raven server is stopping; restart before using the wallet.");
+        }
         throw JSONRPCError(RPC_WALLET_ENCRYPTION_FAILED, "Error: Failed to encrypt the wallet.");
     }
 
@@ -3542,6 +3656,9 @@ static const CRPCCommand commands[] =
     { "wallet",             "getmasterkeyinfo",         &getmasterkeyinfo,         {} },
     { "wallet",             "getmywords",               &getmywords,                        {} },
     { "wallet",             "getnewaddress",            &getnewaddress,            {"account"} },
+    { "wallet",             "getnewpqaddress",          &getnewpqaddress,          {"account"} },
+    { "wallet",             "getnewpqassetaddress",     &getnewpqassetaddress,     {"account"} },
+    { "wallet",             "listpqassetaddresses",     &listpqassetaddresses,     {} },
     { "wallet",             "getrawchangeaddress",      &getrawchangeaddress,      {} },
     { "wallet",             "getreceivedbyaccount",     &getreceivedbyaccount,     {"account","minconf"} },
     { "wallet",             "getreceivedbyaddress",     &getreceivedbyaddress,     {"address","minconf"} },

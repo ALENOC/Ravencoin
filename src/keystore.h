@@ -12,8 +12,8 @@
 #include "pubkey.h"
 #include "script/script.h"
 #include "script/standard.h"
+#include "support/allocators/secure.h"
 #include "sync.h"
-
 #include <boost/signals2/signal.hpp>
 
 /** A virtual base class for key stores */
@@ -76,9 +76,9 @@ protected:
     PQPubKeyMap mapPQPubKeys;
 
     uint256 nWordHash;
-    std::vector<unsigned char> vchWords;
-    std::vector<unsigned char> vchPassphrase;
-    std::vector<unsigned char> g_vchSeed;
+    SecureVector vchWords;
+    SecureVector vchPassphrase;
+    SecureVector g_vchSeed;
 
 public:
     bool AddKeyPubKey(const CKey& key, const CPubKey &pubkey) override;
@@ -124,9 +124,8 @@ public:
         if (!key.IsValid() || !pubkey.IsValid())
             return false;
 
-        std::vector<unsigned char> keyData(key.GetKeyData().begin(), key.GetKeyData().end());
         CPQKey validatedKey;
-        if (!validatedKey.SetKeyData(keyData, pubkey))
+        if (!validatedKey.SetKeyData(key.GetKeyData(), pubkey))
             return false;
 
         uint256 wp = pubkey.GetWitnessProgram();
@@ -170,8 +169,13 @@ public:
     bool HaveWatchOnly() const override;
 
     bool AddWords(const uint256& p_hash, const std::vector<unsigned char>& p_vchWords);
+    bool AddWords(const uint256& p_hash, SecureVector p_vchWords);
     bool AddPassphrase(const std::vector<unsigned char>& p_vchPassphrase);
+    bool AddPassphrase(SecureVector p_vchPassphrase);
     bool AddVchSeed(const std::vector<unsigned char>& p_vchSeed);
+    bool AddVchSeed(SecureVector p_vchSeed);
+    bool HasValidBip39Seed() const;
+    bool GetBip39Seed(SecureVector& p_vchSeed) const;
     void GetBip39Data(uint256& p_hash, std::vector<unsigned char>& p_vchWords, std::vector<unsigned char>& p_vchPassphrase, std::vector<unsigned char>& p_vchSeed);
 };
 

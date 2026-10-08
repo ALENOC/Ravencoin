@@ -17,6 +17,7 @@
 #include "checkpoints.h"
 #include "compat/sanity.h"
 #include "consensus/validation.h"
+#include "crypto/mldsa.h"
 #include "fs.h"
 #include "httpserver.h"
 #include "httprpc.h"
@@ -821,6 +822,11 @@ bool InitSanityCheck(void)
         return false;
     }
 
+    if (!mldsa::SelfTest()) {
+        InitError("ML-DSA-44 consensus backend sanity check failure. Aborting.");
+        return false;
+    }
+
     return true;
 }
 
@@ -1608,9 +1614,11 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
                         break;
                     }
 
-                    if (!passetsdb->ReadReissuedMempoolState())
-                        LogPrintf(
-                                "Database failed to load last Reissued Mempool State. Will have to start from empty state");
+                    // Pending reissue reservations are mempool state, not
+                    // chain state. Loading a separately persisted map here
+                    // can retain a lock for a transaction that is absent
+                    // from mempool.dat. Rebuild it as transactions are
+                    // accepted during the normal mempool load instead.
 
                     LogPrintf("Successfully loaded assets from database.\nCache of assets size: %d\n",
                               passetsCache->Size());
@@ -1699,6 +1707,97 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
                 // This is a no-op if we cleared the coinsviewdb with -reindex or -reindex-chainstate
                 if (!pcoinsdbview->Upgrade()) {
                     strLoadError = _("Error upgrading chainstate database");
+                    break;
+                }
+
+                // A retained or crash-interrupted chainstate that contains an
+                // active RIP-25 block must prove that its signature context
+                // was enforced. Check before ReplayBlocks, which reconstructs
+                // the UTXO effects without rerunning script validation.
+                const uint256 chainstateBestBlock = pcoinsdbview->GetBestBlock();
+                const std::vector<uint256> chainstateHeadBlocks = pcoinsdbview->GetHeadBlocks();
+                uint256 chainstateCandidate = chainstateBestBlock;
+                if (chainstateCandidate.IsNull() && chainstateHeadBlocks.size() == 2) {
+                    chainstateCandidate = chainstateHeadBlocks[0];
+                }
+
+                bool fRIP25ActiveInChainstate = false;
+                bool fChainstateTipsResolved = true;
+                const bool fCompleteChainstate =
+                    !chainstateBestBlock.IsNull() && chainstateHeadBlocks.empty();
+                const bool fInterruptedChainstate =
+                    chainstateBestBlock.IsNull() && chainstateHeadBlocks.size() == 2 &&
+                    !chainstateHeadBlocks[0].IsNull();
+                const bool fEmptyChainstate =
+                    chainstateBestBlock.IsNull() && chainstateHeadBlocks.empty();
+
+                if (!fCompleteChainstate && !fInterruptedChainstate && !fEmptyChainstate) {
+                    fChainstateTipsResolved = false;
+                } else if (!fEmptyChainstate) {
+                    LOCK(cs_main);
+                    std::vector<uint256> chainstateTips{chainstateCandidate};
+                    if (fInterruptedChainstate && !chainstateHeadBlocks[1].IsNull()) {
+                        chainstateTips.push_back(chainstateHeadBlocks[1]);
+                    }
+                    for (const uint256& hashTip : chainstateTips) {
+                        const auto tip = mapBlockIndex.find(hashTip);
+                        if (tip == mapBlockIndex.end()) {
+                            fChainstateTipsResolved = false;
+                            break;
+                        }
+                        fRIP25ActiveInChainstate |= IsPQWitnessDiscountActive(
+                                tip->second->pprev, chainparams.GetConsensus());
+                    }
+                }
+
+                // Coins and asset records live in different databases. A
+                // completed coins batch alone does not prove that the asset
+                // database reached the same tip. ReplayBlocks cannot safely
+                // repair an interrupted asset transfer because its spent
+                // input may already have disappeared from the coins database.
+                const bool fAssetStateNeedsRebuild = !fEmptyChainstate &&
+                    (fInterruptedChainstate ||
+                     pcoinsdbview->HasAssetCommitPending() ||
+                     pcoinsdbview->GetAssetCommitValidatedTip() != chainstateBestBlock);
+                if (fAssetStateNeedsRebuild) {
+                    // Do not erase the only copy of a pruned chainstate or a
+                    // chainstate whose block data is not locally available.
+                    if (fHavePruned) {
+                        return InitError(_("Asset database state is not certified at the coins tip. This pruned chainstate cannot be rebuilt safely; retain the data directory and redownload the blockchain."));
+                    }
+                    {
+                        LOCK(cs_main);
+                        const auto tip = mapBlockIndex.find(chainstateCandidate);
+                        if (tip == mapBlockIndex.end()) {
+                            return InitError(_("Asset database state is not certified and the chainstate tip is unknown. Retain the data directory and rebuild the block index before retrying."));
+                        }
+                        for (const CBlockIndex* pindex = tip->second; pindex; pindex = pindex->pprev) {
+                            CBlock block;
+                            if (!(pindex->nStatus & BLOCK_HAVE_DATA) ||
+                                !ReadBlockFromDisk(block, pindex, chainparams.GetConsensus())) {
+                                return InitError(_("Asset database state is not certified and required block data is unavailable. Retain the data directory and redownload the blockchain."));
+                            }
+                        }
+                    }
+                    LogPrintf("Asset database state is interrupted or not certified at coins tip %s; rebuilding chainstate\n",
+                              chainstateCandidate.ToString());
+                    fRetryWithChainStateRebuild = true;
+                    strLoadError = _("Asset database requires a full chainstate rebuild");
+                    break;
+                }
+
+                if (!fChainstateTipsResolved ||
+                    RIP25ContextChainstateRequiresRebuild(
+                            fRIP25ActiveInChainstate,
+                            chainstateCandidate,
+                            chainstateBestBlock,
+                            chainstateHeadBlocks,
+                            pcoinsdbview->GetRIP25ContextValidatedTip(),
+                            pcoinsdbview->GetRIP25ContextPendingTip())) {
+                    LogPrintf("RIP-25 chainstate proof is missing, stale, or references an unknown tip %s, rebuilding chainstate\n",
+                              chainstateCandidate.IsNull() ? "(none)" : chainstateCandidate.ToString());
+                    fRetryWithChainStateRebuild = true;
+                    strLoadError = _("RIP-25 chainstate requires context-aware revalidation");
                     break;
                 }
 
@@ -1847,6 +1946,9 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
     if(chainparams.GetConsensus().nSegwitEnabled) {
     		nLocalServices = ServiceFlags(nLocalServices | NODE_WITNESS);
     }
+
+    // RIP-25: advertise binary capability independently of BIP9 activation.
+    nLocalServices = ServiceFlags(nLocalServices | NODE_PQ_HYBRID);
     // ********************************************************* Step 10: import blocks
 
     if (!CheckDiskSpace())

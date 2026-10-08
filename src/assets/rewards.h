@@ -147,7 +147,9 @@ enum {
 };
 
 bool GenerateDistributionList(const CRewardSnapshot& p_rewardSnapshot, std::vector<OwnerAndAmount>& vecDistributionList);
-bool AddDistributeRewardSnapshot(CRewardSnapshot& p_rewardSnapshot);
+#ifdef ENABLE_WALLET
+bool AddDistributeRewardSnapshot(CWallet* p_wallet, CRewardSnapshot& p_rewardSnapshot);
+#endif
 
 #ifdef ENABLE_WALLET
 void DistributeRewardSnapshot(CWallet * p_wallet, const CRewardSnapshot& p_rewardSnapshot);
@@ -157,7 +159,7 @@ bool BuildTransaction(
         const std::vector<OwnerAndAmount> & p_pendingPayments, const int& start,
         std::string& change_address, uint256& retTxid);
 
-void CheckRewardDistributions(CWallet * p_wallet);
+void CheckRewardDistributions();
 #endif //ENABLE_WALLET
 
 

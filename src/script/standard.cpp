@@ -433,3 +433,13 @@ CScript GetScriptForWitnessV2PQ(const uint256& witnessProgram)
 bool IsValidDestination(const CTxDestination& dest) {
     return dest.which() != 0;
 }
+
+bool IsSupportedAssetDestination(const CTxDestination& dest)
+{
+    return boost::get<CKeyID>(&dest) != nullptr;
+}
+
+bool IsSupportedNullAssetDestination(const CTxDestination& dest)
+{
+    return boost::get<CKeyID>(&dest) != nullptr || boost::get<CScriptID>(&dest) != nullptr;
+}

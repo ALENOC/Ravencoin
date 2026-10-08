@@ -9,6 +9,7 @@
 #include "consensus/validation.h"
 #include "guiconstants.h"
 #include "guiutil.h"
+#include "init.h"
 #include "optionsmodel.h"
 #include "paymentserver.h"
 #include "recentrequeststablemodel.h"
@@ -200,6 +201,42 @@ void WalletModel::updateWatchOnlyFlag(bool fHaveWatchonly)
 bool WalletModel::validateAddress(const QString &address)
 {
     return IsValidDestinationString(address.toStdString());
+}
+
+QString WalletModel::newAssetDestination()
+{
+    if (!GUIUtil::pqAssetDestinationRequired())
+        return addressTableModel->addRow(AddressTableModel::Receive, "", "");
+
+    LOCK2(cs_main, wallet->cs_wallet);
+    if (!GUIUtil::pqAssetDestinationRequired() || wallet->IsLocked() || !wallet->TopUpKeyPool())
+        return QString();
+
+    CReserveKey reserveClassicalKey(wallet);
+    CPubKey classicalPubKey;
+    if (!reserveClassicalKey.GetReservedKey(classicalPubKey))
+        return QString();
+
+    CPQPubKey pqPubKey;
+    if (!wallet->GenerateNewPQKey(pqPubKey))
+        return QString();
+
+    const CKeyID classicalKey = classicalPubKey.GetID();
+    const WitnessV2PQDestination pqDestination(pqPubKey.GetWitnessProgram());
+    if (!wallet->StoreOwnedPQAssetDestination(classicalKey, pqDestination.witnessProgram))
+        return QString();
+    reserveClassicalKey.KeepKey();
+    wallet->SetAddressBook(classicalKey, "", "receive");
+    wallet->SetAddressBook(pqDestination, "", "receive");
+    return QString::fromStdString(EncodePQAssetDestination(classicalKey, pqDestination.witnessProgram));
+}
+
+QStringList WalletModel::getAssetDestinations() const
+{
+    QStringList destinations;
+    for (const std::string& descriptor : wallet->GetOwnedPQAssetDestinations())
+        destinations.push_back(QString::fromStdString(descriptor));
+    return destinations;
 }
 
 WalletModel::SendCoinsReturn WalletModel::prepareTransaction(WalletModelTransaction &transaction, const CCoinControl& coinControl)
@@ -408,6 +445,12 @@ WalletModel::SendCoinsReturn WalletModel::sendAssets(CWalletTx& tx, QList<SendAs
         if (!rcp.paymentRequest.IsInitialized())
         {
             std::string strAddress = rcp.address.toStdString();
+            CKeyID classicalKey;
+            uint256 pqProgram;
+            if (DecodePQAssetDestination(strAddress, classicalKey, pqProgram)) {
+                Q_EMIT assetsSent(wallet, rcp, transaction_array);
+                continue;
+            }
             CTxDestination dest = DecodeDestination(strAddress);
             std::string strLabel = rcp.label.toStdString();
             {
@@ -484,7 +527,11 @@ bool WalletModel::setWalletEncrypted(bool encrypted, const SecureString &passphr
     if(encrypted)
     {
         // Encrypt
-        return wallet->EncryptWallet(passphrase);
+        const bool wasCrypted = wallet->IsCrypted();
+        const bool encryptedSuccessfully = wallet->EncryptWallet(passphrase);
+        if (!wasCrypted && !encryptedSuccessfully && wallet->IsCrypted())
+            StartShutdown();
+        return encryptedSuccessfully;
     }
     else
     {

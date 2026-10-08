@@ -64,10 +64,7 @@ elif [[ ${OS} == "osx" ]]; then
     s3curl \
     sleuthkit \
     bison \
-    libtinfo5 \
-    python3-pip
-
-    pip3 install ds-store
+    libtinfo5
 
 elif [[ ${OS} == "linux" || ${OS} == "linux-disable-wallet" || ${OS} == "aarch64" || ${OS} == "aarch64-disable-wallet" ]]; then
     apt -y install \

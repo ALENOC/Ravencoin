@@ -43,8 +43,17 @@ extern unsigned int nTxConfirmTarget;
 extern bool bSpendZeroConfChange;
 extern bool fWalletRbf;
 
-extern std::string my_words;
-extern std::string my_passphrase;
+/** Store GUI mnemonic input in locked memory until wallet creation consumes it. */
+void SetPendingMnemonicInput(SecureString words, SecureString passphrase);
+
+/** Consume GUI mnemonic input once and release the shared secure buffers. */
+bool TakePendingMnemonicInput(SecureString& wordsOut, SecureString& passphraseOut);
+
+/** Cleanse any unconsumed GUI mnemonic input. */
+void ClearPendingMnemonicInput();
+
+/** Return whether unconsumed GUI mnemonic input exists. */
+bool HasPendingMnemonicInput();
 
 static const unsigned int DEFAULT_KEYPOOL_SIZE = 1000;
 //! -paytxfee default
@@ -675,9 +684,12 @@ private:
 class CWallet final : public CCryptoKeyStore, public CValidationInterface
 {
 private:
+    friend class CWalletDB;
+
     static std::atomic<bool> fFlushScheduled;
     std::atomic<bool> fAbortRescan;
     std::atomic<bool> fScanningWallet;
+    bool fEncryptionRewritePending;
 
     /**
      * Select a set of coins such that nValueRet >= nTargetValue and at least
@@ -715,12 +727,27 @@ private:
 
     void SyncMetaData(std::pair<TxSpends::iterator, TxSpends::iterator>);
 
+    void SetEncryptionRewritePending(bool pending);
+    bool CompleteEncryptionRewrite();
+    bool NewKeyPoolInternal(bool allowEncryptionRewritePending);
+    bool TopUpKeyPoolInternal(unsigned int kpSize,
+                              bool allowEncryptionRewritePending,
+                              CWalletDB* pwalletdb = nullptr);
+    bool SetHDChain(const CHDChain& chain, bool memonly, CWalletDB* pwalletdb);
+    CPubKey GenerateNewSeed(CWalletDB* pwalletdb);
+    bool AddPQKeyPubKeyWithDB(CWalletDB& walletdb, const CPQKey& key,
+                              const CPQPubKey& pubkey);
+    void ErasePQKeyFromMemory(const uint256& witnessProgram);
+
     /* Used by TransactionAddedToMemorypool/BlockConnected/Disconnected.
      * Should be called with pindexBlock and posInBlock if this is for a transaction that is included in a block. */
     void SyncTransaction(const CTransactionRef& tx, const CBlockIndex *pindex = nullptr, int posInBlock = 0);
 
     /* the HD chain data model (external chain counters) */
     CHDChain hdChain;
+
+    /* Versioned allocation state for the deterministic PQ branch. */
+    CPQHDChain pqHDChain;
 
     /* HD derive new child key (on internal or external chain) */
     void DeriveNewChildKey(CWalletDB &walletdb, CKeyMetadata& metadata, CKey& secret, bool internal = false);
@@ -815,6 +842,8 @@ public:
         nRelockTime = 0;
         fAbortRescan = false;
         fScanningWallet = false;
+        fEncryptionRewritePending = false;
+        pqHDChain.SetNull();
     }
 
     std::map<uint256, CWalletTx> mapWallet;
@@ -921,6 +950,8 @@ public:
     bool LoadKey(const CKey& key, const CPubKey &pubkey) { return CCryptoKeyStore::AddKeyPubKey(key, pubkey); }
     //! Adds a PQ key to the store, and saves it to disk.
     bool AddPQKeyPubKey(const CPQKey &key, const CPQPubKey &pubkey) override;
+    //! Derives and atomically persists the next deterministic PQ key.
+    bool GenerateNewPQKey(CPQPubKey& pubkeyOut, uint32_t* indexOut = nullptr);
     //! Adds a PQ key to the store, without saving it to disk (used by LoadWallet)
     bool LoadPQKey(const CPQKey& key, const CPQPubKey &pubkey) { return CCryptoKeyStore::AddPQKeyPubKey(key, pubkey); }
     //! Load metadata (used by LoadWallet)
@@ -941,9 +972,12 @@ public:
     bool LoadCryptedPassphrase(const std::vector<unsigned char> &vchCryptedPassphrase);
     bool LoadCryptedVchSeed(const std::vector<unsigned char> &vchCryptedVchSeed);
     bool LoadWords(const uint256& hash, const std::vector<unsigned char> &vchWords);
+    bool LoadWords(const uint256& hash, SecureVector vchWords);
     void GetBip39Data(uint256& hash, std::vector<unsigned char> &vchWords, std::vector<unsigned char> &vchPassphrase, std::vector<unsigned char>& vchSeed);
     bool LoadPassphrase(const std::vector<unsigned char> &vchPassphrase);
+    bool LoadPassphrase(SecureVector vchPassphrase);
     bool LoadVchSeed(const std::vector<unsigned char> &vchSeed);
+    bool LoadVchSeed(SecureVector vchSeed);
     bool AddCScript(const CScript& redeemScript) override;
     bool LoadCScript(const CScript& redeemScript);
 
@@ -957,6 +991,10 @@ public:
     bool GetDestData(const CTxDestination &dest, const std::string &key, std::string *value) const;
     //! Get all destination values matching a prefix.
     std::vector<std::string> GetDestValues(const std::string& prefix) const;
+    //! Persist a canonical asset destination only when both private keys belong to this wallet.
+    bool StoreOwnedPQAssetDestination(const CKeyID& classicalKey, const uint256& pqProgram);
+    //! Return persisted asset destinations whose pairing and private-key ownership still validate.
+    std::vector<std::string> GetOwnedPQAssetDestinations() const;
 
     //! Adds a watch-only address to the store, and saves it to disk.
     bool AddWatchOnly(const CScript& dest, int64_t nCreateTime);
@@ -967,7 +1005,9 @@ public:
     //! Holds a timestamp at which point the wallet is scheduled (externally) to be relocked. Caller must arrange for actual relocking to occur via Lock().
     int64_t nRelockTime;
 
+    bool Lock() override;
     bool Unlock(const SecureString& strWalletPassphrase);
+    bool IsEncryptionRewritePending() const;
     bool ChangeWalletPassphrase(const SecureString& strOldWalletPassphrase, const SecureString& strNewWalletPassphrase);
     bool EncryptWallet(const SecureString& strWalletPassphrase);
 
@@ -1079,8 +1119,14 @@ public:
     CAmount GetDebit(const CTxIn& txin, const isminefilter& filter) const;
     CAmount GetDebit(const CTxIn& txin, const isminefilter& filter, CAssetOutputEntry& assetData) const;
     isminetype IsMine(const CTxOut& txout) const;
+    isminetype IsMine(const CTxOut& txout, const CBlockIndex* originBlock) const;
     CAmount GetCredit(const CTxOut& txout, const isminefilter& filter) const;
+    CAmount GetCredit(const CTxOut& txout, const isminefilter& filter,
+                      const CBlockIndex* originBlock) const;
     bool IsChange(const CTxOut& txout) const;
+    bool IsChange(const CTxOut& txout, const CBlockIndex* originBlock) const;
+    bool IsChange(const CWalletTx& wtx, unsigned int outputIndex,
+                  const CBlockIndex* originBlock) const;
     CAmount GetChange(const CTxOut& txout) const;
     bool IsMine(const CTransaction& tx) const;
     /** should probably be renamed to IsRelevantToMe */
@@ -1091,11 +1137,13 @@ public:
     bool IsAllFromMe(const CTransaction& tx, const isminefilter& filter) const;
     CAmount GetCredit(const CTransaction& tx, const isminefilter& filter) const;
     CAmount GetChange(const CTransaction& tx) const;
+    CAmount GetChange(const CWalletTx& wtx) const;
     void SetBestChain(const CBlockLocator& loc) override;
 
     bool IsFirstRun();
 
     DBErrors LoadWallet(bool& fFirstRunRet);
+    DBErrors LoadWallet(bool& fFirstRunRet, bool notifyLoad);
     DBErrors ZapWalletTx(std::vector<CWalletTx>& vWtx);
     DBErrors ZapSelectTx(std::vector<uint256>& vHashIn, std::vector<uint256>& vHashOut);
 
@@ -1191,6 +1239,8 @@ public:
     /* Set the HD chain model (chain child index counters) */
     bool SetHDChain(const CHDChain& chain, bool memonly);
     const CHDChain& GetHDChain() const { return hdChain; }
+    bool LoadPQHDChain(const CPQHDChain& chain);
+    const CPQHDChain& GetPQHDChain() const { return pqHDChain; }
 
     void UseBip44( bool b = true)    { hdChain.UseBip44(b);}
 

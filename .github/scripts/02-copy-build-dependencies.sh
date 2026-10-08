@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+
 OS=${1}
 GITHUB_WORKSPACE=${2}
 GITHUB_REF=${3}
@@ -25,11 +27,14 @@ cd depends
 if [[ ${OS} == "windows" ]]; then
     make HOST=x86_64-w64-mingw32 -j2
 elif [[ ${OS} == "osx" ]]; then
-    mkdir SDKs
+    SDK_ARCHIVE=Xcode-11.3.1-11C505-extracted-SDK-with-libcxx-headers.tar.gz
+    SDK_SHA256=436df6dfc7073365d12f8ef6c1fdb060777c720602cc67c2dcf9a59d94290e38
+    mkdir -p SDKs
     cd SDKs
-    curl -O https://bitcoincore.org/depends-sources/sdks/Xcode-11.3.1-11C505-extracted-SDK-with-libcxx-headers.tar.gz
-    tar -zxf Xcode-11.3.1-11C505-extracted-SDK-with-libcxx-headers.tar.gz
-    rm -rf Xcode-11.3.1-11C505-extracted-SDK-with-libcxx-headers.tar.gz
+    curl --fail --location --retry 3 --output "${SDK_ARCHIVE}" "https://bitcoincore.org/depends-sources/sdks/${SDK_ARCHIVE}"
+    echo "${SDK_SHA256}  ${SDK_ARCHIVE}" | sha256sum --check
+    tar -zxf "${SDK_ARCHIVE}"
+    rm -f "${SDK_ARCHIVE}"
     cd ..
     make HOST=x86_64-apple-darwin14 -j2
 elif [[ ${OS} == "linux" || ${OS} == "linux-disable-wallet" ]]; then

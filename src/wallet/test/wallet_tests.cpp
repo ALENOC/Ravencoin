@@ -4,19 +4,24 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "wallet/wallet.h"
+#include "assets/assets.h"
 #include "chainparams.h"
 
 #include <set>
 #include <stdint.h>
+#include <memory>
 #include <utility>
 #include <vector>
 
 #include "consensus/validation.h"
 #include "rpc/server.h"
 #include "test/test_raven.h"
+#include "ui_interface.h"
 #include "validation.h"
 #include "wallet/coincontrol.h"
+#include "wallet/db.h"
 #include "wallet/test/wallet_test_fixture.h"
+#include "wallet/walletdb.h"
 
 #include <boost/test/unit_test.hpp>
 #include <univalue.h>
@@ -41,7 +46,99 @@ std::vector<std::unique_ptr<CWalletTx>> wtxn;
 
 typedef std::set<CInputCoin> CoinSet;
 
+namespace {
+
+class FailingOpenDbEnv : public DbEnv
+{
+public:
+    explicit FailingOpenDbEnv(bool& destroyed)
+        : DbEnv(DB_CXX_NO_EXCEPTIONS), destroyed_(destroyed) {}
+
+    ~FailingOpenDbEnv() override { destroyed_ = true; }
+
+    int open(const char*, u_int32_t, int) override { return DB_RUNRECOVERY; }
+
+private:
+    bool& destroyed_;
+};
+
+class ScopedWalletFactoryTestState
+{
+private:
+    const bool rescanWasSet;
+    const bool keypoolWasSet;
+    const std::string oldRescan;
+    const std::string oldKeypool;
+
+public:
+    explicit ScopedWalletFactoryTestState(bool rescan)
+        : rescanWasSet(gArgs.IsArgSet("-rescan")),
+          keypoolWasSet(gArgs.IsArgSet("-keypool")),
+          oldRescan(gArgs.GetArg("-rescan", "")),
+          oldKeypool(gArgs.GetArg("-keypool", ""))
+    {
+        gArgs.ForceSetArg("-rescan", rescan ? "1" : "0");
+        gArgs.ForceSetArg("-keypool", 1);
+    }
+
+    ~ScopedWalletFactoryTestState()
+    {
+        bitdb.Flush(true);
+        bitdb.Reset();
+        if (rescanWasSet)
+            gArgs.ForceSetArg("-rescan", oldRescan);
+        else
+            gArgs.ClearArg("-rescan");
+        if (keypoolWasSet)
+            gArgs.ForceSetArg("-keypool", oldKeypool);
+        else
+            gArgs.ClearArg("-keypool");
+    }
+};
+
+struct RegisteredWalletDeleter
+{
+    void operator()(CWallet* wallet) const
+    {
+        if (!wallet)
+            return;
+        UnregisterValidationInterface(wallet);
+        delete wallet;
+    }
+};
+
+using RegisteredWalletPtr = std::unique_ptr<CWallet, RegisteredWalletDeleter>;
+
+} // namespace
+
 BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
+
+    BOOST_AUTO_TEST_CASE(database_environment_open_failure_renews_handle)
+    {
+        CDBEnv env;
+        delete env.dbenv;
+        bool failedHandleDestroyed = false;
+        env.dbenv = new FailingOpenDbEnv(failedHandleDestroyed);
+
+        BOOST_CHECK(!env.Open(pathTemp / "db-retry"));
+        BOOST_REQUIRE(failedHandleDestroyed);
+        BOOST_CHECK(env.Open(pathTemp / "db-retry"));
+        env.Close();
+    }
+
+    BOOST_AUTO_TEST_CASE(database_mock_negative_open_failure_renews_handle)
+    {
+        CDBEnv env;
+        delete env.dbenv;
+        bool failedHandleDestroyed = false;
+        env.dbenv = new FailingOpenDbEnv(failedHandleDestroyed);
+
+        BOOST_CHECK_THROW(env.MakeMock(), std::runtime_error);
+        BOOST_REQUIRE(failedHandleDestroyed);
+        BOOST_CHECK(!env.IsMock());
+        env.MakeMock();
+        env.Close();
+    }
 
     static const CWallet testWallet;
     static std::vector<COutput> vCoins;
@@ -393,6 +490,19 @@ BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
         // Cap last block file size, and mine new block in a new block file.
         CBlockIndex *const nullBlock = nullptr;
         CBlockIndex *oldTip = chainActive.Tip();
+
+        // Create and close the wallet at the old tip. Reopening it after the
+        // next block exercises the successful-rescan update for a non-first-run
+        // wallet rather than relying on the first-run locator path.
+        const std::string successfulWalletFile =
+            "successful-rescan-wallet.dat";
+        {
+            ScopedWalletFactoryTestState testState(false);
+            RegisteredWalletPtr wallet(
+                CWallet::CreateWalletFromFile(successfulWalletFile));
+            BOOST_REQUIRE(wallet != nullptr);
+        }
+
         GetBlockFileInfo(oldTip->GetBlockPos().nFile)->nSize = MAX_BLOCKFILE_SIZE;
         CreateAndProcessBlock({}, GetScriptForRawPubKey(coinbaseKey.GetPubKey()));
         CBlockIndex *newTip = chainActive.Tip();
@@ -406,6 +516,29 @@ BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
             BOOST_CHECK_EQUAL(wallet.GetImmatureBalance(), 10000 * COIN);
         }
 
+        // A successful factory rescan publishes one wallet and records the
+        // exact tip only after the complete range has been read.
+        {
+            ScopedWalletFactoryTestState testState(true);
+            unsigned int loadNotifications = 0;
+            boost::signals2::scoped_connection loadConnection(
+                uiInterface.LoadWallet.connect(
+                    [&](CWallet*) {
+                        ++loadNotifications;
+                    }));
+            RegisteredWalletPtr wallet(
+                CWallet::CreateWalletFromFile(successfulWalletFile));
+
+            BOOST_REQUIRE(wallet != nullptr);
+            BOOST_CHECK_EQUAL(loadNotifications, 1U);
+            CWalletDBWrapper dbw(&bitdb, successfulWalletFile);
+            CWalletDB walletdb(dbw, "r");
+            CBlockLocator locator;
+            BOOST_REQUIRE(walletdb.ReadBestBlock(locator));
+            BOOST_REQUIRE(!locator.vHave.empty());
+            BOOST_CHECK(locator.vHave.front() == newTip->GetBlockHash());
+        }
+
         // Prune the older block file.
         PruneOneBlockFile(oldTip->GetBlockPos().nFile);
         UnlinkPrunedFiles({oldTip->GetBlockPos().nFile});
@@ -417,6 +550,30 @@ BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
             AddKey(wallet, coinbaseKey);
             BOOST_CHECK_EQUAL(oldTip, wallet.ScanForWalletTransactions(oldTip, nullptr));
             BOOST_CHECK_EQUAL(wallet.GetImmatureBalance(), 5000 * COIN);
+        }
+
+        // A failed startup rescan must not publish a partially synchronized
+        // wallet or persist the current tip past the unreadable range.
+        {
+            ScopedWalletFactoryTestState testState(true);
+            unsigned int loadNotifications = 0;
+            boost::signals2::scoped_connection loadConnection(
+                uiInterface.LoadWallet.connect(
+                    [&](CWallet*) {
+                        ++loadNotifications;
+                    }));
+            const std::string walletFile = "failed-rescan-wallet.dat";
+            RegisteredWalletPtr failedWallet(
+                CWallet::CreateWalletFromFile(walletFile));
+
+            BOOST_CHECK(failedWallet == nullptr);
+            BOOST_CHECK_EQUAL(loadNotifications, 0U);
+            {
+                CWalletDBWrapper dbw(&bitdb, walletFile);
+                CWalletDB walletdb(dbw, "r");
+                CBlockLocator locator;
+                BOOST_CHECK(!walletdb.ReadBestBlock(locator));
+            }
         }
 
         // Verify importmulti RPC returns failure for a key whose creation time is
@@ -714,6 +871,75 @@ BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
         BOOST_CHECK_EQUAL(list.size(), (uint64_t)1L);
         BOOST_CHECK_EQUAL(boost::get<CKeyID>(list.begin()->first).ToString(), coinbaseAddress);
         BOOST_CHECK_EQUAL(list.begin()->second.size(), (uint64_t)2L);
+    }
+
+    BOOST_FIXTURE_TEST_CASE(ListAssets_ignores_invalid_locked_vout, ListCoinsTestingSetup)
+    {
+        LOCK2(cs_main, wallet->cs_wallet);
+        BOOST_REQUIRE(!wallet->mapWallet.empty());
+        const CWalletTx& wtx = wallet->mapWallet.begin()->second;
+        const uint32_t firstInvalid = static_cast<uint32_t>(wtx.tx->vout.size());
+
+        // lockunspent accepts outpoints without checking their output index.
+        // An invalid locked index must never be dereferenced by ListAssets.
+        wallet->LockCoin(COutPoint(wtx.GetHash(), firstInvalid));
+        wallet->LockCoin(COutPoint(wtx.GetHash(), UINT32_MAX));
+        BOOST_CHECK(wallet->ListAssets().empty());
+    }
+
+    BOOST_FIXTURE_TEST_CASE(asset_change_survives_fee_subtraction_retry, ListCoinsTestingSetup)
+    {
+        const bool assetsWereDeployed = AreAssetsDeployed();
+        struct RestoreAssetsDeployment {
+            bool previous;
+            ~RestoreAssetsDeployment() { SetAssetsDeployed(previous); }
+        } restore{assetsWereDeployed};
+        SetAssetsDeployed(true);
+
+        const CKeyID keyID = coinbaseKey.GetPubKey().GetID();
+        CScript inputAssetScript = GetScriptForDestination(keyID);
+        CAssetTransfer("FEELOOP", 5 * COIN).ConstructTransaction(inputAssetScript);
+        CMutableTransaction assetFunding;
+        assetFunding.vout.emplace_back(0, inputAssetScript);
+        CWalletTx assetCoin(wallet.get(), MakeTransactionRef(std::move(assetFunding)));
+        {
+            LOCK(cs_main);
+            assetCoin.SetMerkleBranch(chainActive.Tip(), 1);
+        }
+        BOOST_REQUIRE(wallet->AddToWallet(assetCoin));
+
+        CScript recipientAssetScript = GetScriptForDestination(keyID);
+        CAssetTransfer("FEELOOP", 2 * COIN).ConstructTransaction(recipientAssetScript);
+        const std::vector<CRecipient> recipients{
+            {GetScriptForDestination(keyID), 1 * COIN, true},
+            {recipientAssetScript, 0, false}
+        };
+
+        CWalletTx created;
+        CReserveKey reservekey(wallet.get());
+        CAmount fee = 0;
+        int changePosition = -1;
+        std::string error;
+        CCoinControl coinControl;
+        BOOST_REQUIRE_MESSAGE(
+            wallet->CreateTransactionWithTransferAsset(
+                recipients, created, reservekey, fee, changePosition,
+                error, coinControl, false), error);
+        BOOST_CHECK_GT(fee, 0);
+
+        CAmount sent = 0;
+        CAmount change = 0;
+        for (const CTxOut& output : created.tx->vout) {
+            CAssetOutputEntry asset;
+            if (!GetAssetData(output.scriptPubKey, asset) || asset.assetName != "FEELOOP")
+                continue;
+            if (asset.nAmount == 2 * COIN)
+                sent += asset.nAmount;
+            else
+                change += asset.nAmount;
+        }
+        BOOST_CHECK_EQUAL(sent, 2 * COIN);
+        BOOST_CHECK_EQUAL(change, 3 * COIN);
     }
 
 BOOST_AUTO_TEST_SUITE_END()

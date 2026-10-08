@@ -6,6 +6,7 @@
 #include "coins.h"
 
 #include "consensus/consensus.h"
+#include "consensus/tx_verify.h"
 #include "memusage.h"
 #include "random.h"
 #include "util.h"
@@ -16,6 +17,30 @@
 #include <assert.h>
 #include <assets/assets.h>
 #include <wallet/wallet.h>
+
+#ifdef ENABLE_WALLET
+static bool WalletOwnsAssetForMessageSubscription(const CTxOut& output,
+                                                  int height, const uint256& blockHash)
+{
+    if (vpwallets.empty())
+        return false;
+
+    LOCK(cs_main);
+    const auto candidate = mapBlockIndex.find(blockHash);
+    if (candidate == mapBlockIndex.end() || candidate->second->nHeight != height)
+        return false;
+    if (vpwallets[0]->IsMine(output) != ISMINE_SPENDABLE)
+        return false;
+
+    const int activationHeight = GetPQAssetActivationHeightForPrev(
+        candidate->second->pprev, GetParams().GetConsensus());
+    if (activationHeight < 0 || height < activationHeight)
+        return true;
+
+    uint256 program;
+    return GetPQAssetProgram(output.scriptPubKey, program) && vpwallets[0]->HavePQKey(program);
+}
+#endif
 
 bool CCoinsView::GetCoin(const COutPoint &outpoint, Coin &coin) const { return false; }
 uint256 CCoinsView::GetBestBlock() const { return uint256(); }
@@ -94,12 +119,12 @@ void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin&& coin, bool possi
     cachedCoinsUsage += it->second.coin.DynamicMemoryUsage();
 }
 
-void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint256 blockHash, bool check, CAssetsCache* assetsCache, std::pair<std::string, CBlockAssetUndo>* undoAssetData) {
+void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint256 blockHash, bool check, CAssetsCache* assetsCache, std::pair<std::string, CBlockAssetUndo>* undoAssetData, const TxAssetDeploymentContext* pAssetContext) {
     bool fCoinbase = tx.IsCoinBase();
     const uint256& txid = tx.GetHash();
 
     /** RVN START */
-    if (AreAssetsDeployed()) {
+    if (pAssetContext ? pAssetContext->fAssetsDeployed : AreAssetsDeployed()) {
         if (assetsCache) {
             if (tx.IsNewAsset()) { // This works are all new root assets, sub asset, and restricted assets
                 CNewAsset asset;
@@ -260,10 +285,11 @@ void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint2
         cache.AddCoin(COutPoint(txid, i), Coin(tx.vout[i], nHeight, fCoinbase), overwrite);
 
         /** RVN START */
-        if (AreAssetsDeployed()) {
+        if (pAssetContext ? pAssetContext->fAssetsDeployed : AreAssetsDeployed()) {
             if (assetsCache) {
                 CAssetOutputEntry assetData;
-                if (GetAssetData(tx.vout[i].scriptPubKey, assetData)) {
+                if (pAssetContext ? GetAssetData(tx.vout[i].scriptPubKey, assetData, pAssetContext)
+                                  : GetAssetData(tx.vout[i].scriptPubKey, assetData)) {
 
                     // If this is a transfer asset, and the amount is greater than zero
                     // We want to make sure it is added to the asset addresses database if (fAssetIndex == true)
@@ -280,8 +306,9 @@ void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint2
                         /** Subscribe to new message channels if they are sent to a new address, or they are the owner token or message channel */
 #ifdef ENABLE_WALLET
                         if (fMessaging && pMessageSubscribedChannelsCache) {
+                            const bool ownedAsset = WalletOwnsAssetForMessageSubscription(tx.vout[i], nHeight, blockHash);
                             LOCK(cs_messaging);
-                            if (vpwallets.size() && vpwallets[0]->IsMine(tx.vout[i]) == ISMINE_SPENDABLE) {
+                            if (ownedAsset) {
                                 AssetType aType;
                                 IsAssetNameValid(assetTransfer.strName, aType);
 
@@ -303,11 +330,12 @@ void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint2
                         /** Subscribe to new message channels if they are assets you created, or are new msgchannels of channels already being watched */
 #ifdef ENABLE_WALLET
                         if (fMessaging && pMessageSubscribedChannelsCache) {
+                            const bool ownedAsset = WalletOwnsAssetForMessageSubscription(tx.vout[i], nHeight, blockHash);
                             LOCK(cs_messaging);
                             if (vpwallets.size()) {
                                 AssetType aType;
                                 IsAssetNameValid(assetData.assetName, aType);
-                                if (vpwallets[0]->IsMine(tx.vout[i]) == ISMINE_SPENDABLE) {
+                                if (ownedAsset) {
                                     if (aType == AssetType::ROOT || aType == AssetType::SUB) {
                                         AddChannel(assetData.assetName + OWNER_TAG);
                                         AddAddressSeen(EncodeDestination(assetData.destination));
@@ -356,7 +384,7 @@ void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint2
     }
 }
 
-bool CCoinsViewCache::SpendCoin(const COutPoint &outpoint, Coin* moveout, CAssetsCache* assetsCache) {
+bool CCoinsViewCache::SpendCoin(const COutPoint &outpoint, Coin* moveout, CAssetsCache* assetsCache, const TxAssetDeploymentContext* pAssetContext) {
 
     CCoinsMap::iterator it = FetchCoin(outpoint);
     if (it == cacheCoins.end())
@@ -378,9 +406,9 @@ bool CCoinsViewCache::SpendCoin(const COutPoint &outpoint, Coin* moveout, CAsset
     }
 
     /** RVN START */
-    if (AreAssetsDeployed()) {
+    if (pAssetContext ? pAssetContext->fAssetsDeployed : AreAssetsDeployed()) {
         if (assetsCache) {
-            if (!assetsCache->TrySpendCoin(outpoint, tempCoin.out)) {
+            if (!assetsCache->TrySpendCoin(outpoint, tempCoin.out, pAssetContext)) {
                 return error("%s : Failed to try and spend the asset. COutPoint : %s", __func__, outpoint.ToString());
             }
         }

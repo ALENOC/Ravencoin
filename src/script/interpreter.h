@@ -7,6 +7,7 @@
 #ifndef RAVEN_SCRIPT_INTERPRETER_H
 #define RAVEN_SCRIPT_INTERPRETER_H
 
+#include "consensus/rip25.h"
 #include "script_error.h"
 #include "primitives/transaction.h"
 
@@ -167,14 +168,21 @@ private:
     unsigned int nIn;
     const CAmount amount;
     const PrecomputedTransactionData *txdata;
+    const Consensus::PQSignatureContext pqSignatureContext;
 
 protected:
     virtual bool VerifySignature(const std::vector<unsigned char> &vchSig, const CPubKey &vchPubKey, const uint256 &sighash) const;
 
 public:
-    TransactionSignatureChecker(const CTransaction *txToIn, unsigned int nInIn, const CAmount &amountIn) : txTo(txToIn), nIn(nInIn), amount(amountIn), txdata(nullptr) {}
+    TransactionSignatureChecker(const CTransaction *txToIn, unsigned int nInIn, const CAmount &amountIn) : txTo(txToIn), nIn(nInIn), amount(amountIn), txdata(nullptr), pqSignatureContext(Consensus::NullPQSignatureContext()) {}
 
-    TransactionSignatureChecker(const CTransaction *txToIn, unsigned int nInIn, const CAmount &amountIn, const PrecomputedTransactionData &txdataIn) : txTo(txToIn), nIn(nInIn), amount(amountIn), txdata(&txdataIn) {}
+    TransactionSignatureChecker(const CTransaction *txToIn, unsigned int nInIn, const CAmount &amountIn, const Consensus::PQSignatureContext& pqSignatureContextIn) : txTo(txToIn), nIn(nInIn), amount(amountIn), txdata(nullptr), pqSignatureContext(pqSignatureContextIn) {}
+
+    TransactionSignatureChecker(const CTransaction *txToIn, unsigned int nInIn, const CAmount &amountIn, const PrecomputedTransactionData &txdataIn) : txTo(txToIn), nIn(nInIn), amount(amountIn), txdata(&txdataIn), pqSignatureContext(Consensus::NullPQSignatureContext()) {}
+
+    TransactionSignatureChecker(const CTransaction *txToIn, unsigned int nInIn, const CAmount &amountIn, const PrecomputedTransactionData &txdataIn, const Consensus::PQSignatureContext& pqSignatureContextIn) : txTo(txToIn), nIn(nInIn), amount(amountIn), txdata(&txdataIn), pqSignatureContext(pqSignatureContextIn) {}
+
+    const Consensus::PQSignatureContext& GetPQSignatureContext() const { return pqSignatureContext; }
 
     bool CheckSig(const std::vector<unsigned char> &scriptSig, const std::vector<unsigned char> &vchPubKey, const CScript &scriptCode, SigVersion sigversion) const override;
 
@@ -190,6 +198,7 @@ private:
 
 public:
     MutableTransactionSignatureChecker(const CMutableTransaction *txToIn, unsigned int nInIn, const CAmount &amountIn) : TransactionSignatureChecker(&txTo, nInIn, amountIn), txTo(*txToIn) {}
+    MutableTransactionSignatureChecker(const CMutableTransaction *txToIn, unsigned int nInIn, const CAmount &amountIn, const Consensus::PQSignatureContext& pqSignatureContextIn) : TransactionSignatureChecker(&txTo, nInIn, amountIn, pqSignatureContextIn), txTo(*txToIn) {}
 };
 
 bool EvalScript(std::vector<std::vector<unsigned char> > &stack, const CScript &script, unsigned int flags, const BaseSignatureChecker &checker, SigVersion sigversion, ScriptError *error = nullptr);
