@@ -589,6 +589,71 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(node.listmyassets(qualifier_name, True)
                      [qualifier_name]['balance'], 1)
 
+        # Tag administration consumes a protected qualifier and must return
+        # its authority under a protected output, even without change_address.
+        node.sendtoaddress(pq_part, Decimal('1'))
+        node.generate(1)
+        admin_anchor_outpoints = {
+            (coin['txid'], coin['vout']) for coin in node.listunspent()
+            if coin['scriptPubKey'] == descriptor_script.hex()
+        }
+        assert admin_anchor_outpoints
+        tag_txid = node.addtagtoaddress(qualifier_name, classical_part)[0]
+        tag_tx = from_hex(CTransaction(), node.getrawtransaction(tag_txid))
+        tag_anchor_vin = [index for index, txin in enumerate(tag_tx.vin)
+                          if (format(txin.prevout.hash, '064x'), txin.prevout.n)
+                          in admin_anchor_outpoints]
+        assert_equal(len(tag_anchor_vin), 1)
+        assert_equal(len(tag_tx.wit.vtxinwit[tag_anchor_vin[0]]
+                         .scriptWitness.stack), 2)
+        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+                         output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == descriptor_program
+                         for output in tag_tx.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        node.generate(1)
+
+        def assert_protected_admin_return(method, arguments, anchor_address,
+                                          anchor_script, return_script, return_program):
+            node.sendtoaddress(anchor_address, Decimal('1'))
+            node.generate(1)
+            available_anchors = {
+                (coin['txid'], coin['vout']) for coin in node.listunspent()
+                if coin['scriptPubKey'] == anchor_script.hex()
+            }
+            assert available_anchors
+            txid = getattr(node, method)(*arguments)[0]
+            tx = from_hex(CTransaction(), node.getrawtransaction(txid))
+            anchor_vin = [index for index, txin in enumerate(tx.vin)
+                          if (format(txin.prevout.hash, '064x'), txin.prevout.n)
+                          in available_anchors]
+            assert_equal(len(anchor_vin), 1)
+            assert_equal(len(tx.wit.vtxinwit[anchor_vin[0]]
+                             .scriptWitness.stack), 2)
+            assert_equal(sum(output.scriptPubKey[:25] == return_script and
+                             output.scriptPubKey[25] == ASSET_OPCODE and
+                             output.scriptPubKey[-32:] == return_program
+                             for output in tx.vout
+                             if len(output.scriptPubKey) > 57), 1)
+            node.generate(1)
+
+        assert_raises_rpc_error(-5, 'canonical classical|PQ asset destination',
+                                node.removetagfromaddress, qualifier_name,
+                                classical_part, classical_part)
+        assert_protected_admin_return(
+            'removetagfromaddress', (qualifier_name, classical_part,
+                                     composite_address),
+            pq_part, descriptor_script, classical_script, descriptor_program)
+        for method, arguments in (
+                ('freezeaddress', (restricted_issue_name, classical_part,
+                                   destination_descriptor)),
+                ('unfreezeaddress', (restricted_issue_name, classical_part)),
+                ('freezerestrictedasset', (restricted_issue_name,)),
+                ('unfreezerestrictedasset', (restricted_issue_name,))):
+            assert_protected_admin_return(
+                method, arguments, destination_pq, destination_script,
+                destination_classical_script, destination_program)
+
 
 if __name__ == '__main__':
     PQAssetAnchorTest().main()

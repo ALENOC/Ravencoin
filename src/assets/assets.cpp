@@ -4156,6 +4156,22 @@ bool SelectProtectedAssetReturn(CWallet* pwallet, const std::string& authorityNa
 
 } // namespace
 
+bool GetWalletProtectedAssetReturnDescriptor(CWallet* pwallet, const std::string& authorityName,
+                                             std::string& descriptor, std::pair<int, std::string>& error)
+{
+    CTxDestination destination;
+    uint256 program;
+    if (!SelectProtectedAssetReturn(pwallet, authorityName, destination, program, error))
+        return false;
+    const CKeyID* classicalKey = boost::get<CKeyID>(&destination);
+    if (!classicalKey) {
+        error = std::make_pair(RPC_WALLET_ERROR, "Protected authority has no canonical P2PKH destination");
+        return false;
+    }
+    descriptor = EncodePQAssetDestination(*classicalKey, program);
+    return true;
+}
+
 bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const CNewAsset& asset, const std::string& address, std::pair<int, std::string>& error, CWalletTx& wtxNew, CReserveKey& reservekey, CAmount& nFeeRequired, std::string* verifier_string)
 {
     std::vector<CNewAsset> assets;

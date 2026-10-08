@@ -552,6 +552,10 @@ std::string EncodeIPFS(std::string decoded);
 
 #ifdef ENABLE_WALLET
 
+/** Find a wallet-owned protected authority output for an active PQ asset return. */
+bool GetWalletProtectedAssetReturnDescriptor(CWallet* pwallet, const std::string& authorityName,
+                                             std::string& descriptor, std::pair<int, std::string>& error);
+
 bool GetAllMyAssetBalances(CWallet* pwallet, std::map<std::string, std::vector<COutput> >& outputs, std::map<std::string, CAmount>& amounts, const int confirmations = 0, const std::string& prefix = "");
 bool GetMyAssetBalance(CWallet* pwallet, const std::string& name, CAmount& balance, const int& confirmations);
 
