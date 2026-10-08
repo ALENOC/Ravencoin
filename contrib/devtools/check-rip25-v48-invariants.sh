@@ -82,6 +82,12 @@ require_fixed 'RIP-0025-PQ-Assets-Followup.md' doc/RIP-0025-PQ-Signatures.md 'PQ
 require_fixed 'vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].bit = 13' src/chainparams.cpp 'dependent PQ asset deployment must use bit 13'
 require_fixed 'CheckTxPQAssets(tx, state, view, pqAssetActivationHeight' src/validation.cpp 'PQ asset rule must run against candidate UTXOs'
 require_fixed 'feature_pq_asset_anchor.py' test/functional/test_runner.py 'PQ asset full-chain regression is not registered'
+require_fixed 'feature_pq_asset_authority_selection.py' test/functional/test_runner.py 'PQ authority selection regression is not registered'
+require_fixed 'feature_pq_asset_authority_selection.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits PQ authority selection regression'
+require_fixed 'feature_pq_asset_authority_selection.py' .github/workflows/build-raven.yml 'release workflow omits PQ authority selection regression'
+require_fixed 'feature_pq_asset_source_rpc.py' test/functional/test_runner.py 'PQ asset source RPC regression is not registered'
+require_fixed 'feature_pq_asset_source_rpc.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits the PQ asset source RPC regression'
+require_fixed 'feature_pq_asset_source_rpc.py' .github/workflows/build-raven.yml 'release workflow omits the PQ asset source RPC regression'
 require_fixed 'feature_pq_asset_wallet_ownership.py' test/functional/test_runner.py 'PQ asset wallet ownership regression is not registered'
 require_fixed 'feature_mempool_clear_reissue.py' test/functional/test_runner.py 'mempool clear reissue regression is not registered'
 require_fixed 'feature_mempool_reissue_restart.py' test/functional/test_runner.py 'mempool reissue restart regression is not registered'
@@ -730,6 +736,7 @@ behavioral_tests=(
   asset_tx_tests/transfer_overflow_checks_follow_explicit_context
   asset_tx_tests/asset_destination_scope_test
   asset_tx_tests/pq_asset_envelope_is_not_witness_v2_test
+  asset_tx_tests/pq_asset_history_destination_uses_origin_height_test
   coins_tests/txundo_large_roundtrip_test
   coins_tests/txundo_deserialization_limit_test
   rip25_miner_tests
@@ -798,6 +805,6 @@ echo "$fuzz_smoke_output"
 
 python3 contrib/devtools/test-required-functional-gate.py
 python3 test/functional/test_runner.py --require-tests --jobs=2 \
-  wallet_encryption_rewrite.py rpc_assettransfer.py feature_chainstate_ahead.py feature_pq_asset_anchor.py feature_pq_asset_wallet_ownership.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py
+  wallet_encryption_rewrite.py rpc_assettransfer.py feature_chainstate_ahead.py feature_pq_asset_anchor.py feature_pq_asset_authority_selection.py feature_pq_asset_source_rpc.py feature_pq_asset_wallet_ownership.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py
 
 echo 'RIP-25/v4.8 structural + behavioral invariants: OK'

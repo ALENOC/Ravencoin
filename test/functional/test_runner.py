@@ -75,6 +75,8 @@ EXTENDED_SCRIPTS = [
     'feature_mempool_reissue_restart.py',
     'feature_transfer_sidebranch.py',
     'feature_pq_asset_anchor.py',
+    'feature_pq_asset_authority_selection.py',
+    'feature_pq_asset_source_rpc.py',
     'feature_pq_asset_wallet_ownership.py',
     'feature_restricted_dbcrash.py',
     'feature_restricted_verifydb.py',
