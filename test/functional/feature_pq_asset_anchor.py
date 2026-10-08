@@ -560,6 +560,35 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(node.listmyassets(sub_qualifier_name, True)
                      [sub_qualifier_name]['balance'], 1)
 
+        # The dedicated qualifier transfer RPC must use the same protected
+        # asset transfer builder as a normal asset send.
+        node.sendtoaddress(destination_pq, Decimal('1'))
+        node.generate(1)
+        available_transfer_anchors = {
+            (coin['txid'], coin['vout']) for coin in node.listunspent()
+            if coin['scriptPubKey'] == destination_script.hex()
+        }
+        assert available_transfer_anchors
+        qualifier_transfer_txid = node.transferqualifier(
+            qualifier_name, 1, composite_address)[0]
+        qualifier_transfer = from_hex(
+            CTransaction(), node.getrawtransaction(qualifier_transfer_txid))
+        qualifier_transfer_anchor_vin = [index for index, txin in
+                                         enumerate(qualifier_transfer.vin)
+                                         if (format(txin.prevout.hash, '064x'),
+                                             txin.prevout.n) in available_transfer_anchors]
+        assert_equal(len(qualifier_transfer_anchor_vin), 1)
+        assert_equal(len(qualifier_transfer.wit.vtxinwit[
+            qualifier_transfer_anchor_vin[0]].scriptWitness.stack), 2)
+        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+                         output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == descriptor_program
+                         for output in qualifier_transfer.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        node.generate(1)
+        assert_equal(node.listmyassets(qualifier_name, True)
+                     [qualifier_name]['balance'], 1)
+
 
 if __name__ == '__main__':
     PQAssetAnchorTest().main()
