@@ -359,7 +359,6 @@ class PQAssetAnchorTest(RavenTestFramework):
 
         # A legacy root owner can first be migrated to a protected output.
         # The restricted-asset reissue then returns that protected owner token.
-        # A nontrivial qualifier verifier still needs separate coverage.
         assert_equal(node.lockunspent(True), True)
         assert_raises_rpc_error(-4, 'migrate the legacy authority first',
                                 node.reissuerestrictedasset,
@@ -597,6 +596,48 @@ class PQAssetAnchorTest(RavenTestFramework):
                          for output in tag_tx.vout
                          if len(output.scriptPubKey) > 57), 1)
         node.generate(1)
+
+        # Qualifier lookup must use the classical address inside the PQ
+        # descriptor. A recipient without the tag fails the same verifier.
+        assert_raises_rpc_error(
+            None, 'bad-txns-null-verifier-address-failed-verification',
+            node.reissuerestrictedasset, restricted_issue_name, 1,
+            destination_descriptor, True, qualifier_name)
+        node.sendtoaddress(destination_pq, Decimal('1'))
+        node.generate(1)
+        qualified_reissue_txid = node.reissuerestrictedasset(
+            restricted_issue_name, 1, composite_address,
+            True, qualifier_name)[0]
+        qualified_reissue = from_hex(
+            CTransaction(), node.getrawtransaction(qualified_reissue_txid))
+        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+                         output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == descriptor_program
+                         for output in qualified_reissue.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        node.generate(1)
+        assert_raises_rpc_error(
+            None, 'bad-txns-null-verifier-address-failed-verification',
+            node.transfer, restricted_issue_name, 1,
+            destination_descriptor)
+        assert_raises_rpc_error(
+            None, 'Change address can not be sent to',
+            node.transfer, restricted_issue_name, 1,
+            composite_address, '', 0, '', destination_descriptor)
+        node.sendtoaddress(pq_part, Decimal('1'))
+        node.generate(1)
+        qualified_transfer_txid = node.transfer(
+            restricted_issue_name, 1, composite_address)[0]
+        qualified_transfer = from_hex(
+            CTransaction(), node.getrawtransaction(qualified_transfer_txid))
+        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+                         output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == descriptor_program
+                         for output in qualified_transfer.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        node.generate(1)
+        assert_equal(node.listmyassets(restricted_issue_name, True)
+                     [restricted_issue_name]['balance'], 2)
 
         def assert_protected_admin_return(method, arguments, anchor_address,
                                           anchor_script, return_script, return_program):
