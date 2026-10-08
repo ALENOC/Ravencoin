@@ -376,7 +376,7 @@ class PQAssetAnchorTest(RavenTestFramework):
         # The restricted-asset reissue then returns that protected owner token.
         # A nontrivial qualifier verifier still needs separate coverage.
         assert_equal(node.lockunspent(True), True)
-        assert_raises_rpc_error(-4, 'migrate the legacy owner token first',
+        assert_raises_rpc_error(-4, 'migrate the legacy authority first',
                                 node.reissuerestrictedasset,
                                 '$' + restricted_base, 1,
                                 destination_descriptor)
@@ -522,6 +522,43 @@ class PQAssetAnchorTest(RavenTestFramework):
         node.generate(1)
         assert_equal(node.listmyassets(restricted_issue_name, True)
                      [restricted_issue_name]['balance'], 1)
+
+        # A sub-qualifier returns its parent qualifier authority, not an
+        # owner token, under the parent key's existing PQ program.
+        node.sendtoaddress(destination_pq, Decimal('1'))
+        node.generate(1)
+        available_qualifier_anchors = {
+            (coin['txid'], coin['vout']) for coin in node.listunspent()
+            if coin['scriptPubKey'] == destination_script.hex()
+        }
+        assert available_qualifier_anchors
+        sub_qualifier_name = '#PQQUALROOT/#SUB'
+        sub_qualifier_txid = node.issuequalifierasset(
+            sub_qualifier_name, 1, composite_address)[0]
+        sub_qualifier_tx = from_hex(
+            CTransaction(), node.getrawtransaction(sub_qualifier_txid))
+        qualifier_anchor_vin = [index for index, txin in
+                                enumerate(sub_qualifier_tx.vin)
+                                if (format(txin.prevout.hash, '064x'),
+                                    txin.prevout.n) in available_qualifier_anchors]
+        assert_equal(len(qualifier_anchor_vin), 1)
+        assert_equal(len(sub_qualifier_tx.wit.vtxinwit[qualifier_anchor_vin[0]]
+                         .scriptWitness.stack), 2)
+        assert_equal(sum(output.scriptPubKey[:25] == destination_classical_script and
+                         output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == destination_program
+                         for output in sub_qualifier_tx.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+                         output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == descriptor_program
+                         for output in sub_qualifier_tx.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        node.generate(1)
+        assert_equal(node.listmyassets(qualifier_name, True)
+                     [qualifier_name]['balance'], 1)
+        assert_equal(node.listmyassets(sub_qualifier_name, True)
+                     [sub_qualifier_name]['balance'], 1)
 
 
 if __name__ == '__main__':

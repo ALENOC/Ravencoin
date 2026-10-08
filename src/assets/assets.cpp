@@ -4127,30 +4127,30 @@ bool SelectSupportedAssetChangeAddress(CWallet* pwallet, CCoinControl& coinContr
     return true;
 }
 
-bool SelectProtectedOwnerReturn(CWallet* pwallet, const std::string& ownerName,
+bool SelectProtectedAssetReturn(CWallet* pwallet, const std::string& authorityName,
                                 CTxDestination& destination, uint256& program,
                                 std::pair<int, std::string>& error)
 {
     std::map<std::string, std::vector<COutput>> available;
     pwallet->AvailableAssets(available);
-    const auto ownerCoins = available.find(ownerName);
+    const auto ownerCoins = available.find(authorityName);
     if (ownerCoins != available.end()) {
         for (const COutput& output : ownerCoins->second) {
             if (!output.fSpendable ||
                 !GetPQAssetProgram(output.tx->tx->vout[output.i].scriptPubKey, program) ||
                 !pwallet->HavePQKey(program))
                 continue;
-            CAssetOutputEntry owner;
-            if (!GetAssetData(output.tx->tx->vout[output.i].scriptPubKey, owner) ||
-                owner.assetName != ownerName ||
-                !IsSupportedAssetDestination(owner.destination))
+            CAssetOutputEntry authority;
+            if (!GetAssetData(output.tx->tx->vout[output.i].scriptPubKey, authority) ||
+                authority.assetName != authorityName ||
+                !IsSupportedAssetDestination(authority.destination))
                 continue;
-            destination = owner.destination;
+            destination = authority.destination;
             return true;
         }
     }
     error = std::make_pair(RPC_WALLET_ERROR,
-        "Active PQ reissue requires an owned protected owner token; migrate the legacy owner token first");
+        "Active PQ asset operation requires an owned protected authority asset; migrate the legacy authority first");
     return false;
 }
 
@@ -4243,14 +4243,16 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
     const bool needsAssetChange = assetType == AssetType::SUB || assetType == AssetType::UNIQUE ||
                                   assetType == AssetType::MSGCHANNEL || assetType == AssetType::SUB_QUALIFIER ||
                                   assetType == AssetType::RESTRICTED;
-    const bool protectedOwnerReturn = pqAssetsActive &&
+    const bool protectedAuthorityReturn = pqAssetsActive &&
         (assetType == AssetType::SUB || assetType == AssetType::UNIQUE ||
-         assetType == AssetType::MSGCHANNEL || assetType == AssetType::RESTRICTED);
-    if (protectedOwnerReturn) {
+         assetType == AssetType::MSGCHANNEL || assetType == AssetType::RESTRICTED ||
+         assetType == AssetType::SUB_QUALIFIER);
+    if (protectedAuthorityReturn) {
         CTxDestination parentDestination;
-        const std::string ownerName =
-            (assetType == AssetType::RESTRICTED ? parentName.substr(1) : parentName) + OWNER_TAG;
-        if (!SelectProtectedOwnerReturn(pwallet, ownerName,
+        const std::string authorityName = assetType == AssetType::SUB_QUALIFIER
+            ? parentName
+            : (assetType == AssetType::RESTRICTED ? parentName.substr(1) : parentName) + OWNER_TAG;
+        if (!SelectProtectedAssetReturn(pwallet, authorityName,
                                         parentDestination, protectedParentProgram,
                                         error))
             return false;
@@ -4297,7 +4299,7 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
 
         CAssetTransfer assetTransfer(parentName + OWNER_TAG, OWNER_ASSET_AMOUNT);
         assetTransfer.ConstructTransaction(scriptTransferOwnerAsset);
-        if (protectedOwnerReturn) {
+        if (protectedAuthorityReturn) {
             CScript tagged;
             if (!BuildPQAssetTaggedScript(scriptTransferOwnerAsset,
                                           protectedParentProgram, tagged)) {
@@ -4318,6 +4320,16 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
 
         CAssetTransfer assetTransfer(parentName, OWNER_ASSET_AMOUNT);
         assetTransfer.ConstructTransaction(scriptTransferQualifierAsset);
+        if (protectedAuthorityReturn) {
+            CScript tagged;
+            if (!BuildPQAssetTaggedScript(scriptTransferQualifierAsset,
+                                          protectedParentProgram, tagged)) {
+                error = std::make_pair(RPC_WALLET_ERROR,
+                    "Could not construct protected parent qualifier return");
+                return false;
+            }
+            scriptTransferQualifierAsset = std::move(tagged);
+        }
         CRecipient rec = {scriptTransferQualifierAsset, 0, fSubtractFeeFromAmount};
         vecSend.push_back(rec);
     }
@@ -4356,7 +4368,7 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
 
         CAssetTransfer assetTransfer(strStripped + OWNER_TAG, OWNER_ASSET_AMOUNT);
         assetTransfer.ConstructTransaction(scriptTransferOwnerAsset);
-        if (protectedOwnerReturn) {
+        if (protectedAuthorityReturn) {
             CScript tagged;
             if (!BuildPQAssetTaggedScript(scriptTransferOwnerAsset,
                                           protectedParentProgram, tagged)) {
@@ -4532,7 +4544,7 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
     CTxDestination ownerReturnDestination = DecodeDestination(asset_change_address);
     uint256 ownerReturnProgram;
     if (pqAssetsActive &&
-        !SelectProtectedOwnerReturn(pwallet, ownerName, ownerReturnDestination,
+        !SelectProtectedAssetReturn(pwallet, ownerName, ownerReturnDestination,
                                     ownerReturnProgram, error))
         return false;
     CScript scriptTransferOwnerAsset = GetScriptForDestination(ownerReturnDestination);
