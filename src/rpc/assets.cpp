@@ -2719,7 +2719,10 @@ UniValue reissuerestrictedasset(const JSONRPCRequest& request)
     std::string to_address = request.params[2].get_str();
 
     CTxDestination to_dest = DecodeDestination(to_address);
-    if (!IsValidDestination(to_dest)) {
+    CKeyID classicalKey;
+    uint256 pqProgram;
+    if (!IsValidDestination(to_dest) &&
+        !DecodePQAssetDestination(to_address, classicalKey, pqProgram)) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + to_address);
     }
 

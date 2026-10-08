@@ -4127,6 +4127,33 @@ bool SelectSupportedAssetChangeAddress(CWallet* pwallet, CCoinControl& coinContr
     return true;
 }
 
+bool SelectProtectedOwnerReturn(CWallet* pwallet, const std::string& ownerName,
+                                CTxDestination& destination, uint256& program,
+                                std::pair<int, std::string>& error)
+{
+    std::map<std::string, std::vector<COutput>> available;
+    pwallet->AvailableAssets(available);
+    const auto ownerCoins = available.find(ownerName);
+    if (ownerCoins != available.end()) {
+        for (const COutput& output : ownerCoins->second) {
+            if (!output.fSpendable ||
+                !GetPQAssetProgram(output.tx->tx->vout[output.i].scriptPubKey, program) ||
+                !pwallet->HavePQKey(program))
+                continue;
+            CAssetOutputEntry owner;
+            if (!GetAssetData(output.tx->tx->vout[output.i].scriptPubKey, owner) ||
+                owner.assetName != ownerName ||
+                !IsSupportedAssetDestination(owner.destination))
+                continue;
+            destination = owner.destination;
+            return true;
+        }
+    }
+    error = std::make_pair(RPC_WALLET_ERROR,
+        "Active PQ reissue requires an owned protected owner token; migrate the legacy owner token first");
+    return false;
+}
+
 } // namespace
 
 bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const CNewAsset& asset, const std::string& address, std::pair<int, std::string>& error, CWalletTx& wtxNew, CReserveKey& reservekey, CAmount& nFeeRequired, std::string* verifier_string)
@@ -4334,6 +4361,13 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
 
 bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const CReissueAsset& reissueAsset, const std::string& address, std::pair<int, std::string>& error, CWalletTx& wtxNew, CReserveKey& reservekey, CAmount& nFeeRequired, std::string* verifier_string)
 {
+    bool pqAssetsActive;
+    {
+        LOCK(cs_main);
+        const int activationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
+        pqAssetsActive = activationHeight >= 0 && chainActive.Height() + 1 >= activationHeight;
+    }
+
     // Create transaction variables
     std::string strTxError;
     std::vector<CRecipient> vecSend;
@@ -4348,8 +4382,18 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
     AssetType asset_type = AssetType::INVALID;
     IsAssetNameValid(asset_name, asset_type);
 
-    // Check that validitity of the address
-    if (!CheckSupportedAssetAddress(address, error)) {
+    CTxDestination assetDestination = DecodeDestination(address);
+    if (pqAssetsActive) {
+        CKeyID classicalKey;
+        uint256 program;
+        if (!DecodePQAssetDestination(address, classicalKey, program)) {
+            error = std::make_pair(RPC_INVALID_ADDRESS_OR_KEY,
+                "Active PQ reissue requires a canonical classical|PQ asset destination");
+            return false;
+        }
+        assetDestination = classicalKey;
+        coinControl.pqAssetDestinationProgram = program;
+    } else if (!CheckSupportedAssetAddress(address, error)) {
         return false;
     }
 
@@ -4373,7 +4417,8 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
     }
 
     std::string asset_change_address;
-    if (!SelectSupportedAssetChangeAddress(
+    if (!pqAssetsActive &&
+        !SelectSupportedAssetChangeAddress(
             pwallet, coinControl, reservekey, change_address, asset_change_address, error)) {
         return false;
     }
@@ -4445,15 +4490,28 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
         return false;
     }
 
-    // Get the script for the destination address for the assets
-    CScript scriptTransferOwnerAsset = GetScriptForDestination(DecodeDestination(asset_change_address));
-
-    if (asset_type == AssetType::RESTRICTED) {
-        CAssetTransfer assetTransfer(stripped_asset_name + OWNER_TAG, OWNER_ASSET_AMOUNT);
-        assetTransfer.ConstructTransaction(scriptTransferOwnerAsset);
-    } else {
-        CAssetTransfer assetTransfer(asset_name + OWNER_TAG, OWNER_ASSET_AMOUNT);
-        assetTransfer.ConstructTransaction(scriptTransferOwnerAsset);
+    // Return the owner token to a wallet-owned protected key, independent of
+    // the reissue destination, so reissuing cannot transfer administration.
+    const std::string ownerName =
+        (asset_type == AssetType::RESTRICTED ? stripped_asset_name : asset_name) + OWNER_TAG;
+    CTxDestination ownerReturnDestination = DecodeDestination(asset_change_address);
+    uint256 ownerReturnProgram;
+    if (pqAssetsActive &&
+        !SelectProtectedOwnerReturn(pwallet, ownerName, ownerReturnDestination,
+                                    ownerReturnProgram, error))
+        return false;
+    CScript scriptTransferOwnerAsset = GetScriptForDestination(ownerReturnDestination);
+    CAssetTransfer ownerTransfer(ownerName, OWNER_ASSET_AMOUNT);
+    ownerTransfer.ConstructTransaction(scriptTransferOwnerAsset);
+    if (pqAssetsActive) {
+        CScript tagged;
+        if (!BuildPQAssetTaggedScript(scriptTransferOwnerAsset,
+                                      ownerReturnProgram, tagged)) {
+            error = std::make_pair(RPC_WALLET_ERROR,
+                "Could not construct protected owner-token return");
+            return false;
+        }
+        scriptTransferOwnerAsset = std::move(tagged);
     }
 
     if (asset_type == AssetType::RESTRICTED) {
@@ -4462,7 +4520,8 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
             if (reissueAsset.nAmount > 0) {
                 std::string strError = "";
                 ErrorReport report;
-                if (!ContextualCheckVerifierString(passets, *verifier_string, address, strError, &report)) {
+                if (!ContextualCheckVerifierString(passets, *verifier_string,
+                                                   EncodeDestination(assetDestination), strError, &report)) {
                     error = std::make_pair(RPC_INVALID_PARAMETER, strError);
                     return false;
                 }
@@ -4484,7 +4543,8 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
                 }
 
                 std::string strError = "";
-                if (!ContextualCheckVerifierString(passets, verifier.verifier_string, address, strError)) {
+                if (!ContextualCheckVerifierString(passets, verifier.verifier_string,
+                                                   EncodeDestination(assetDestination), strError)) {
                     error = std::make_pair(RPC_INVALID_PARAMETER, strError);
                     return false;
                 }
@@ -4511,7 +4571,7 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
     CRecipient recipient2 = {scriptTransferOwnerAsset, 0, fSubtractFeeFromAmount};
     vecSend.push_back(recipient);
     vecSend.push_back(recipient2);
-    if (!pwallet->CreateTransactionWithReissueAsset(vecSend, wtxNew, reservekey, nFeeRequired, nChangePosRet, strTxError, coinControl, reissueAsset, DecodeDestination(address))) {
+    if (!pwallet->CreateTransactionWithReissueAsset(vecSend, wtxNew, reservekey, nFeeRequired, nChangePosRet, strTxError, coinControl, reissueAsset, assetDestination)) {
         if (!fSubtractFeeFromAmount && burnAmount + nFeeRequired > curBalance)
             strTxError = strprintf("Error: This transaction requires a transaction fee of at least %s", FormatMoney(nFeeRequired));
         error = std::make_pair(RPC_WALLET_ERROR, strTxError);

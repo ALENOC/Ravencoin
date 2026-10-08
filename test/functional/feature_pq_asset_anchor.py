@@ -59,6 +59,10 @@ class PQAssetAnchorTest(RavenTestFramework):
 
         node.generate(861)
         node.issue(asset_name, 1, legacy_address)
+        restricted_base = 'PQRESTRICTBASE'
+        node.issue(restricted_base, 1, legacy_address)
+        node.issuerestrictedasset('$' + restricted_base, 1, 'true',
+                                  legacy_address)
         node.generate(1)
         assert_equal(node.getblockcount(), 862)
         assert_equal(node.getblockchaininfo()['bip9_softforks']['pq_assets']['status'], 'active')
@@ -261,6 +265,95 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(node.listmyassets('PQROOTRECIPIENT', True)
                      ['PQROOTRECIPIENT']['balance'], 10)
 
+        # Reissuance must protect both the newly created units and the
+        # returned owner token. The owner return stays with its original
+        # classical/PQ key pair, even when new units use a different pair.
+        assert_raises_rpc_error(-5, 'canonical classical|PQ asset destination',
+                                node.reissue, 'PQROOTRECIPIENT', 2,
+                                legacy_address)
+        assert_raises_rpc_error(-4, 'funded matching PQ anchor',
+                                node.reissue, 'PQROOTRECIPIENT', 2,
+                                destination_descriptor)
+        reissue_anchor_txid = node.sendtoaddress(pq_part, Decimal('1'))
+        node.generate(1)
+        reissue_anchor_vout = self.output_index(
+            node.getrawtransaction(reissue_anchor_txid),
+            lambda script: script == descriptor_script)
+        reissue_txid = node.reissue('PQROOTRECIPIENT', 2,
+                                   destination_descriptor)[0]
+        reissue_tx = from_hex(CTransaction(), node.getrawtransaction(reissue_txid))
+        reissue_anchor_vin = [index for index, txin in enumerate(reissue_tx.vin)
+                              if txin.prevout.hash == int(reissue_anchor_txid, 16) and
+                              txin.prevout.n == reissue_anchor_vout]
+        assert_equal(len(reissue_anchor_vin), 1)
+        assert_equal(len(reissue_tx.wit.vtxinwit[reissue_anchor_vin[0]]
+                         .scriptWitness.stack), 2)
+        assert_equal(sum(output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == destination_program
+                         for output in reissue_tx.vout if len(output.scriptPubKey) > 57), 1)
+        classical_script = bytes.fromhex(
+            node.validateaddress(classical_part)['scriptPubKey'])
+        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+                         output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == descriptor_program
+                         for output in reissue_tx.vout if len(output.scriptPubKey) > 57), 1)
+        node.generate(1)
+        assert_equal(node.listmyassets('PQROOTRECIPIENT', True)
+                     ['PQROOTRECIPIENT']['balance'], 12)
+        assert_equal(node.listmyassets('PQROOTRECIPIENT!', True)
+                     ['PQROOTRECIPIENT!']['balance'], 1)
+
+        # A legacy root owner can first be migrated to a protected output.
+        # The restricted-asset reissue then returns that protected owner token.
+        # A nontrivial qualifier verifier still needs separate coverage.
+        assert_equal(node.lockunspent(True), True)
+        assert_raises_rpc_error(-4, 'migrate the legacy owner token first',
+                                node.reissuerestrictedasset,
+                                '$' + restricted_base, 1,
+                                destination_descriptor)
+        migrate_owner_txid = node.transfer(
+            restricted_base + '!', 1, composite_address)[0]
+        node.generate(1)
+        migrated_owner = from_hex(
+            CTransaction(), node.getrawtransaction(migrate_owner_txid))
+        assert_equal(sum(output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == descriptor_program
+                         for output in migrated_owner.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        restricted_anchor_txid = node.sendtoaddress(pq_part, Decimal('1'))
+        node.generate(1)
+        restricted_anchor_vout = self.output_index(
+            node.getrawtransaction(restricted_anchor_txid),
+            lambda script: script == descriptor_script)
+        available_restricted_anchors = {
+            (coin['txid'], coin['vout']) for coin in node.listunspent()
+            if coin['scriptPubKey'] == descriptor_script.hex()
+        }
+        assert (restricted_anchor_txid, restricted_anchor_vout) in available_restricted_anchors
+        restricted_reissue_txid = node.reissuerestrictedasset(
+            '$' + restricted_base, 1, destination_descriptor)[0]
+        restricted_reissue = from_hex(
+            CTransaction(), node.getrawtransaction(restricted_reissue_txid))
+        restricted_anchor_vin = [index for index, txin in
+                                 enumerate(restricted_reissue.vin)
+                                 if (format(txin.prevout.hash, '064x'),
+                                     txin.prevout.n) in available_restricted_anchors]
+        assert_equal(len(restricted_anchor_vin), 1)
+        assert_equal(len(restricted_reissue.wit.vtxinwit[restricted_anchor_vin[0]]
+                         .scriptWitness.stack), 2)
+        assert_equal(sum(output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == destination_program
+                         for output in restricted_reissue.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+                         output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == descriptor_program
+                         for output in restricted_reissue.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        node.generate(1)
+        assert_equal(node.listmyassets('$' + restricted_base, True)
+                     ['$' + restricted_base]['balance'], 2)
+
         # Owner tokens use the same protected transfer and anchor rules.
         assert_raises_rpc_error(-25, 'funded matching PQ anchor',
                                 node.transfer, 'PQROOTRECIPIENT!', 1,
@@ -286,6 +379,7 @@ class PQAssetAnchorTest(RavenTestFramework):
         # An explicit asset change descriptor must preserve its own PQ key.
         assert_equal(node.lockunspent(True), True)
         node.sendtoaddress(pq_part, Decimal('1'))
+        node.sendtoaddress(destination_pq, Decimal('1'))
         node.generate(1)
         explicit_change = node.getnewpqassetaddress()
         _, explicit_change_pq = explicit_change.split('|')
@@ -293,7 +387,7 @@ class PQAssetAnchorTest(RavenTestFramework):
             node.validateaddress(explicit_change_pq)['scriptPubKey'])
         next_destination = node.getnewpqassetaddress()
         explicit_transfer_txid = node.transfer(
-            'PQROOTRECIPIENT', 2, next_destination, '', 0, '', explicit_change)[0]
+            'PQROOTRECIPIENT', 4, next_destination, '', 0, '', explicit_change)[0]
         explicit_transfer = from_hex(
             CTransaction(), node.getrawtransaction(explicit_transfer_txid))
         explicit_change_outputs = [
@@ -305,7 +399,7 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(len(explicit_change_outputs), 1)
         node.generate(1)
         assert_equal(node.listmyassets('PQROOTRECIPIENT', True)
-                     ['PQROOTRECIPIENT']['balance'], 10)
+                     ['PQROOTRECIPIENT']['balance'], 12)
 
 
 if __name__ == '__main__':
