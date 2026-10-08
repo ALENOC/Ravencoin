@@ -51,7 +51,7 @@ Unlike encrypted communications, blockchain data is:
 
 Ravencoin's unique asset layer amplifies the quantum threat beyond simple coin theft:
 
-- **Admin token theft** (`$ASSET!`) gives an attacker control over an asset's entire supply and properties
+- **Admin token theft** (`ASSET!`) gives an attacker control over an asset's supply and administrative properties
 - **Unique assets and NFTs** cannot be "replaced" after theft
 - **Restricted asset qualifiers** control who can transact with restricted assets
 - **Message channel assets** enable impersonation and fraudulent messaging
@@ -450,7 +450,10 @@ Users migrate native RVN by sending it from legacy addresses to new PQ addresses
 3. Sign with existing ECDSA key (standard legacy transaction)
 4. Broadcast and confirm
 
-After migration, native RVN change outputs can go to PQ addresses. Asset-bearing change outputs remain limited to the legacy asset destination format.
+After migration, native RVN change outputs can go to PQ addresses. On default
+public-network parameters, asset-bearing change still uses the legacy asset
+format. The separate dormant bit-13 extension defines protected asset change
+for a future activation.
 
 #### 7.3 Asset Scope
 
@@ -465,8 +468,9 @@ RIP-25 witness-v2 protects native RVN outputs only. It does not change the Raven
 This scope statement describes the approved bit 12 baseline and the default
 public-network state. A 4.8.1 working branch has a separate, dormant bit 13
 asset candidate with a classical-plus-PQ ownership rule. That candidate is
-not included in the approved PR #1281 semantics, is not wallet-complete, and
-must not be advertised as protecting existing asset holdings. See the linked
+not included in the approved PR #1281 semantics and is not public-network
+release-qualified. Its local wallet tests do not protect existing holdings
+without an authorized migration. See the linked
 asset extension note for its constraints and release blockers.
 
 A wallet or raw-transaction RPC must reject a witness-v2 PQ destination when constructing an asset-bearing output. Appending `OP_RVN_ASSET` data to an `OP_2 <32-byte-program>` script does not create a PQ asset output: it makes the script cease to be a witness program, and current consensus rejects the misplaced asset opcode.
@@ -490,7 +494,7 @@ This proposal is a **soft fork**. Backwards compatibility is maintained as follo
 - **Unupgraded nodes**: See witness v2 outputs as "anyone-can-spend" per BIP141 rules
 - **Legacy addresses**: Continue to work indefinitely
 - **Legacy transactions**: Continue to be valid. No existing transaction type is modified
-- **Asset transactions**: Unchanged and outside this RIP. Spendable asset outputs continue to require legacy P2PKH ownership conditions
+- **Asset transactions**: Unchanged by the approved bit-12 baseline. The separate dormant bit-13 extension retains the legacy P2PKH condition and adds a required PQ anchor for newly created asset outputs after its own activation
 - **Migration**: Voluntary. Users migrate funds at their own pace
 
 The network context was added before mainnet RIP-25 activation. Mainnet has no
