@@ -470,6 +470,22 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(node.listmyassets('PQROOTRECIPIENT', True)
                      ['PQROOTRECIPIENT']['balance'], 12)
 
+        # A root qualifier has no parent authority input but its output must
+        # still carry the recipient's canonical PQ program.
+        assert_equal(node.lockunspent(True), True)
+        qualifier_name = '#PQQUALROOT'
+        qualifier_txid = node.issuequalifierasset(
+            qualifier_name, 1, destination_descriptor)[0]
+        qualifier_tx = from_hex(
+            CTransaction(), node.getrawtransaction(qualifier_txid))
+        assert_equal(sum(output.scriptPubKey[25] == ASSET_OPCODE and
+                         output.scriptPubKey[-32:] == destination_program
+                         for output in qualifier_tx.vout
+                         if len(output.scriptPubKey) > 57), 1)
+        node.generate(1)
+        assert_equal(node.listmyassets(qualifier_name, True)
+                     [qualifier_name]['balance'], 1)
+
 
 if __name__ == '__main__':
     PQAssetAnchorTest().main()
