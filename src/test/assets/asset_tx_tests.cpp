@@ -479,6 +479,56 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         BOOST_CHECK(!GetPQAssetProgram(wrongAddress, parsed));
     }
 
+    BOOST_AUTO_TEST_CASE(pq_only_asset_builder_preserves_transfer_and_owner_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        const uint256 program = uint256S("03");
+        const CScript destination = GetScriptForDestination(
+            DecodeDestination(GetParams().GlobalBurnAddress()));
+        const TxAssetDeploymentContext parserContext{true, false, false, true, true, true};
+        const auto check = [&program, &parserContext](const CScript& legacy) {
+            CScript pqOnly;
+            BOOST_REQUIRE(BuildPQOnlyAssetScript(legacy, program, pqOnly));
+            CAssetOutputEntry before;
+            CAssetOutputEntry after;
+            BOOST_REQUIRE(GetAssetData(legacy, before, &parserContext));
+            BOOST_REQUIRE(GetAssetData(pqOnly, after, &parserContext));
+            BOOST_CHECK_EQUAL(before.type, after.type);
+            BOOST_CHECK_EQUAL(before.assetName, after.assetName);
+            BOOST_CHECK_EQUAL(before.nAmount, after.nAmount);
+            if (before.type == TX_TRANSFER_ASSET) {
+                BOOST_CHECK_EQUAL(before.message, after.message);
+                BOOST_CHECK_EQUAL(before.expireTime, after.expireTime);
+            }
+            const CKeyID* pseudoAddress = boost::get<CKeyID>(&after.destination);
+            BOOST_REQUIRE(pseudoAddress);
+            BOOST_CHECK(*pseudoAddress == CKeyID(Hash160(program.begin(), program.end())));
+            uint256 parsed;
+            BOOST_REQUIRE(GetPQAssetProgram(pqOnly, parsed));
+            BOOST_CHECK(parsed == program);
+        };
+        CScript transfer = destination;
+        CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(transfer);
+        check(transfer);
+        CScript owner = destination;
+        CNewAsset("RAVENTEST", COIN, 0, 1, 0, "").ConstructOwnerTransaction(owner);
+        check(owner);
+        CScript message = destination;
+        CAssetTransfer("RAVENTEST", COIN, std::string(32, 'x'))
+            .ConstructTransaction(message);
+        check(message);
+        for (const std::string& name : {"RAVENTEST", "RAVENTEST/SUB",
+                                        "RAVENTEST#ONE", "$RAVENTEST",
+                                        "#RAVENTEST", "#RAVENTEST/SUB"}) {
+            CScript issue = destination;
+            CNewAsset(name, COIN, 0, 1, 0, "").ConstructTransaction(issue);
+            check(issue);
+        }
+        CScript reissue = destination;
+        CReissueAsset("RAVENTEST", COIN, 0, 1, "").ConstructTransaction(reissue);
+        check(reissue);
+    }
+
     BOOST_AUTO_TEST_CASE(pq_asset_program_canonical_parser_test)
     {
         SelectParams(CBaseChainParams::MAIN);

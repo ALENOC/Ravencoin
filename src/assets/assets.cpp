@@ -3833,6 +3833,26 @@ bool BuildPQAssetTaggedScript(const CScript& legacyScript, const uint256& progra
     return true;
 }
 
+bool BuildPQOnlyAssetScript(const CScript& legacyScript, const uint256& program, CScript& pqOnlyScript)
+{
+    CScript tagged;
+    if (!BuildPQAssetTaggedScript(legacyScript, program, tagged))
+        return false;
+
+    const uint160 addressHash = Hash160(program.begin(), program.end());
+    CScript candidate = CScript() << OP_1 << OP_1
+        << ToByteVector(addressHash) << OP_DROP << OP_DROP;
+    if (candidate.size() != 25)
+        return false;
+    candidate.insert(candidate.end(), tagged.begin() + 25, tagged.end());
+
+    uint256 parsedProgram;
+    if (!GetPQAssetProgram(candidate, parsedProgram) || parsedProgram != program)
+        return false;
+    pqOnlyScript = std::move(candidate);
+    return true;
+}
+
 #ifdef ENABLE_WALLET
 void GetAllAdministrativeAssets(CWallet *pwallet, std::vector<std::string> &names, int nMinConf)
 {

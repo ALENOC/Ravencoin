@@ -535,8 +535,7 @@ bool GetAssetInfoFromScript(const CScript& scriptPubKey, std::string& strName, C
 
 bool GetAssetData(const CScript& script, CAssetOutputEntry& data, const TxAssetDeploymentContext* pAssetContext = nullptr);
 
-// Experimental PQ asset extension: recognize a canonical 32-byte program
-// tail without changing the legacy asset parser or script evaluator.
+// Recognize a canonical 32-byte program tail under either asset prefix.
 bool GetPQAssetProgram(const CScript& script, uint256& program);
 /** Encode an asset destination according to the output's protection at its origin height.
  *  Pass -1 for originHeight when the output is not confirmed on the active chain.
@@ -546,6 +545,8 @@ std::string EncodeContextualAssetDestination(const CScript& script,
                                              int originHeight, int pqAssetActivationHeight);
 /** Tag a canonical legacy P2PKH asset output for the dependent PQ asset rule. */
 bool BuildPQAssetTaggedScript(const CScript& legacyScript, const uint256& program, CScript& taggedScript);
+/** Replace legacy asset ownership with a PQ-only, anchor-protected prefix. */
+bool BuildPQOnlyAssetScript(const CScript& legacyScript, const uint256& program, CScript& pqOnlyScript);
 
 bool GetBestAssetAddressAmount(CAssetsCache& cache, const std::string& assetName, const std::string& address);
 
