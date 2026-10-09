@@ -6,6 +6,8 @@
 #include "walletmodel.h"
 
 #include "addresstablemodel.h"
+#include "assets/assets.h"
+#include "chainparams.h"
 #include "consensus/validation.h"
 #include "guiconstants.h"
 #include "guiutil.h"
@@ -733,17 +735,16 @@ void WalletModel::listCoins(std::map<QString, std::vector<COutput> >& mapCoins) 
 }
 
 /** RVN START */
-// AvailableCoins + LockedCoins grouped by wallet address (put change in one group with wallet address)
+// Available and locked asset coins grouped by the output's contextual destination.
 void WalletModel::listAssets(std::map<QString, std::map<QString, std::vector<COutput> > >& mapCoins) const
 {
-    std::map<QString, std::map<QString, std::vector<COutput> > > mapSortedByAssetName;
-    auto list = wallet->ListAssets();
+    LOCK2(cs_main, wallet->cs_wallet);
+    const int pqAssetActivationHeight = GetPQAssetActivationHeightForPrev(
+        chainActive.Tip(), GetParams().GetConsensus());
 
-    for (auto& group : list) {
-        auto address = QString::fromStdString(EncodeDestination(group.first));
-
+    for (auto& group : wallet->ListAssets()) {
         for (auto& coin : group.second) {
-            auto out = coin.tx->tx->vout[coin.i];
+            const CTxOut& out = coin.tx->tx->vout[coin.i];
             std::string strAssetName;
             CAmount nAmount;
             if (!GetAssetInfoFromScript(out.scriptPubKey, strAssetName, nAmount))
@@ -752,9 +753,16 @@ void WalletModel::listAssets(std::map<QString, std::map<QString, std::vector<COu
             if (nAmount == 0)
                 continue;
 
-            QString assetName = QString::fromStdString(strAssetName);
-            auto& assetMap = mapCoins[assetName];
-            assetMap[address].emplace_back(coin);
+            const CBlockIndex* originBlock = nullptr;
+            const int depth = coin.tx->GetDepthInMainChain(originBlock);
+            const int originHeight = depth > 0 && originBlock ? originBlock->nHeight : -1;
+            const std::string address = EncodeContextualAssetDestination(
+                out.scriptPubKey, originHeight, pqAssetActivationHeight);
+            if (address.empty())
+                continue;
+
+            mapCoins[QString::fromStdString(strAssetName)]
+                    [QString::fromStdString(address)].emplace_back(coin);
         }
     }
 }
