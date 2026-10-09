@@ -130,11 +130,12 @@ the existing address-length assumptions. The descriptor is split before
 restricted-asset verifier or qualifier-index lookups: those indexes remain
 keyed by the classical address. The wallet selects a matching funded native
 PQ anchor and returns protected asset change or owner authority. For one
-consumed program, ordinary positive native change refreshes the anchor at
+consumed program, ordinary positive native change can refresh the anchor at
 the same PQ address. Exact-fee, dust, multiple-program, or explicit native
-change can omit that refresh, so the holder must send native RVN to the
-affected PQ address before another protected spend. Raw callers must
-provide matching funded native anchor inputs themselves. The local
+change can omit that refresh. Ordinary RVN payments can also consume an
+anchor without spending the asset. In either case the holder must send native
+RVN to the affected PQ address before another protected spend. Raw callers
+must provide matching funded native anchor inputs themselves. The local
 full-chain suite covers representative operations for every named class,
 nontrivial restricted verification, encrypted backup recovery, and GUI
 compilation; it does not certify public deployment.
@@ -155,7 +156,7 @@ All high-level and raw-transaction RPCs must construct only canonical activated 
 
 ## 8. Asset Index and Database Compatibility
 
-Asset indexes currently derive an address identity from legacy 20-byte data. A PQ program is 32 bytes. The follow-up design must version index keys or otherwise prevent truncation and type confusion.
+Asset indexes currently derive an address identity from legacy 20-byte data. A PQ program is 32 bytes. The current candidate still indexes protected outputs under their classical address. `listaddressesbyasset` and `listassetbalancesbyaddress` therefore aggregate distinct PQ programs that share one classical key. Their classical address value is accounting data, not a complete protected destination. The follow-up design must version index keys or otherwise prevent truncation and type confusion.
 
 It must specify:
 
@@ -171,7 +172,7 @@ Database readers must reject malformed or unknown key versions without interpret
 
 ## 9. Owner-Token Migration
 
-Existing `ASSET!` outputs cannot become quantum-resistant merely because RIP-25 activates. A migration mechanism must prove current authorization while moving control to a PQ asset condition. Design choices include a normal legacy-authorized transfer into the new condition or a dedicated migration transaction type.
+Existing `ASSET!` outputs cannot become quantum-resistant merely because RIP-25 activates. The current candidate permits a normal legacy-authorized transfer of a historical asset or owner-token UTXO into a new tagged output. The old input remains under its creation-height rules; the new output must meet the active bit-13 rule. A migration mechanism must prove current authorization while moving control to a PQ asset condition.
 
 The proposal must address:
 
@@ -281,7 +282,7 @@ specification. The 4.8.1 working branch assigns BIP9 bit 13 but leaves its
 start and timeout equal and far in the future on every network, so default
 nodes do not activate it. Its tested consensus prototype uses the canonical
 parser and creation-height gate described below. Before public-network
-activation it still needs complete anchor-refresh behavior, cross-platform
+activation it still needs a documented, fail-safe anchor funding policy, cross-platform
 exact-SHA qualification, independent review, and an explicit migration and
 activation decision. The wallet now has tested protected owner returns,
 asset change, restricted-address checks, and representative all-class
@@ -416,3 +417,85 @@ The default public-network bit-13 start and timeout values remain dormant.
    dust, explicit-change, and multiple-program cases may need a manual
    RVN top-up before another spend. Backup and verify both private keys
    and their descriptor association before moving administrative tokens.
+
+## 17. Current Anchor Funding Procedure
+
+This procedure documents FINDING-148, FINDING-150, and FINDING-151 while the
+automatic refresh and raw-funding gaps remain open. A protected asset UTXO is
+not lost when its native anchor is spent. Consensus still requires a matching
+native witness-v2 input for its next spend, and the wallet rejects a protected
+spend when it cannot find one. The owner can restore availability by sending
+native RVN to the PQ address in the asset's original descriptor. Confirm that
+payment, then retry the asset spend. Check every distinct PQ program involved
+in a transaction. A payment to a different PQ address cannot authorize it.
+
+The following situations can leave no reusable anchor even when a protected
+asset or owner token returns to the wallet:
+
+- an exact-fee or dust remainder with no native change output;
+- a spend that consumes assets under multiple PQ programs, since one native
+  change output cannot refresh them all;
+- an explicit native RVN change destination other than the relevant PQ
+  address;
+- an ordinary RVN payment that selects the last funded asset anchor.
+
+For a raw protected asset spend, `fundrawtransaction` can add fee funding but
+does not discover the required anchors from the asset inputs. Construct it
+with these steps:
+
+1. Identify each protected asset outpoint being spent and record its committed
+   32-byte PQ program and associated native witness-v2 address.
+2. Select at least one funded native witness-v2 UTXO with the same program for
+   each distinct protected program. Include those outpoints explicitly in
+   the raw transaction's input list beside the asset outpoints.
+3. Use a canonical `classical|PQ` descriptor for each new asset output. Add a
+   positive, spendable native RVN output back to every PQ address whose last
+   anchor is being consumed. Reserve enough RVN for fees and future spends.
+4. If using `fundrawtransaction` for the remaining fee, inspect its resulting
+   inputs and outputs. It neither supplies a missing matching anchor nor
+   guarantees that its change replenishes one. Sign the complete transaction,
+   inspect it again, then broadcast it. An unanchored protected spend is
+   rejected with `bad-pq-asset-anchor`.
+
+## 18. Interpreting the Current Asset Index
+
+FINDING-153 is an address-index limitation. Two outputs can commit to different
+PQ programs while using the same classical P2PKH key. The index reports one
+classical-address row and their combined asset balance. The row cannot tell a
+spender which PQ anchor or private key a particular outpoint needs.
+`listassetbalancesbyaddress` accepts the classical address, not the composite
+descriptor. Copying an index row as an active asset recipient fails because a
+new output requires the canonical `classical|PQ` descriptor. Use the actual
+output's program and the recorded descriptor for custody and transfers;
+retain both keys and their association in backups. A descriptor assembled
+manually from two owned keys is not necessarily listed by
+`listpqassetaddresses`, which lists persisted wallet pairings.
+
+## 19. Migrating Historical Assets and Owner Tokens
+
+FINDING-155 concerns partial movement of a historical asset UTXO. Activation
+does not add a PQ program to outputs created earlier. Their classical key can
+still authorize a spend, but every spendable asset output newly created after
+activation needs a canonical PQ tag. Migrate before the old classical key can
+be compromised:
+
+1. Back up the wallet and verify that both keys in each destination descriptor
+   can be recovered. Inventory historical asset and `ASSET!` owner-token
+   outpoints, including their quantities and classical addresses.
+2. For a single legacy asset UTXO, transfer its entire quantity to a new
+   canonical `classical|PQ` descriptor. Transfer an owner token's full unit
+   the same way. If a source address holds several UTXOs, use explicit
+   outpoint selection when exact UTXO control is needed.
+3. For a partial transfer through `transferfromaddress` or
+   `transferfromaddresses`, supply the canonical descriptor in the final
+   `asset_change_address` argument as well as a protected recipient. Without
+   it, the wallet rejects the transaction rather than creating classical-only
+   asset change. The GUI path has no equivalent explicit asset-change field.
+4. Verify that every newly created spendable asset and owner-token output has
+   its intended PQ program. Fund each destination's native PQ address with
+   RVN before its first protected spend. Keep the original descriptor and
+   both private keys available for recovery.
+
+No software can distinguish the rightful owner from an attacker who already
+controls the old classical key. Migration does not retroactively protect the
+historical UTXO, and a compromised holder can be raced before confirmation.
