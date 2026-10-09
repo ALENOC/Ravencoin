@@ -499,3 +499,49 @@ be compromised:
 No software can distinguish the rightful owner from an attacker who already
 controls the old classical key. Migration does not retroactively protect the
 historical UTXO, and a compromised holder can be raced before confirmation.
+
+## 20. PQ-Only Asset Ownership Decision and Candidate Format
+
+The owner selected the native-RVN migration model for assets and owner tokens.
+Outputs created under the future bit-13 rule must require an ML-DSA-44 key
+without an ECDSA signature. Historical asset and owner-token outputs retain
+their classical spending rule and migrate voluntarily, with no sunset. The
+current `classical|PQ` candidate still needs an ECDSA signature and therefore
+does not meet this release requirement. FINDING-158 tracks the redesign.
+
+An input carrying a native witness-v2 RVN output with the matching PQ program
+may provide the ML-DSA authorization for an asset input. The owner confirmed
+this construction is acceptable if the asset input needs no ECDSA signature.
+The separate native input still needs RVN funding and may need replenishment
+after the spend, as described in section 17.
+
+One provisional asset locking prefix is exactly 25 bytes:
+
+```
+OP_1 OP_1 PUSH20 HASH160(P) OP_DROP OP_DROP
+OP_RVN_ASSET <canonical asset payload and 32-byte program P>
+```
+
+The asset opcode remains at byte 25, so the existing asset parser identifies
+the output and extracts `HASH160(P)` as its address identifier. The prefix
+executes to one true stack item with an empty scriptSig; it does not execute
+ECDSA. The existing script interpreter treats every byte after
+`OP_RVN_ASSET` as asset data. A new consensus rule must require a matching
+valid witness-v2 anchor whenever such an output is spent at an active origin
+height, and must reject the old dual-signature prefix on new outputs. The
+`HASH160(P)` binding prevents a sender from selecting an unrelated qualified
+or unfrozen classical address while assigning ownership to a different PQ
+program. The 160-bit address identifier and restricted-asset semantics need
+separate adversarial review.
+
+A red-then-green unit test now shows that this prefix passes the existing
+standard script check with an empty scriptSig, is recognized as an asset,
+and is parsed only when the address identifier matches `HASH160(P)`. This
+is a format feasibility result, not full compatibility evidence. The
+following remain required before activation: old-node block acceptance,
+full asset conservation and index behavior, active-only output enforcement,
+wallet PQ ownership and signing, RPC and Qt destination handling, owner
+tokens, restricted address administration, migration, reorgs, recovery,
+independent review, and paired release-target CI at one exact SHA. The
+previously approved bit-13 deployment dates apply to the earlier candidate
+and must be reviewed against the final PQ-only rule before they enter code.
