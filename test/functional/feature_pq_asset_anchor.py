@@ -183,6 +183,37 @@ class PQAssetAnchorTest(RavenTestFramework):
         mined = node.generate(1)
         assert spend_txid in node.getblock(mined[0])['tx']
 
+        # A raw spend can pay the exact fee from the anchor and return the
+        # protected asset without native PQ change. The next spend still
+        # needs a new matching anchor; the asset remains in the wallet.
+        spent_asset_index = self.output_index(
+            spend_signed['hex'],
+            lambda script: len(script) > 31 and script[25] == ASSET_OPCODE)
+        spent_anchor_index = self.output_index(
+            spend_signed['hex'], lambda script: script == pq_script)
+        exact_fee_raw = node.createrawtransaction(
+            [{'txid': spend_txid, 'vout': spent_asset_index},
+             {'txid': spend_txid, 'vout': spent_anchor_index}],
+            {migration_descriptor: {'transfer': {asset_name: 1}},
+             legacy_address: Decimal('0.8')})
+        exact_fee_signed = node.signrawtransaction(exact_fee_raw)
+        assert_equal(exact_fee_signed['complete'], True)
+        exact_fee_tx = from_hex(CTransaction(), exact_fee_signed['hex'])
+        assert_equal(len(exact_fee_tx.vout), 2)
+        assert not any(output.scriptPubKey == pq_script
+                       for output in exact_fee_tx.vout)
+        node.sendrawtransaction(exact_fee_signed['hex'])
+        node.generate(1)
+        assert_equal(node.listmyassets(asset_name, True)[asset_name]['balance'], 1)
+        assert_raises_rpc_error(-25, 'funded matching PQ anchor',
+                                node.transferfromaddress, asset_name,
+                                migration_descriptor, 1, migration_descriptor)
+        node.sendtoaddress(pq_address, Decimal('1'))
+        node.generate(1)
+        node.transferfromaddress(asset_name, migration_descriptor, 1,
+                                 migration_descriptor)
+        node.generate(1)
+
         # Wallet issuance must tag both the root asset and its owner token.
         composite_address = node.getnewpqassetaddress()
         assert_equal(composite_address.count('|'), 1)
@@ -828,6 +859,8 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(sorted(output.scriptPubKey[-32:] for output in split_tx.vout),
                      sorted((descriptor_program, destination_program)))
 
+        self.test_anchor_availability_limits(node)
+
         # A backed-up encrypted wallet must recover both halves of the
         # descriptor and sign a matching PQ anchor after a fresh restart.
         passphrase = 'regtest-only-pq-asset-passphrase'
@@ -870,6 +903,202 @@ class PQAssetAnchorTest(RavenTestFramework):
         node.generate(1)
         assert_equal(node.listmyassets(qualifier_name, True)
                      [qualifier_name]['balance'], 1)
+
+    def test_anchor_availability_limits(self, node):
+        assert_equal(node.lockunspent(True), True)
+
+        # An ordinary RVN payment can select the only funded anchor. Asset
+        # custody persists and a payment to the same PQ address restores it.
+        drain_name = 'PQANCHORDRAIN'
+        drain_descriptor = node.getnewpqassetaddress()
+        _, drain_pq = drain_descriptor.split('|')
+        drain_script = bytes.fromhex(
+            node.validateaddress(drain_pq)['scriptPubKey'])
+        node.issue(drain_name, 2, drain_descriptor)
+        drain_anchor_txid = node.sendtoaddress(drain_pq, Decimal('1'))
+        node.generate(1)
+        drain_anchor = (drain_anchor_txid, self.output_index(
+            node.getrawtransaction(drain_anchor_txid),
+            lambda script: script == drain_script))
+        other_native = [
+            {'txid': coin['txid'], 'vout': coin['vout']}
+            for coin in node.listunspent()
+            if not coin.get('assetName') and
+            (coin['txid'], coin['vout']) != drain_anchor
+        ]
+        assert other_native
+        assert_equal(node.lockunspent(False, other_native), True)
+        drain_txid = node.sendtoaddress(node.getnewaddress(), Decimal('0.5'))
+        drain_tx = from_hex(CTransaction(), node.getrawtransaction(drain_txid))
+        assert drain_anchor in self.input_outpoints(drain_tx)
+        assert not any(output.scriptPubKey == drain_script
+                       for output in drain_tx.vout)
+        node.generate(1)
+        assert_equal(node.listmyassets(drain_name, True)
+                     [drain_name]['balance'], 2)
+        assert_raises_rpc_error(-25, 'funded matching PQ anchor',
+                                node.transferfromaddress, drain_name,
+                                drain_descriptor, 1, drain_descriptor)
+        assert_equal(node.lockunspent(True), True)
+        node.sendtoaddress(drain_pq, Decimal('1'))
+        node.generate(1)
+        node.transferfromaddress(drain_name, drain_descriptor, 1,
+                                 drain_descriptor)
+        node.generate(1)
+
+        # An explicit RVN change address is honored even when it consumes
+        # the sole anchor for an asset that is returned to its source pair.
+        explicit_name = 'PQEXPLICITCHG'
+        explicit_descriptor = node.getnewpqassetaddress()
+        _, explicit_pq = explicit_descriptor.split('|')
+        explicit_script = bytes.fromhex(
+            node.validateaddress(explicit_pq)['scriptPubKey'])
+        node.issue(explicit_name, 2, explicit_descriptor)
+        node.sendtoaddress(explicit_pq, Decimal('1'))
+        node.generate(1)
+        explicit_anchors = {
+            (coin['txid'], coin['vout']) for coin in node.listunspent()
+            if coin['scriptPubKey'] == explicit_script.hex()
+        }
+        assert_equal(len(explicit_anchors), 1)
+        native_change = node.getnewaddress()
+        native_change_script = bytes.fromhex(
+            node.validateaddress(native_change)['scriptPubKey'])
+        explicit_txid = node.transferfromaddress(
+            explicit_name, explicit_descriptor, 1, explicit_descriptor,
+            '', 0, native_change)[0]
+        explicit_tx = from_hex(CTransaction(),
+                               node.getrawtransaction(explicit_txid))
+        assert explicit_anchors <= self.input_outpoints(explicit_tx)
+        assert any(output.scriptPubKey == native_change_script
+                   for output in explicit_tx.vout)
+        assert not any(output.scriptPubKey == explicit_script
+                       for output in explicit_tx.vout)
+        node.generate(1)
+        assert_equal(node.listmyassets(explicit_name, True)
+                     [explicit_name]['balance'], 2)
+        assert_raises_rpc_error(-25, 'funded matching PQ anchor',
+                                node.transferfromaddress, explicit_name,
+                                explicit_descriptor, 1, explicit_descriptor)
+        node.sendtoaddress(explicit_pq, Decimal('1'))
+        node.generate(1)
+        node.transferfromaddress(explicit_name, explicit_descriptor, 1,
+                                 explicit_descriptor)
+        node.generate(1)
+
+        # Two protected source programs require two native anchor inputs.
+        # The single default RVN change output refreshes neither program.
+        multi_name = 'PQMULTIANCHOR'
+        multi_a = node.getnewpqassetaddress()
+        multi_b = node.getnewpqassetaddress()
+        _, multi_a_pq = multi_a.split('|')
+        _, multi_b_pq = multi_b.split('|')
+        multi_a_script = bytes.fromhex(
+            node.validateaddress(multi_a_pq)['scriptPubKey'])
+        multi_b_script = bytes.fromhex(
+            node.validateaddress(multi_b_pq)['scriptPubKey'])
+        node.issue(multi_name, 2, multi_a)
+        node.sendtoaddress(multi_a_pq, Decimal('1'))
+        node.generate(1)
+        node.transferfromaddress(multi_name, multi_a, 1, multi_b)
+        node.generate(1)
+        multi_a_anchors = [
+            {'txid': coin['txid'], 'vout': coin['vout']}
+            for coin in node.listunspent()
+            if coin['scriptPubKey'] == multi_a_script.hex()
+        ]
+        assert multi_a_anchors
+        assert_equal(node.lockunspent(False, multi_a_anchors), True)
+        node.sendtoaddress(multi_b_pq, Decimal('1'))
+        node.generate(1)
+        assert_equal(node.lockunspent(True, multi_a_anchors), True)
+        multi_a_anchors = {
+            (coin['txid'], coin['vout']) for coin in node.listunspent()
+            if coin['scriptPubKey'] == multi_a_script.hex()
+        }
+        multi_b_anchors = {
+            (coin['txid'], coin['vout']) for coin in node.listunspent()
+            if coin['scriptPubKey'] == multi_b_script.hex()
+        }
+        assert multi_a_anchors
+        assert_equal(len(multi_b_anchors), 1)
+        multi_txid = node.transferfromaddresses(
+            multi_name, [multi_a, multi_b], 2, multi_a)[0]
+        multi_tx = from_hex(CTransaction(), node.getrawtransaction(multi_txid))
+        multi_inputs = self.input_outpoints(multi_tx)
+        assert multi_inputs & multi_a_anchors
+        assert multi_inputs & multi_b_anchors
+        assert not any(output.scriptPubKey in (multi_a_script,
+                                               multi_b_script)
+                       for output in multi_tx.vout)
+        node.generate(1)
+        assert_equal(node.listmyassets(multi_name, True)
+                     [multi_name]['balance'], 2)
+        assert_raises_rpc_error(-25, 'funded matching PQ anchor',
+                                node.transferfromaddress, multi_name,
+                                multi_a, 1, multi_b)
+        node.sendtoaddress(multi_a_pq, Decimal('1'))
+        node.generate(1)
+        node.transferfromaddress(multi_name, multi_a, 1, multi_b)
+        node.generate(1)
+
+        # Raw funding adds fee inputs but does not supply the protected
+        # asset's matching anchor. An explicit anchor and output back to the
+        # same PQ address allow the next protected spend.
+        raw_name = 'PQRAWFUND'
+        raw_descriptor = node.getnewpqassetaddress()
+        _, raw_pq = raw_descriptor.split('|')
+        raw_script = bytes.fromhex(node.validateaddress(raw_pq)['scriptPubKey'])
+        node.issue(raw_name, 1, raw_descriptor)
+        raw_anchor_txid = node.sendtoaddress(raw_pq, Decimal('1'))
+        fee_address = node.getnewaddress()
+        fee_script = bytes.fromhex(
+            node.validateaddress(fee_address)['scriptPubKey'])
+        fee_txid = node.sendtoaddress(fee_address, Decimal('2'))
+        node.generate(1)
+        raw_anchor = {'txid': raw_anchor_txid, 'vout': self.output_index(
+            node.getrawtransaction(raw_anchor_txid),
+            lambda script: script == raw_script)}
+        fee_input = {'txid': fee_txid, 'vout': self.output_index(
+            node.getrawtransaction(fee_txid),
+            lambda script: script == fee_script)}
+        asset_outpoint = node.listmyassets(raw_name, True)
+        asset_outpoint = asset_outpoint[raw_name]['outpoints'][0]
+        asset_input = {key: asset_outpoint[key] for key in ('txid', 'vout')}
+        raw_outputs = {raw_descriptor: {'transfer': {raw_name: 1}}}
+        raw_unanchored = node.createrawtransaction(
+            [asset_input, fee_input], raw_outputs)
+        raw_unanchored = node.fundrawtransaction(raw_unanchored)['hex']
+        unanchored_tx = from_hex(CTransaction(), raw_unanchored)
+        assert (raw_anchor['txid'], raw_anchor['vout']) not in \
+            self.input_outpoints(unanchored_tx)
+        raw_unanchored = node.signrawtransaction(raw_unanchored)
+        assert_equal(raw_unanchored['complete'], True)
+        assert_raises_rpc_error(-26, 'bad-pq-asset-anchor',
+                                node.sendrawtransaction, raw_unanchored['hex'])
+        assert_equal(node.listmyassets(raw_name, True)[raw_name]['balance'], 1)
+        raw_replenished = node.createrawtransaction(
+            [asset_input, fee_input, raw_anchor],
+            {raw_descriptor: {'transfer': {raw_name: 1}},
+             raw_pq: Decimal('0.9')})
+        raw_replenished = node.fundrawtransaction(raw_replenished)['hex']
+        raw_replenished = node.signrawtransaction(raw_replenished)
+        assert_equal(raw_replenished['complete'], True)
+        raw_txid = node.sendrawtransaction(raw_replenished['hex'])
+        raw_tx = from_hex(CTransaction(), node.getrawtransaction(raw_txid))
+        assert (raw_anchor['txid'], raw_anchor['vout']) in \
+            self.input_outpoints(raw_tx)
+        assert any(output.scriptPubKey == raw_script and
+                   output.nValue == 90_000_000 for output in raw_tx.vout)
+        node.generate(1)
+        node.transferfromaddress(raw_name, raw_descriptor, 1,
+                                 raw_descriptor)
+        node.generate(1)
+
+    @staticmethod
+    def input_outpoints(tx):
+        return {(format(txin.prevout.hash, '064x'), txin.prevout.n)
+                for txin in tx.vin}
 
 
 if __name__ == '__main__':
