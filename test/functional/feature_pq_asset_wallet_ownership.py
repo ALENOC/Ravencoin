@@ -7,6 +7,7 @@
 
 from decimal import Decimal
 
+from test_framework.authproxy import JSONRPCException
 from test_framework.mininode import CTransaction, from_hex, to_hex
 from test_framework.test_framework import RavenTestFramework
 from test_framework.util import assert_equal, assert_raises_rpc_error
@@ -57,9 +58,18 @@ class PQAssetWalletOwnershipTest(RavenTestFramework):
         self.sync_all()
         sender.issue(asset_name, 1, sender_asset_address)
         sender.issue(historical_name, 1, sender_asset_address)
+        predefault_txid = sender.issue('PQPREDEFAULT', 1)[0]
         sender.generate(1)
         self.sync_all()
         assert_equal(sender.getblockcount(), 861)
+        assert_equal(sender.listpqassetaddresses()['addresses'], [])
+        assert_equal(sender.listmyassets('PQPREDEFAULT', True)
+                     ['PQPREDEFAULT']['balance'], 1)
+        predefault_destinations = [entry['destination'] for entry in
+                                   sender.gettransaction(predefault_txid)['asset_details']
+                                   if entry['asset_name'] == 'PQPREDEFAULT']
+        assert_equal(len(predefault_destinations), 1)
+        assert '|' not in predefault_destinations[0]
 
         # A tag-shaped output created before the effective activation height
         # remains a legacy, classically owned asset even after activation.
@@ -150,6 +160,53 @@ class PQAssetWalletOwnershipTest(RavenTestFramework):
             assert_equal(spend_signed['complete'], True)
             assert_raises_rpc_error(-26, 'bad-pq-asset-anchor',
                                     recipient.sendrawtransaction, spend_signed['hex'])
+
+        # The post-activation defaults must create wallet-owned protected
+        # destinations, including for an issuance with a protected owner token.
+        parent_name = 'PQDEFAULTPARENT'
+        parent_destination = sender.getnewpqassetaddress()
+        sender.issue(parent_name, 1, parent_destination)
+        sender.generate(1)
+        self.sync_all()
+        sender.sendtoaddress(parent_destination.split('|')[1], Decimal('1'))
+        sender.generate(1)
+        self.sync_all()
+
+        before = set(sender.listpqassetaddresses()['addresses'])
+        default_calls = (
+            ('issue', 'PQDEFAULTROOT', lambda: sender.issue('PQDEFAULTROOT', 1)),
+            ('issueunique', parent_name + '#AUTO',
+             lambda: sender.issueunique(parent_name, ['AUTO'], None)),
+            ('issuequalifierasset', '#PQDEFAULTQUAL',
+             lambda: sender.issuequalifierasset('#PQDEFAULTQUAL', 1)),
+        )
+        failures = []
+        issued = []
+        for label, name, call in default_calls:
+            try:
+                issued.append((name, call()[0]))
+            except JSONRPCException as error:
+                failures.append((label, error.error['message']))
+        assert_equal(failures, [])
+
+        sender.generate(1)
+        self.sync_all()
+        new_destinations = set(sender.listpqassetaddresses()['addresses']) - before
+        assert_equal(len(new_destinations), len(default_calls))
+        received_destinations = set()
+        for name, txid in issued:
+            received = [entry['destination'] for entry in
+                        sender.gettransaction(txid)['asset_details']
+                        if entry['category'] == 'receive' and
+                        entry['asset_name'] == name]
+            assert_equal(len(received), 1)
+            assert received[0] in new_destinations
+            received_destinations.add(received[0])
+            classical, pq = received[0].split('|')
+            assert_equal(sender.validateaddress(classical)['ismine'], True)
+            assert_equal(sender.validateaddress(pq)['ismine'], True)
+            assert_equal(sender.listmyassets(name, True)[name]['balance'], 1)
+        assert_equal(received_destinations, new_destinations)
 
 
 if __name__ == '__main__':

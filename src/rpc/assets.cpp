@@ -125,6 +125,45 @@ static std::string AssetSourceAddressForOutput(const COutput& output,
                                             pqAssetActivationHeight);
 }
 
+static std::string NewAssetIssueDestination(CWallet* pwallet)
+{
+    const int activationHeight = GetPQAssetActivationHeightForPrev(
+        chainActive.Tip(), GetParams().GetConsensus());
+    if (activationHeight >= 0 && chainActive.Height() + 1 >= activationHeight) {
+        pwallet->TopUpKeyPool();
+        CReserveKey reserveClassicalKey(pwallet);
+        CPubKey classicalPubKey;
+        if (!reserveClassicalKey.GetReservedKey(classicalPubKey))
+            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT,
+                               "Error: Keypool ran out, please call keypoolrefill first");
+        CPQPubKey pqPubKey;
+        if (!pwallet->GenerateNewPQKey(pqPubKey))
+            throw JSONRPCError(RPC_WALLET_ERROR,
+                               "Error: Failed to derive and persist ML-DSA-44 keypair");
+        const CKeyID classicalKey = classicalPubKey.GetID();
+        const WitnessV2PQDestination pqDestination(pqPubKey.GetWitnessProgram());
+        if (!pwallet->StoreOwnedPQAssetDestination(classicalKey,
+                                                   pqDestination.witnessProgram))
+            throw JSONRPCError(RPC_WALLET_ERROR,
+                               "Error: Failed to persist protected asset destination pairing");
+        reserveClassicalKey.KeepKey();
+        pwallet->SetAddressBook(classicalKey, "", "receive");
+        pwallet->SetAddressBook(pqDestination, "", "receive");
+        return EncodePQAssetDestination(classicalKey,
+                                        pqDestination.witnessProgram);
+    }
+
+    if (!pwallet->IsLocked())
+        pwallet->TopUpKeyPool();
+    CPubKey newKey;
+    if (!pwallet->GetKeyFromPool(newKey))
+        throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT,
+                           "Error: Keypool ran out, please call keypoolrefill first");
+    const CKeyID keyID = newKey.GetID();
+    pwallet->SetAddressBook(keyID, "", "receive");
+    return EncodeDestination(keyID);
+}
+
 static void ResolveAdministrativeAssetReturn(CWallet* pwallet, const std::string& authorityName,
                                              std::string& changeAddress, CReserveKey& reservekey,
                                              CCoinControl& coinControl, bool useNativeChange)
@@ -508,23 +547,7 @@ UniValue issue(const JSONRPCRequest& request)
             throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + address);
         }
     } else {
-        // Create a new address
-        std::string strAccount;
-
-        if (!pwallet->IsLocked()) {
-            pwallet->TopUpKeyPool();
-        }
-
-        // Generate a new key that is added to wallet
-        CPubKey newKey;
-        if (!pwallet->GetKeyFromPool(newKey)) {
-            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out, please call keypoolrefill first");
-        }
-        CKeyID keyID = newKey.GetID();
-
-        pwallet->SetAddressBook(keyID, strAccount, "receive");
-
-        address = EncodeDestination(keyID);
+        address = NewAssetIssueDestination(pwallet);
     }
 
     std::string change_address = "";
@@ -673,23 +696,7 @@ UniValue issueunique(const JSONRPCRequest& request)
             throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + address);
         }
     } else {
-        // Create a new address
-        std::string strAccount;
-
-        if (!pwallet->IsLocked()) {
-            pwallet->TopUpKeyPool();
-        }
-
-        // Generate a new key that is added to wallet
-        CPubKey newKey;
-        if (!pwallet->GetKeyFromPool(newKey)) {
-            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out, please call keypoolrefill first");
-        }
-        CKeyID keyID = newKey.GetID();
-
-        pwallet->SetAddressBook(keyID, strAccount, "receive");
-
-        address = EncodeDestination(keyID);
+        address = NewAssetIssueDestination(pwallet);
     }
 
     std::string changeAddress = "";
@@ -2481,23 +2488,7 @@ UniValue issuequalifierasset(const JSONRPCRequest& request)
             throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Raven address: ") + address);
         }
     } else {
-        // Create a new address
-        std::string strAccount;
-
-        if (!pwallet->IsLocked()) {
-            pwallet->TopUpKeyPool();
-        }
-
-        // Generate a new key that is added to wallet
-        CPubKey newKey;
-        if (!pwallet->GetKeyFromPool(newKey)) {
-            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out, please call keypoolrefill first");
-        }
-        CKeyID keyID = newKey.GetID();
-
-        pwallet->SetAddressBook(keyID, strAccount, "receive");
-
-        address = EncodeDestination(keyID);
+        address = NewAssetIssueDestination(pwallet);
     }
 
     std::string change_address = "";
