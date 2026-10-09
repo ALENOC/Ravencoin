@@ -1095,6 +1095,44 @@ class PQAssetAnchorTest(RavenTestFramework):
                                  raw_descriptor)
         node.generate(1)
 
+        # With no native output, the matching anchor is consumed entirely
+        # as a fee. The asset remains controlled and a fresh PQ payment
+        # restores its next spend.
+        exact_name = 'PQEXACTFEE'
+        exact_descriptor = node.getnewpqassetaddress()
+        _, exact_pq = exact_descriptor.split('|')
+        exact_script = bytes.fromhex(
+            node.validateaddress(exact_pq)['scriptPubKey'])
+        node.issue(exact_name, 1, exact_descriptor)
+        exact_anchor_txid = node.sendtoaddress(exact_pq, Decimal('0.01'))
+        node.generate(1)
+        exact_anchor = {'txid': exact_anchor_txid, 'vout': self.output_index(
+            node.getrawtransaction(exact_anchor_txid),
+            lambda script: script == exact_script)}
+        exact_outpoint = node.listmyassets(exact_name, True)
+        exact_outpoint = exact_outpoint[exact_name]['outpoints'][0]
+        exact_input = {key: exact_outpoint[key] for key in ('txid', 'vout')}
+        exact_raw = node.createrawtransaction(
+            [exact_input, exact_anchor],
+            {exact_descriptor: {'transfer': {exact_name: 1}}})
+        exact_signed = node.signrawtransaction(exact_raw)
+        assert_equal(exact_signed['complete'], True)
+        exact_txid = node.sendrawtransaction(exact_signed['hex'])
+        exact_tx = from_hex(CTransaction(), node.getrawtransaction(exact_txid))
+        assert_equal(len(exact_tx.vout), 1)
+        assert_equal(exact_tx.vout[0].nValue, 0)
+        node.generate(1)
+        assert_equal(node.listmyassets(exact_name, True)
+                     [exact_name]['balance'], 1)
+        assert_raises_rpc_error(-25, 'funded matching PQ anchor',
+                                node.transferfromaddress, exact_name,
+                                exact_descriptor, 1, exact_descriptor)
+        node.sendtoaddress(exact_pq, Decimal('0.01'))
+        node.generate(1)
+        node.transferfromaddress(exact_name, exact_descriptor, 1,
+                                 exact_descriptor)
+        node.generate(1)
+
     @staticmethod
     def input_outpoints(tx):
         return {(format(txin.prevout.hash, '064x'), txin.prevout.n)
