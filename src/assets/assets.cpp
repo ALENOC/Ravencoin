@@ -20,6 +20,7 @@
 #include <boost/algorithm/string.hpp>
 #include <consensus/validation.h>
 #include <consensus/tx_verify.h>
+#include <hash.h>
 #include <rpc/protocol.h>
 #include <net.h>
 #include "assets.h"
@@ -3631,14 +3632,17 @@ bool GetAssetData(const CScript& script, CAssetOutputEntry& data, const TxAssetD
 
 bool GetPQAssetProgram(const CScript& script, uint256& program)
 {
-    // Canonical parser for the dependent PQ asset rule. Keep the classical
-    // envelope intact so legacy nodes see the same asset.
-    if (script.size() < 26 + 1 + 4 + 32 ||
-        script[0] != OP_DUP || script[1] != OP_HASH160 || script[2] != 20 ||
-        script[23] != OP_EQUALVERIFY || script[24] != OP_CHECKSIG ||
-        script[25] != OP_RVN_ASSET) {
+    if (script.size() < 26 + 1 + 4 + 32 || script[25] != OP_RVN_ASSET)
         return false;
-    }
+
+    const bool classicalPrefix =
+        script[0] == OP_DUP && script[1] == OP_HASH160 && script[2] == 20 &&
+        script[23] == OP_EQUALVERIFY && script[24] == OP_CHECKSIG;
+    const bool pqOnlyPrefix =
+        script[0] == OP_1 && script[1] == OP_1 && script[2] == 20 &&
+        script[23] == OP_DROP && script[24] == OP_DROP;
+    if (!classicalPrefix && !pqOnlyPrefix)
+        return false;
 
     size_t payloadStart = 27;
     size_t payloadSize = script[26];
@@ -3704,6 +3708,11 @@ bool GetPQAssetProgram(const CScript& script, uint256& program)
         return false;
 
     std::copy(script.end() - 32, script.end(), program.begin());
+    if (pqOnlyPrefix) {
+        const uint160 addressHash = Hash160(program.begin(), program.end());
+        if (!std::equal(addressHash.begin(), addressHash.end(), script.begin() + 3))
+            return false;
+    }
     return true;
 }
 

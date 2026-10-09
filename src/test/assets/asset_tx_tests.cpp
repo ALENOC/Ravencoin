@@ -15,6 +15,7 @@
 #include <base58.h>
 #include <consensus/validation.h>
 #include <consensus/tx_verify.h>
+#include <hash.h>
 #include <key.h>
 #include <keystore.h>
 #include <policy/policy.h>
@@ -441,6 +442,41 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
                     &inertSpending.vin[0].scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS,
                     MutableTransactionSignatureChecker(&inertSpending, 0, 0), &error));
         BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
+    }
+
+    BOOST_AUTO_TEST_CASE(pq_only_asset_prefix_is_legacy_valid_and_program_bound_test)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        const uint256 program = uint256S("03");
+        const CScript destination = GetScriptForDestination(
+            DecodeDestination(GetParams().GlobalBurnAddress()));
+        CScript legacy = destination;
+        CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(legacy);
+        CScript tagged;
+        BOOST_REQUIRE(BuildPQAssetTaggedScript(legacy, program, tagged));
+
+        const uint160 addressHash = Hash160(program.begin(), program.end());
+        CScript pqOnly = CScript() << OP_1 << OP_1
+            << ToByteVector(addressHash) << OP_DROP << OP_DROP;
+        BOOST_REQUIRE_EQUAL(pqOnly.size(), 25U);
+        pqOnly.insert(pqOnly.end(), tagged.begin() + 25, tagged.end());
+        BOOST_REQUIRE(pqOnly.IsAssetScript());
+
+        CMutableTransaction spending;
+        spending.vin.emplace_back(COutPoint(uint256S("06"), 0));
+        spending.vout.emplace_back(0, legacy);
+        ScriptError error = SCRIPT_ERR_UNKNOWN_ERROR;
+        BOOST_CHECK(VerifyScript(CScript(), pqOnly,
+                    &spending.vin[0].scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS,
+                    MutableTransactionSignatureChecker(&spending, 0, 0), &error));
+        BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
+
+        uint256 parsed;
+        BOOST_REQUIRE(GetPQAssetProgram(pqOnly, parsed));
+        BOOST_CHECK(parsed == program);
+        CScript wrongAddress = pqOnly;
+        wrongAddress[3] ^= 1;
+        BOOST_CHECK(!GetPQAssetProgram(wrongAddress, parsed));
     }
 
     BOOST_AUTO_TEST_CASE(pq_asset_program_canonical_parser_test)
