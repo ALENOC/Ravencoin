@@ -7,6 +7,7 @@
 #define RAVENCOIN_ASSET_PROTOCOL_H
 
 #include "amount.h"
+#include "script/ismine.h"
 #include "tinyformat.h"
 #include "assettypes.h"
 
@@ -537,6 +538,7 @@ bool GetAssetData(const CScript& script, CAssetOutputEntry& data, const TxAssetD
 
 // Recognize a canonical 32-byte program tail under either asset prefix.
 bool GetPQAssetProgram(const CScript& script, uint256& program);
+bool IsPQOnlyAssetScript(const CScript& script, uint256& program);
 /** Encode an asset destination according to the output's protection at its origin height.
  *  Pass -1 for originHeight when the output is not confirmed on the active chain.
  *  An empty result means the output lacks the required active PQ tag.

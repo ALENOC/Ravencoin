@@ -3716,6 +3716,12 @@ bool GetPQAssetProgram(const CScript& script, uint256& program)
     return true;
 }
 
+bool IsPQOnlyAssetScript(const CScript& script, uint256& program)
+{
+    return script.size() >= 26 && script[0] == OP_1 &&
+        GetPQAssetProgram(script, program);
+}
+
 std::string EncodeContextualAssetDestination(const CScript& script,
                                              int originHeight, int pqAssetActivationHeight)
 {
@@ -3854,6 +3860,26 @@ bool BuildPQOnlyAssetScript(const CScript& legacyScript, const uint256& program,
 }
 
 #ifdef ENABLE_WALLET
+isminetype GetRestrictedAddressOwnership(const CWallet& wallet, const std::string& address)
+{
+    const CTxDestination destination = DecodeDestination(address);
+    const isminetype mine = IsMine(wallet, destination);
+    if (mine == ISMINE_SPENDABLE)
+        return mine;
+
+    const CKeyID* assetID = boost::get<CKeyID>(&destination);
+    if (!assetID)
+        return mine;
+    for (const std::string& descriptor : wallet.GetOwnedPQAssetDestinations()) {
+        CKeyID ownedID;
+        uint256 program;
+        if (DecodePQOnlyAssetDestination(descriptor, ownedID, program) &&
+            ownedID == *assetID)
+            return ISMINE_SPENDABLE;
+    }
+    return mine;
+}
+
 void GetAllAdministrativeAssets(CWallet *pwallet, std::vector<std::string> &names, int nMinConf)
 {
     if(!pwallet)
@@ -4295,9 +4321,9 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
     if (pqAssetsActive) {
         CKeyID classicalKey;
         uint256 program;
-        if (!DecodePQAssetDestination(address, classicalKey, program)) {
+        if (!DecodePQOnlyAssetDestination(address, classicalKey, program)) {
             error = std::make_pair(RPC_INVALID_ADDRESS_OR_KEY,
-                "Active PQ asset issuance requires a canonical classical|PQ asset destination");
+                "Active PQ asset issuance requires a canonical PQ-only asset destination");
             return false;
         }
         assetDestination = classicalKey;
@@ -4407,14 +4433,14 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
         CAssetTransfer assetTransfer(parentName + OWNER_TAG, OWNER_ASSET_AMOUNT);
         assetTransfer.ConstructTransaction(scriptTransferOwnerAsset);
         if (protectedAuthorityReturn) {
-            CScript tagged;
-            if (!BuildPQAssetTaggedScript(scriptTransferOwnerAsset,
-                                          protectedParentProgram, tagged)) {
+            CScript pqOnly;
+            if (!BuildPQOnlyAssetScript(scriptTransferOwnerAsset,
+                                        protectedParentProgram, pqOnly)) {
                 error = std::make_pair(RPC_WALLET_ERROR,
                     "Could not construct protected parent owner-token return");
                 return false;
             }
-            scriptTransferOwnerAsset = std::move(tagged);
+            scriptTransferOwnerAsset = std::move(pqOnly);
         }
         CRecipient rec = {scriptTransferOwnerAsset, 0, fSubtractFeeFromAmount};
         vecSend.push_back(rec);
@@ -4428,14 +4454,14 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
         CAssetTransfer assetTransfer(parentName, OWNER_ASSET_AMOUNT);
         assetTransfer.ConstructTransaction(scriptTransferQualifierAsset);
         if (protectedAuthorityReturn) {
-            CScript tagged;
-            if (!BuildPQAssetTaggedScript(scriptTransferQualifierAsset,
-                                          protectedParentProgram, tagged)) {
+            CScript pqOnly;
+            if (!BuildPQOnlyAssetScript(scriptTransferQualifierAsset,
+                                        protectedParentProgram, pqOnly)) {
                 error = std::make_pair(RPC_WALLET_ERROR,
                     "Could not construct protected parent qualifier return");
                 return false;
             }
-            scriptTransferQualifierAsset = std::move(tagged);
+            scriptTransferQualifierAsset = std::move(pqOnly);
         }
         CRecipient rec = {scriptTransferQualifierAsset, 0, fSubtractFeeFromAmount};
         vecSend.push_back(rec);
@@ -4476,14 +4502,14 @@ bool CreateAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
         CAssetTransfer assetTransfer(strStripped + OWNER_TAG, OWNER_ASSET_AMOUNT);
         assetTransfer.ConstructTransaction(scriptTransferOwnerAsset);
         if (protectedAuthorityReturn) {
-            CScript tagged;
-            if (!BuildPQAssetTaggedScript(scriptTransferOwnerAsset,
-                                          protectedParentProgram, tagged)) {
+            CScript pqOnly;
+            if (!BuildPQOnlyAssetScript(scriptTransferOwnerAsset,
+                                        protectedParentProgram, pqOnly)) {
                 error = std::make_pair(RPC_WALLET_ERROR,
                     "Could not construct protected restricted owner-token return");
                 return false;
             }
-            scriptTransferOwnerAsset = std::move(tagged);
+            scriptTransferOwnerAsset = std::move(pqOnly);
         }
 
         CRecipient ownerRec = {scriptTransferOwnerAsset, 0, fSubtractFeeFromAmount};
@@ -4540,9 +4566,9 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
     if (pqAssetsActive) {
         CKeyID classicalKey;
         uint256 program;
-        if (!DecodePQAssetDestination(address, classicalKey, program)) {
+        if (!DecodePQOnlyAssetDestination(address, classicalKey, program)) {
             error = std::make_pair(RPC_INVALID_ADDRESS_OR_KEY,
-                "Active PQ reissue requires a canonical classical|PQ asset destination");
+                "Active PQ reissue requires a canonical PQ-only asset destination");
             return false;
         }
         assetDestination = classicalKey;
@@ -4658,14 +4684,14 @@ bool CreateReissueAssetTransaction(CWallet* pwallet, CCoinControl& coinControl, 
     CAssetTransfer ownerTransfer(ownerName, OWNER_ASSET_AMOUNT);
     ownerTransfer.ConstructTransaction(scriptTransferOwnerAsset);
     if (pqAssetsActive) {
-        CScript tagged;
-        if (!BuildPQAssetTaggedScript(scriptTransferOwnerAsset,
-                                      ownerReturnProgram, tagged)) {
+        CScript pqOnly;
+        if (!BuildPQOnlyAssetScript(scriptTransferOwnerAsset,
+                                    ownerReturnProgram, pqOnly)) {
             error = std::make_pair(RPC_WALLET_ERROR,
                 "Could not construct protected owner-token return");
             return false;
         }
-        scriptTransferOwnerAsset = std::move(tagged);
+        scriptTransferOwnerAsset = std::move(pqOnly);
     }
 
     if (asset_type == AssetType::RESTRICTED) {
@@ -4786,9 +4812,9 @@ bool CreateTransferAssetTransaction(CWallet* pwallet, const CCoinControl& coinCo
         uint256 pqProgram;
         if (pqAssetsActive) {
             CKeyID classicalKey;
-            if (!DecodePQAssetDestination(address, classicalKey, pqProgram)) {
+            if (!DecodePQOnlyAssetDestination(address, classicalKey, pqProgram)) {
                 error = std::make_pair(RPC_INVALID_ADDRESS_OR_KEY,
-                    "Active PQ asset transfer requires a canonical classical|PQ asset destination");
+                    "Active PQ asset transfer requires a canonical PQ-only asset destination");
                 return false;
             }
             assetDestination = classicalKey;
@@ -4852,13 +4878,13 @@ bool CreateTransferAssetTransaction(CWallet* pwallet, const CCoinControl& coinCo
         CAssetTransfer assetTransfer(asset_name, nAmount, message, expireTime);
         assetTransfer.ConstructTransaction(scriptPubKey);
         if (pqAssetsActive) {
-            CScript tagged;
-            if (!BuildPQAssetTaggedScript(scriptPubKey, pqProgram, tagged)) {
+            CScript pqOnly;
+            if (!BuildPQOnlyAssetScript(scriptPubKey, pqProgram, pqOnly)) {
                 error = std::make_pair(RPC_TRANSACTION_ERROR,
                     "Could not construct a canonical PQ asset transfer output");
                 return false;
             }
-            scriptPubKey = std::move(tagged);
+            scriptPubKey = std::move(pqOnly);
         }
 
         CRecipient recipient = {scriptPubKey, 0, fSubtractFeeFromAmount};

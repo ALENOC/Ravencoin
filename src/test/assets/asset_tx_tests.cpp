@@ -850,8 +850,11 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         CTxOut tagged = legacy;
         BOOST_REQUIRE(BuildPQAssetTaggedScript(legacy.scriptPubKey, program,
                                               tagged.scriptPubKey));
+        CTxOut pqOnly = legacy;
+        BOOST_REQUIRE(BuildPQOnlyAssetScript(legacy.scriptPubKey, program,
+                                            pqOnly.scriptPubKey));
         uint256 parsed;
-        BOOST_REQUIRE(GetPQAssetProgram(tagged.scriptPubKey, parsed));
+        BOOST_REQUIRE(GetPQAssetProgram(pqOnly.scriptPubKey, parsed));
         BOOST_CHECK(parsed == program);
 
         CCoinsView base;
@@ -862,10 +865,15 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         const COutPoint unconfirmedParent(uint256S("14"), 0);
         const COutPoint matchingAnchor(uint256S("15"), 0);
         const COutPoint wrongAnchor(uint256S("16"), 0);
+        const COutPoint invalidDualOut(uint256S("17"), 0);
+        const COutPoint preActivationPQOnlyOut(uint256S("18"), 0);
         coins.AddCoin(legacyOut, Coin(legacy, 19, false), true);
         coins.AddCoin(historicalLookalike, Coin(tagged, 19, false), true);
-        coins.AddCoin(protectedOut, Coin(tagged, activationHeight, false), true);
-        coins.AddCoin(unconfirmedParent, Coin(tagged, MEMPOOL_HEIGHT, false), true);
+        coins.AddCoin(protectedOut, Coin(pqOnly, activationHeight, false), true);
+        coins.AddCoin(unconfirmedParent, Coin(pqOnly, MEMPOOL_HEIGHT, false), true);
+        coins.AddCoin(invalidDualOut, Coin(tagged, activationHeight, false), true);
+        coins.AddCoin(preActivationPQOnlyOut,
+                      Coin(pqOnly, activationHeight - 1, false), true);
         coins.AddCoin(matchingAnchor, Coin(CTxOut(1000, GetScriptForWitnessV2PQ(program)), 19, false), true);
         coins.AddCoin(wrongAnchor, Coin(CTxOut(1000, GetScriptForWitnessV2PQ(otherProgram)), 19, false), true);
 
@@ -882,7 +890,16 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
             CScript taggedClassScript;
             BOOST_REQUIRE(BuildPQAssetTaggedScript(script, program,
                                                   taggedClassScript));
-            script = taggedClassScript;
+            check.vout[0].scriptPubKey = taggedClassScript;
+            CValidationState dualOutput;
+            BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(check), dualOutput,
+                                                    coins, activationHeight));
+            BOOST_CHECK_EQUAL(dualOutput.GetRejectReason(), "bad-pq-asset-output");
+
+            CScript pqOnlyClassScript;
+            BOOST_REQUIRE(BuildPQOnlyAssetScript(script, program,
+                                                 pqOnlyClassScript));
+            script = pqOnlyClassScript;
             check.vout[0].scriptPubKey = script;
             uint256 hash;
             hash.SetNull();
@@ -931,15 +948,36 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(spend), untagged, coins, activationHeight));
         BOOST_CHECK_EQUAL(untagged.GetRejectReason(), "bad-pq-asset-output");
 
-        spend.vout[0] = tagged;
+        spend.vout[0] = pqOnly;
         bool protectedInput = true;
         CValidationState migration;
         BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(spend), migration, coins,
                                                activationHeight, &protectedInput));
         BOOST_CHECK(!protectedInput);
+
+        spend.vout[0] = tagged;
+        CValidationState dualOutput;
+        BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(spend), dualOutput,
+                                                coins, activationHeight));
+        BOOST_CHECK_EQUAL(dualOutput.GetRejectReason(), "bad-pq-asset-output");
+        spend.vout[0] = pqOnly;
         spend.vin[0].prevout = historicalLookalike;
         CValidationState historical;
         BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(spend), historical, coins,
+                                               activationHeight, &protectedInput));
+        BOOST_CHECK(!protectedInput);
+        spend.vin[0].scriptSig = CScript() << OP_1;
+        CValidationState historicalScriptSig;
+        BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(spend), historicalScriptSig,
+                                               coins, activationHeight));
+        spend.vin[0].scriptSig.clear();
+
+        // A lookalike created before activation remains outside the anchor
+        // rule by origin height. Wallets must not label it as PQ custody.
+        spend.vin[0].prevout = preActivationPQOnlyOut;
+        CValidationState preActivationPQOnly;
+        BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(spend),
+                                               preActivationPQOnly, coins,
                                                activationHeight, &protectedInput));
         BOOST_CHECK(!protectedInput);
 
@@ -956,6 +994,18 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(spend), matched, coins,
                                                activationHeight, &protectedInput));
         BOOST_CHECK(protectedInput);
+        spend.vin[0].scriptSig = CScript() << OP_1;
+        CValidationState malleable;
+        BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(spend), malleable,
+                                                coins, activationHeight));
+        BOOST_CHECK_EQUAL(malleable.GetRejectReason(), "bad-pq-asset-scriptsig");
+        spend.vin[0].scriptSig.clear();
+
+        spend.vin[0].prevout = invalidDualOut;
+        CValidationState invalidDual;
+        BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(spend), invalidDual,
+                                                coins, activationHeight));
+        BOOST_CHECK_EQUAL(invalidDual.GetRejectReason(), "bad-pq-asset-prevout");
 
         spend.vin[0].prevout = unconfirmedParent;
         CValidationState mempoolParent;
