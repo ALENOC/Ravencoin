@@ -17,6 +17,7 @@
 #include "chain.h"
 #include "consensus/validation.h"
 #include "core_io.h"
+#include "hash.h"
 #include "httpserver.h"
 #include "validation.h"
 #include "net.h"
@@ -130,26 +131,20 @@ static std::string NewAssetIssueDestination(CWallet* pwallet)
     const int activationHeight = GetPQAssetActivationHeightForPrev(
         chainActive.Tip(), GetParams().GetConsensus());
     if (activationHeight >= 0 && chainActive.Height() + 1 >= activationHeight) {
-        pwallet->TopUpKeyPool();
-        CReserveKey reserveClassicalKey(pwallet);
-        CPubKey classicalPubKey;
-        if (!reserveClassicalKey.GetReservedKey(classicalPubKey))
-            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT,
-                               "Error: Keypool ran out, please call keypoolrefill first");
         CPQPubKey pqPubKey;
         if (!pwallet->GenerateNewPQKey(pqPubKey))
             throw JSONRPCError(RPC_WALLET_ERROR,
                                "Error: Failed to derive and persist ML-DSA-44 keypair");
-        const CKeyID classicalKey = classicalPubKey.GetID();
         const WitnessV2PQDestination pqDestination(pqPubKey.GetWitnessProgram());
-        if (!pwallet->StoreOwnedPQAssetDestination(classicalKey,
+        const CKeyID assetID(Hash160(pqDestination.witnessProgram.begin(),
+                                     pqDestination.witnessProgram.end()));
+        if (!pwallet->StoreOwnedPQAssetDestination(assetID,
                                                    pqDestination.witnessProgram))
             throw JSONRPCError(RPC_WALLET_ERROR,
-                               "Error: Failed to persist protected asset destination pairing");
-        reserveClassicalKey.KeepKey();
-        pwallet->SetAddressBook(classicalKey, "", "receive");
+                               "Error: Failed to persist PQ-only asset destination");
+        pwallet->SetAddressBook(assetID, "", "pqasset");
         pwallet->SetAddressBook(pqDestination, "", "receive");
-        return EncodePQAssetDestination(classicalKey,
+        return EncodePQAssetDestination(assetID,
                                         pqDestination.witnessProgram);
     }
 
@@ -180,9 +175,9 @@ static void ResolveAdministrativeAssetReturn(CWallet* pwallet, const std::string
         }
         CKeyID classicalKey;
         uint256 program;
-        if (!DecodePQAssetDestination(changeAddress, classicalKey, program))
+        if (!DecodePQOnlyAssetDestination(changeAddress, classicalKey, program))
             throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
-                "Active PQ authority return requires a canonical classical|PQ asset destination");
+                "Active PQ authority return requires a canonical PQ-only asset destination");
         return;
     }
 
@@ -1264,9 +1259,9 @@ UniValue transfer(const JSONRPCRequest& request)
         const bool pqAssetsActive = activationHeight >= 0 && chainActive.Height() + 1 >= activationHeight;
         if (pqAssetsActive) {
             CKeyID classicalKey;
-            if (!DecodePQAssetDestination(asset_change_address, classicalKey, assetChangeProgram))
+            if (!DecodePQOnlyAssetDestination(asset_change_address, classicalKey, assetChangeProgram))
                 throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
-                    "Active PQ asset change requires a canonical classical|PQ asset destination");
+                    "Active PQ asset change requires a canonical PQ-only asset destination");
             asset_change_dest = classicalKey;
             hasPQAssetChange = true;
         } else if (!IsValidDestination(asset_change_dest)) {
@@ -1319,13 +1314,13 @@ UniValue transferfromaddresses(const JSONRPCRequest& request)
 
             "\nArguments:\n"
             "1. \"asset_name\"               (string, required) name of asset\n"
-            "2. \"from_addresses\"           (array, required) legacy addresses for historical outputs or canonical classical|PQ descriptors for protected outputs\n"
+            "2. \"from_addresses\"           (array, required) legacy addresses for historical outputs or asset descriptors for protected outputs\n"
             "3. \"qty\"                      (numeric, required) number of assets you want to send to the address\n"
             "4. \"to_address\"               (string, required) address to send the asset to\n"
             "5. \"message\"                  (string, optional) Once RIP5 is voted in ipfs hash or txid hash to send along with the transfer\n"
             "6. \"expire_time\"              (numeric, optional) UTC timestamp of when the message expires\n"
             "7. \"rvn_change_address\"       (string, optional, default = \"\") the transactions RVN change will be sent to this address\n"
-            "8. \"asset_change_address\"     (string, optional, default = \"\") asset change destination; a canonical classical|PQ descriptor is required after PQ asset activation\n"
+            "8. \"asset_change_address\"     (string, optional, default = \"\") asset change destination; a canonical PQ-only descriptor is required after PQ asset activation\n"
 
             "\nResult:\n"
             "txid"
@@ -1418,9 +1413,9 @@ UniValue transferfromaddresses(const JSONRPCRequest& request)
     if (!asset_change_address.empty()) {
         if (pqAssetsActive) {
             CKeyID classicalKey;
-            if (!DecodePQAssetDestination(asset_change_address, classicalKey, assetChangeProgram))
+            if (!DecodePQOnlyAssetDestination(asset_change_address, classicalKey, assetChangeProgram))
                 throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
-                    "Active PQ asset change requires a canonical classical|PQ asset destination");
+                    "Active PQ asset change requires a canonical PQ-only asset destination");
             asset_change_dest = classicalKey;
             hasPQAssetChange = true;
         } else if (!IsValidDestination(asset_change_dest)) {
@@ -1492,13 +1487,13 @@ UniValue transferfromaddress(const JSONRPCRequest& request)
 
                 "\nArguments:\n"
                 "1. \"asset_name\"               (string, required) name of asset\n"
-                "2. \"from_address\"             (string, required) legacy address for historical outputs or canonical classical|PQ descriptor for protected outputs\n"
+                "2. \"from_address\"             (string, required) legacy address for historical outputs or asset descriptor for protected outputs\n"
                 "3. \"qty\"                      (numeric, required) number of assets you want to send to the address\n"
                 "4. \"to_address\"               (string, required) address to send the asset to\n"
                 "5. \"message\"                  (string, optional) Once RIP5 is voted in ipfs hash or txid hash to send along with the transfer\n"
                 "6. \"expire_time\"              (numeric, optional) UTC timestamp of when the message expires\n"
                 "7. \"rvn_change_address\"       (string, optional, default = \"\") the transaction RVN change will be sent to this address\n"
-                "8. \"asset_change_address\"     (string, optional, default = \"\") asset change destination; a canonical classical|PQ descriptor is required after PQ asset activation\n"
+                "8. \"asset_change_address\"     (string, optional, default = \"\") asset change destination; a canonical PQ-only descriptor is required after PQ asset activation\n"
 
                 "\nResult:\n"
                 "txid"
@@ -1582,9 +1577,9 @@ UniValue transferfromaddress(const JSONRPCRequest& request)
     if (!asset_change_address.empty()) {
         if (pqAssetsActive) {
             CKeyID changeClassicalKey;
-            if (!DecodePQAssetDestination(asset_change_address, changeClassicalKey, assetChangeProgram))
+            if (!DecodePQOnlyAssetDestination(asset_change_address, changeClassicalKey, assetChangeProgram))
                 throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
-                    "Active PQ asset change requires a canonical classical|PQ asset destination");
+                    "Active PQ asset change requires a canonical PQ-only asset destination");
             asset_change_dest = changeClassicalKey;
             hasPQAssetChange = true;
         } else if (!IsValidDestination(asset_change_dest)) {
@@ -1922,7 +1917,7 @@ UniValue addtagtoaddress(const JSONRPCRequest& request)
                 "\nArguments:\n"
                 "1. \"tag_name\"            (string, required) the name of the tag you are assigning to the address, if it doens't have '#' at the front it will be added\n"
                 "2. \"to_address\"          (string, required) the address that will be assigned the tag\n"
-                "3. \"change_address\"      (string, optional) Qualifier return destination; after PQ asset activation use a canonical classical|PQ descriptor\n"
+                "3. \"change_address\"      (string, optional) Qualifier return destination; after PQ asset activation use a canonical PQ-only descriptor\n"
                 "4. \"asset_data\"          (string, optional) The asset data (ipfs or a hash) to be applied to the transfer of the qualifier token\n"
 
                 "\nResult:\n"
@@ -1950,7 +1945,7 @@ UniValue removetagfromaddress(const JSONRPCRequest& request)
                 "\nArguments:\n"
                 "1. \"tag_name\"            (string, required) the name of the tag you are removing from the address\n"
                 "2. \"to_address\"          (string, required) the address that the tag will be removed from\n"
-                "3. \"change_address\"      (string, optional) Qualifier return destination; after PQ asset activation use a canonical classical|PQ descriptor\n"
+                "3. \"change_address\"      (string, optional) Qualifier return destination; after PQ asset activation use a canonical PQ-only descriptor\n"
                 "4. \"asset_data\"          (string, optional) The asset data (ipfs or a hash) to be applied to the transfer of the qualifier token\n"
 
                 "\nResult:\n"
@@ -1978,7 +1973,7 @@ UniValue freezeaddress(const JSONRPCRequest& request)
                 "\nArguments:\n"
                 "1. \"asset_name\"       (string, required) the name of the restricted asset you want to freeze\n"
                 "2. \"address\"          (string, required) the address that will be frozen\n"
-                "3. \"change_address\"   (string, optional) Owner return destination; after PQ asset activation use a canonical classical|PQ descriptor\n"
+                "3. \"change_address\"   (string, optional) Owner return destination; after PQ asset activation use a canonical PQ-only descriptor\n"
                 "4. \"asset_data\"       (string, optional) The asset data (ipfs or a hash) to be applied to the transfer of the owner token\n"
 
                 "\nResult:\n"
@@ -2006,7 +2001,7 @@ UniValue unfreezeaddress(const JSONRPCRequest& request)
                 "\nArguments:\n"
                 "1. \"asset_name\"       (string, required) the name of the restricted asset you want to unfreeze\n"
                 "2. \"address\"          (string, required) the address that will be unfrozen\n"
-                "3. \"change_address\"   (string, optional) Owner return destination; after PQ asset activation use a canonical classical|PQ descriptor\n"
+                "3. \"change_address\"   (string, optional) Owner return destination; after PQ asset activation use a canonical PQ-only descriptor\n"
                 "4. \"asset_data\"       (string, optional) The asset data (ipfs or a hash) to be applied to the transfer of the owner token\n"
 
                 "\nResult:\n"
@@ -2033,7 +2028,7 @@ UniValue freezerestrictedasset(const JSONRPCRequest& request)
 
                 "\nArguments:\n"
                 "1. \"asset_name\"       (string, required) the name of the restricted asset you want to unfreeze\n"
-                "2. \"change_address\"   (string, optional) Owner return destination; after PQ asset activation use a canonical classical|PQ descriptor\n"
+                "2. \"change_address\"   (string, optional) Owner return destination; after PQ asset activation use a canonical PQ-only descriptor\n"
                 "3. \"asset_data\"       (string, optional) The asset data (ipfs or a hash) to be applied to the transfer of the owner token\n"
 
                 "\nResult:\n"
@@ -2060,7 +2055,7 @@ UniValue unfreezerestrictedasset(const JSONRPCRequest& request)
 
                 "\nArguments:\n"
                 "1. \"asset_name\"       (string, required) the name of the restricted asset you want to unfreeze\n"
-                "2. \"change_address\"   (string, optional) Owner return destination; after PQ asset activation use a canonical classical|PQ descriptor\n"
+                "2. \"change_address\"   (string, optional) Owner return destination; after PQ asset activation use a canonical PQ-only descriptor\n"
                 "4. \"asset_data\"       (string, optional) The asset data (ipfs or a hash) to be applied to the transfer of the owner token\n"
 
                 "\nResult:\n"

@@ -22,6 +22,7 @@
 
 #include "base58.h"
 #include "chain.h"
+#include "hash.h"
 #include "keystore.h"
 #include "validation.h"
 #include "net.h" // for g_connman
@@ -211,33 +212,33 @@ QString WalletModel::newAssetDestination()
         return addressTableModel->addRow(AddressTableModel::Receive, "", "");
 
     LOCK2(cs_main, wallet->cs_wallet);
-    if (!GUIUtil::pqAssetDestinationRequired() || wallet->IsLocked() || !wallet->TopUpKeyPool())
-        return QString();
-
-    CReserveKey reserveClassicalKey(wallet);
-    CPubKey classicalPubKey;
-    if (!reserveClassicalKey.GetReservedKey(classicalPubKey))
+    if (!GUIUtil::pqAssetDestinationRequired() || wallet->IsLocked())
         return QString();
 
     CPQPubKey pqPubKey;
     if (!wallet->GenerateNewPQKey(pqPubKey))
         return QString();
 
-    const CKeyID classicalKey = classicalPubKey.GetID();
     const WitnessV2PQDestination pqDestination(pqPubKey.GetWitnessProgram());
-    if (!wallet->StoreOwnedPQAssetDestination(classicalKey, pqDestination.witnessProgram))
+    const CKeyID assetID(Hash160(pqDestination.witnessProgram.begin(),
+                                 pqDestination.witnessProgram.end()));
+    if (!wallet->StoreOwnedPQAssetDestination(assetID, pqDestination.witnessProgram))
         return QString();
-    reserveClassicalKey.KeepKey();
-    wallet->SetAddressBook(classicalKey, "", "receive");
+    wallet->SetAddressBook(assetID, "", "pqasset");
     wallet->SetAddressBook(pqDestination, "", "receive");
-    return QString::fromStdString(EncodePQAssetDestination(classicalKey, pqDestination.witnessProgram));
+    return QString::fromStdString(EncodePQAssetDestination(assetID, pqDestination.witnessProgram));
 }
 
 QStringList WalletModel::getAssetDestinations() const
 {
     QStringList destinations;
-    for (const std::string& descriptor : wallet->GetOwnedPQAssetDestinations())
+    for (const std::string& descriptor : wallet->GetOwnedPQAssetDestinations()) {
+        CKeyID assetID;
+        uint256 program;
+        if (!DecodePQOnlyAssetDestination(descriptor, assetID, program))
+            continue;
         destinations.push_back(QString::fromStdString(descriptor));
+    }
     return destinations;
 }
 

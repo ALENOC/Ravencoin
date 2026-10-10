@@ -156,7 +156,7 @@ void SendAssetsEntry::on_addressBookButton_clicked()
         const QStringList destinations = model->getAssetDestinations();
         if (destinations.isEmpty()) {
             QMessageBox::information(this, tr("PQ asset destination"),
-                tr("No saved protected asset destination is available. Paste the recipient's complete classical|PQ destination."));
+                tr("No saved PQ-only asset destination is available. Paste the recipient's complete PQ-only destination."));
             return;
         }
         bool selected = false;

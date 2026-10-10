@@ -11,7 +11,9 @@ import os
 import shutil
 
 from test_framework.blocktools import create_block, create_coinbase
+from test_framework.address import byte_to_base58
 from test_framework.mininode import CTransaction, from_hex, to_hex
+from test_framework.script import hash160
 from test_framework.test_framework import RavenTestFramework
 from test_framework import util as test_util
 from test_framework.util import assert_equal, assert_raises_rpc_error
@@ -61,7 +63,7 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(node.getblockcount(), 863)
         assert_equal(node.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'active')
 
-        assert_raises_rpc_error(-5, 'canonical classical|PQ asset destination', node.issue,
+        assert_raises_rpc_error(-5, 'canonical PQ-only asset destination', node.issue,
                                 'PQAFTERACTIVE', 1, legacy_address)
 
         # A rollback to the last pre-activation tip permits a legacy issue.
@@ -123,13 +125,23 @@ class PQAssetAnchorTest(RavenTestFramework):
             {'txid': asset_outpoint['txid'], 'vout': asset_outpoint['vout']},
             {'txid': native_coin['txid'], 'vout': native_coin['vout']},
         ]
-        migration_descriptor = legacy_address + '|' + pq_address
+        migration_descriptor = node.getnewpqassetaddress()
+        _, pq_address = migration_descriptor.split('|')
+        pq_script = bytes.fromhex(node.validateaddress(pq_address)['scriptPubKey'])
+        program = pq_script[2:]
         migration_outputs = {
             migration_descriptor: {'transfer': {asset_name: 1}},
             pq_address: Decimal('1'),
             native_change: native_coin['amount'] - Decimal('1.01'),
         }
         migration_raw = node.createrawtransaction(migration_inputs, migration_outputs)
+        migration_tx = from_hex(CTransaction(), migration_raw)
+        migration_asset_scripts = [output.scriptPubKey for output in migration_tx.vout
+                                   if len(output.scriptPubKey) > 31 and
+                                   output.scriptPubKey[25] == ASSET_OPCODE]
+        assert_equal(len(migration_asset_scripts), 1)
+        assert_equal(migration_asset_scripts[0][:3], b'\x51\x51\x14')
+        assert_equal(migration_asset_scripts[0][23:25], b'\x75\x75')
         migration_signed = node.signrawtransaction(migration_raw)
         assert_equal(migration_signed['complete'], True)
         migration_txid = node.sendrawtransaction(migration_signed['hex'])
@@ -218,7 +230,7 @@ class PQAssetAnchorTest(RavenTestFramework):
         composite_address = node.getnewpqassetaddress()
         assert_equal(composite_address.count('|'), 1)
         classical_part, pq_part = composite_address.split('|')
-        assert_equal(node.validateaddress(classical_part)['ismine'], True)
+        assert_equal(node.validateaddress(classical_part)['ismine'], False)
         assert_equal(node.validateaddress(pq_part)['ismine'], True)
         descriptor_script = bytes.fromhex(node.validateaddress(pq_part)['scriptPubKey'])
         assert_equal(descriptor_script[:2], b'\x52\x20')
@@ -231,6 +243,7 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(len(tagged_asset_outputs), 2)
         for output in tagged_asset_outputs:
             assert_equal(output.scriptPubKey[25], ASSET_OPCODE)
+            assert_equal(output.scriptPubKey[:3], b'\x51\x51\x14')
         node.generate(1)
         for owned_asset, expected_balance in (('PQROOTRECIPIENT', 10),
                                               ('PQROOTRECIPIENT!', 1)):
@@ -317,8 +330,8 @@ class PQAssetAnchorTest(RavenTestFramework):
 
         # Reissuance must protect both the newly created units and the
         # returned owner token. The owner return stays with its original
-        # classical/PQ key pair, even when new units use a different pair.
-        assert_raises_rpc_error(-5, 'canonical classical|PQ asset destination',
+        # PQ program, even when new units use a different program.
+        assert_raises_rpc_error(-5, 'canonical PQ-only asset destination',
                                 node.reissue, 'PQROOTRECIPIENT', 2,
                                 legacy_address)
         assert_raises_rpc_error(-4, 'funded matching PQ anchor',
@@ -341,9 +354,10 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(sum(output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == destination_program
                          for output in reissue_tx.vout if len(output.scriptPubKey) > 57), 1)
-        classical_script = bytes.fromhex(
+        asset_id_script = bytes.fromhex(
             node.validateaddress(classical_part)['scriptPubKey'])
-        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+        pq_only_script = b'\x51\x51\x14' + asset_id_script[3:23] + b'\x75\x75'
+        assert_equal(sum(output.scriptPubKey[:25] == pq_only_script and
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == descriptor_program
                          for output in reissue_tx.vout if len(output.scriptPubKey) > 57), 1)
@@ -380,7 +394,7 @@ class PQAssetAnchorTest(RavenTestFramework):
                              if output.scriptPubKey == descriptor_script and
                              output.nValue > 0]
         assert_equal(len(sub_refresh_vouts), 1)
-        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+        assert_equal(sum(output.scriptPubKey[:25] == pq_only_script and
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == descriptor_program
                          for output in sub_issue.vout
@@ -417,7 +431,7 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(len(unique_anchor_vin), 1)
         assert_equal(len(unique_tx.wit.vtxinwit[unique_anchor_vin[0]]
                          .scriptWitness.stack), 2)
-        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+        assert_equal(sum(output.scriptPubKey[:25] == pq_only_script and
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == descriptor_program
                          for output in unique_tx.vout
@@ -473,7 +487,7 @@ class PQAssetAnchorTest(RavenTestFramework):
                          output.scriptPubKey[-32:] == destination_program
                          for output in restricted_reissue.vout
                          if len(output.scriptPubKey) > 57), 1)
-        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+        assert_equal(sum(output.scriptPubKey[:25] == pq_only_script and
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == descriptor_program
                          for output in restricted_reissue.vout
@@ -572,15 +586,17 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(len(issue_anchor_vin), 1)
         assert_equal(len(restricted_issue.wit.vtxinwit[issue_anchor_vin[0]]
                          .scriptWitness.stack), 2)
-        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+        assert_equal(sum(output.scriptPubKey[:25] == pq_only_script and
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == descriptor_program
                          for output in restricted_issue.vout
                          if len(output.scriptPubKey) > 57), 1)
         destination_classical, _ = destination_descriptor.split('|')
-        destination_classical_script = bytes.fromhex(
+        destination_id_script = bytes.fromhex(
             node.validateaddress(destination_classical)['scriptPubKey'])
-        assert_equal(sum(output.scriptPubKey[:25] == destination_classical_script and
+        destination_pq_only_script = (
+            b'\x51\x51\x14' + destination_id_script[3:23] + b'\x75\x75')
+        assert_equal(sum(output.scriptPubKey[:25] == destination_pq_only_script and
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == destination_program
                          for output in restricted_issue.vout
@@ -610,12 +626,12 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(len(qualifier_anchor_vin), 1)
         assert_equal(len(sub_qualifier_tx.wit.vtxinwit[qualifier_anchor_vin[0]]
                          .scriptWitness.stack), 2)
-        assert_equal(sum(output.scriptPubKey[:25] == destination_classical_script and
+        assert_equal(sum(output.scriptPubKey[:25] == destination_pq_only_script and
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == destination_program
                          for output in sub_qualifier_tx.vout
                          if len(output.scriptPubKey) > 57), 1)
-        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+        assert_equal(sum(output.scriptPubKey[:25] == pq_only_script and
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == descriptor_program
                          for output in sub_qualifier_tx.vout
@@ -646,7 +662,7 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(len(qualifier_transfer_anchor_vin), 1)
         assert_equal(len(qualifier_transfer.wit.vtxinwit[
             qualifier_transfer_anchor_vin[0]].scriptWitness.stack), 2)
-        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+        assert_equal(sum(output.scriptPubKey[:25] == pq_only_script and
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == descriptor_program
                          for output in qualifier_transfer.vout
@@ -672,7 +688,7 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(len(tag_anchor_vin), 1)
         assert_equal(len(tag_tx.wit.vtxinwit[tag_anchor_vin[0]]
                          .scriptWitness.stack), 2)
-        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+        assert_equal(sum(output.scriptPubKey[:25] == pq_only_script and
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == descriptor_program
                          for output in tag_tx.vout
@@ -680,8 +696,14 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(sum(output.scriptPubKey == descriptor_script and
                          output.nValue > 0 for output in tag_tx.vout), 1)
         node.generate(1)
+        assert_equal(qualifier_name in node.listtagsforaddress(classical_part), True)
+        my_tag = [entry for entry in node.viewmytaggedaddresses()
+                  if entry['Tag Name'] == qualifier_name and
+                  entry['Address'] == classical_part]
+        assert_equal(len(my_tag), 1)
+        assert 'Assigned' in my_tag[0]
 
-        # Qualifier lookup must use the classical address inside the PQ
+        # Qualifier lookup must use the asset identifier inside the PQ
         # descriptor. A recipient without the tag fails the same verifier.
         assert_raises_rpc_error(
             None, 'bad-txns-null-verifier-address-failed-verification',
@@ -694,7 +716,7 @@ class PQAssetAnchorTest(RavenTestFramework):
             True, qualifier_name)[0]
         qualified_reissue = from_hex(
             CTransaction(), node.getrawtransaction(qualified_reissue_txid))
-        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+        assert_equal(sum(output.scriptPubKey[:25] == pq_only_script and
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == descriptor_program
                          for output in qualified_reissue.vout
@@ -714,7 +736,7 @@ class PQAssetAnchorTest(RavenTestFramework):
             restricted_issue_name, 1, composite_address)[0]
         qualified_transfer = from_hex(
             CTransaction(), node.getrawtransaction(qualified_transfer_txid))
-        assert_equal(sum(output.scriptPubKey[:25] == classical_script and
+        assert_equal(sum(output.scriptPubKey[:25] == pq_only_script and
                          output.scriptPubKey[25] == ASSET_OPCODE and
                          output.scriptPubKey[-32:] == descriptor_program
                          for output in qualified_transfer.vout
@@ -727,6 +749,7 @@ class PQAssetAnchorTest(RavenTestFramework):
                                           anchor_script, return_script, return_program):
             node.sendtoaddress(anchor_address, Decimal('1'))
             node.generate(1)
+
             available_anchors = {
                 (coin['txid'], coin['vout']) for coin in node.listunspent()
                 if coin['scriptPubKey'] == anchor_script.hex()
@@ -747,13 +770,32 @@ class PQAssetAnchorTest(RavenTestFramework):
                              if len(output.scriptPubKey) > 57), 1)
             node.generate(1)
 
-        assert_raises_rpc_error(-5, 'canonical classical|PQ asset destination',
+        unpaired_pq = node.getnewpqaddress()
+        unpaired_program = bytes.fromhex(
+            node.validateaddress(unpaired_pq)['scriptPubKey'])[2:]
+        unpaired_asset_id = byte_to_base58(hash160(unpaired_program), 111)
+        assert_equal(node.validateaddress(unpaired_asset_id)['ismine'], False)
+        assert_protected_admin_return(
+            'addtagtoaddress', (qualifier_name, unpaired_asset_id,
+                                composite_address),
+            pq_part, descriptor_script, pq_only_script, descriptor_program)
+        assert_equal(qualifier_name in node.listtagsforaddress(unpaired_asset_id),
+                     True)
+        assert_equal(any(entry['Address'] == unpaired_asset_id for entry in
+                         node.viewmytaggedaddresses()), False)
+
+        assert_raises_rpc_error(-5, 'canonical PQ-only asset destination',
                                 node.removetagfromaddress, qualifier_name,
                                 classical_part, classical_part)
         assert_protected_admin_return(
             'removetagfromaddress', (qualifier_name, classical_part,
                                      composite_address),
-            pq_part, descriptor_script, classical_script, descriptor_program)
+            pq_part, descriptor_script, pq_only_script, descriptor_program)
+        my_tag = [entry for entry in node.viewmytaggedaddresses()
+                  if entry['Tag Name'] == qualifier_name and
+                  entry['Address'] == classical_part]
+        assert_equal(len(my_tag), 1)
+        assert 'Removed' in my_tag[0]
         for method, arguments in (
                 ('freezeaddress', (restricted_issue_name, classical_part,
                                    destination_descriptor)),
@@ -762,13 +804,29 @@ class PQAssetAnchorTest(RavenTestFramework):
                 ('unfreezerestrictedasset', (restricted_issue_name,))):
             assert_protected_admin_return(
                 method, arguments, destination_pq, destination_script,
-                destination_classical_script, destination_program)
+                destination_pq_only_script, destination_program)
+            if method == 'freezeaddress':
+                assert_equal(restricted_issue_name in node.listaddressrestrictions(
+                    classical_part), True)
+                my_restriction = [entry for entry in
+                                  node.viewmyrestrictedaddresses()
+                                  if entry['Asset Name'] == restricted_issue_name and
+                                  entry['Address'] == classical_part]
+                assert_equal(len(my_restriction), 1)
+                assert 'Restricted' in my_restriction[0]
+            elif method == 'unfreezeaddress':
+                my_restriction = [entry for entry in
+                                  node.viewmyrestrictedaddresses()
+                                  if entry['Asset Name'] == restricted_issue_name and
+                                  entry['Address'] == classical_part]
+                assert_equal(len(my_restriction), 1)
+                assert 'Derestricted' in my_restriction[0]
 
         # Raw asset construction must tag every asset output. The separate
         # owner/root return field must retain its own descriptor program.
         dummy_input = [{'txid': '00' * 32, 'vout': 0}]
-        primary = (classical_script, descriptor_program)
-        alternate = (destination_classical_script, destination_program)
+        primary = (pq_only_script, descriptor_program)
+        alternate = (destination_pq_only_script, destination_program)
 
         def assert_raw_asset_programs(asset_object, expected):
             raw = node.createrawtransaction(
@@ -835,11 +893,11 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_raw_asset_programs(
             {'unfreeze_asset': {'asset_name': restricted_issue_name}}, [primary])
         assert_raises_rpc_error(
-            -5, 'canonical classical|PQ asset destination',
+            -5, 'canonical PQ-only asset destination',
             node.createrawtransaction, dummy_input,
             {classical_part: {'transfer': {'PQROOTRECIPIENT': 1}}})
         assert_raises_rpc_error(
-            None, 'owner_change_address must be a canonical classical|PQ',
+            None, 'owner_change_address must be a canonical PQ-only',
             node.createrawtransaction, dummy_input,
             {composite_address: {
                 'reissue': {'asset_name': 'PQROOTRECIPIENT',
@@ -851,23 +909,37 @@ class PQAssetAnchorTest(RavenTestFramework):
              classical_part: Decimal('1')})
         assert_equal(len(from_hex(CTransaction(), mixed_raw).vout), 2)
         alternate_program_descriptor = classical_part + '|' + destination_pq
+        assert_raises_rpc_error(
+            -5, 'canonical PQ-only asset destination',
+            node.createrawtransaction, dummy_input,
+            {alternate_program_descriptor: {'transfer': {'PQROOTRECIPIENT': 1}}})
         split_raw = node.createrawtransaction(
             dummy_input,
             {composite_address: {'transfer': {'PQROOTRECIPIENT': 1}},
-             alternate_program_descriptor: {'transfer': {'PQROOTRECIPIENT': 1}}})
+             destination_descriptor: {'transfer': {'PQROOTRECIPIENT': 1}}})
         split_tx = from_hex(CTransaction(), split_raw)
         assert_equal(sorted(output.scriptPubKey[-32:] for output in split_tx.vout),
                      sorted((descriptor_program, destination_program)))
 
         self.test_anchor_availability_limits(node)
 
-        # A backed-up encrypted wallet must recover both halves of the
-        # descriptor and sign a matching PQ anchor after a fresh restart.
+        # A backed-up encrypted wallet must recover the PQ key and its asset
+        # identifier, then sign a matching PQ anchor after a fresh restart.
         passphrase = 'regtest-only-pq-asset-passphrase'
         node.node_encrypt_wallet(passphrase)
         self.start_node(0)
-        assert_equal(node.validateaddress(classical_part)['ismine'], True)
+        assert_equal(node.validateaddress(classical_part)['ismine'], False)
         assert_equal(node.validateaddress(pq_part)['ismine'], True)
+        assert_equal(any(entry['Address'] == unpaired_asset_id for entry in
+                         node.viewmytaggedaddresses()), False)
+        assert_equal(any(entry['Address'] == classical_part and
+                         entry['Tag Name'] == qualifier_name and
+                         'Removed' in entry for entry in
+                         node.viewmytaggedaddresses()), True)
+        assert_equal(any(entry['Address'] == classical_part and
+                         entry['Asset Name'] == restricted_issue_name and
+                         'Derestricted' in entry for entry in
+                         node.viewmyrestrictedaddresses()), True)
         assert_equal(node.listmyassets(qualifier_name, True)
                      [qualifier_name]['balance'], 1)
         assert_raises_rpc_error(-13, 'walletpassphrase first',
@@ -879,8 +951,12 @@ class PQAssetAnchorTest(RavenTestFramework):
         shutil.copyfile(backup_path,
                         os.path.join(node.datadir, 'regtest', 'wallet.dat'))
         self.start_node(0)
-        assert_equal(node.validateaddress(classical_part)['ismine'], True)
+        assert_equal(node.validateaddress(classical_part)['ismine'], False)
         assert_equal(node.validateaddress(pq_part)['ismine'], True)
+        assert_equal(any(entry['Address'] == classical_part and
+                         entry['Tag Name'] == qualifier_name and
+                         'Removed' in entry for entry in
+                         node.viewmytaggedaddresses()), True)
         assert_equal(node.listmyassets(qualifier_name, True)
                      [qualifier_name]['balance'], 1)
         node.walletpassphrase(passphrase, 600)
