@@ -561,6 +561,9 @@ std::string EncodeIPFS(std::string decoded);
 
 #ifdef ENABLE_WALLET
 
+/** Include wallet-owned PQ-only asset identifiers in tag and freeze history. */
+isminetype GetRestrictedAddressOwnership(const CWallet& wallet, const std::string& address);
+
 /** Find a wallet-owned protected authority output for an active PQ asset return. */
 bool GetWalletProtectedAssetReturnDescriptor(CWallet* pwallet, const std::string& authorityName,
                                              std::string& descriptor, std::pair<int, std::string>& error);
