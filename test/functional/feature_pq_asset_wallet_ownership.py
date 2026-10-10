@@ -3,7 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-"""Do not report a bit13 asset as spendable without its matching PQ key."""
+"""Credit post-bit13 assets to PQ keys and preserve historical ownership."""
 
 from decimal import Decimal
 
@@ -44,8 +44,6 @@ class PQAssetWalletOwnershipTest(RavenTestFramework):
         asset_name = 'PQWALLETOWNERSHIP'
         historical_name = 'PQHISTORICALTAG'
         sender_asset_address = sender.getnewaddress()
-        recipient_asset_address = recipient.getnewaddress()
-        recipient_owner_address = recipient.getnewaddress()
         historical_recipient = recipient.getnewaddress()
         pq_address = sender.getnewpqaddress()
         pq_script = bytes.fromhex(sender.validateaddress(pq_address)['scriptPubKey'])
@@ -111,18 +109,23 @@ class PQAssetWalletOwnershipTest(RavenTestFramework):
         asset_outpoint = sender.listmyassets(asset_name, True)[asset_name]['outpoints'][0]
         owner_name = asset_name + '!'
         owner_outpoint = sender.listmyassets(owner_name, True)[owner_name]['outpoints'][0]
+        recipient_asset_descriptor = recipient.getnewpqassetaddress()
+        recipient_owner_descriptor = recipient.getnewpqassetaddress()
+        _, recipient_asset_pq = recipient_asset_descriptor.split('|')
+        _, recipient_owner_pq = recipient_owner_descriptor.split('|')
         native_coin = next(coin for coin in sender.listunspent()
-                           if coin['amount'] > Decimal('2'))
+                           if coin['amount'] > Decimal('3'))
         inputs = [
             {'txid': asset_outpoint['txid'], 'vout': asset_outpoint['vout']},
             {'txid': owner_outpoint['txid'], 'vout': owner_outpoint['vout']},
             {'txid': native_coin['txid'], 'vout': native_coin['vout']},
         ]
         outputs = {
-            recipient_asset_address + '|' + pq_address: {'transfer': {asset_name: 1}},
-            recipient_owner_address + '|' + pq_address: {'transfer': {owner_name: 1}},
-            pq_address: Decimal('1'),
-            sender.getnewaddress(): native_coin['amount'] - Decimal('1.01'),
+            recipient_asset_descriptor: {'transfer': {asset_name: 1}},
+            recipient_owner_descriptor: {'transfer': {owner_name: 1}},
+            recipient_asset_pq: Decimal('1'),
+            recipient_owner_pq: Decimal('1'),
+            sender.getnewaddress(): native_coin['amount'] - Decimal('2.01'),
         }
         migration = sender.createrawtransaction(inputs, outputs)
         signed = sender.signrawtransaction(migration)
@@ -131,33 +134,33 @@ class PQAssetWalletOwnershipTest(RavenTestFramework):
         sender.generate(1)
         self.sync_all()
 
-        # A classical key alone is not ownership of a protected asset.
-        assert_equal(recipient.listmyassets(asset_name, True), {})
-        assert_equal(recipient.listmyassets(owner_name, True), {})
-        assert_raises_rpc_error(-5, 'Invalid or non-wallet transaction id',
-                                recipient.gettransaction, migration_txid)
-        assert owner_name not in recipient.viewallmessagechannels()
-        assert_raises_rpc_error(-5, 'No addresses in wallet',
-                                recipient.importprunedfunds, signed['hex'],
-                                sender.gettxoutproof([migration_txid]))
-        assert all(bytes.fromhex(coin['scriptPubKey']) != pq_script
-                   for coin in recipient.listunspent())
+        # The recipient owns each output through its PQ key and has no
+        # classical private key for either synthetic asset identifier.
+        for name, descriptor in ((asset_name, recipient_asset_descriptor),
+                                 (owner_name, recipient_owner_descriptor)):
+            asset_id, pq_destination = descriptor.split('|')
+            assert_equal(recipient.validateaddress(asset_id)['ismine'], False)
+            assert_equal(recipient.validateaddress(pq_destination)['ismine'], True)
+            assert_equal(recipient.listmyassets(name, True)[name]['balance'], 1)
+        assert owner_name in recipient.viewallmessagechannels()
 
-        # Raw classical signing is possible, but consensus still requires the
-        # separate native witness-v2 anchor for each protected asset spend.
+        # A PQ-only asset input signs with an empty scriptSig, but consensus
+        # still requires the separate matching native witness-v2 anchor.
         decoded = sender.decoderawtransaction(signed['hex'])
         asset_vouts = {out['scriptPubKey']['asset']['name']: out['n']
                        for out in decoded['vout']
                        if 'asset' in out['scriptPubKey']}
         assert_equal(set(asset_vouts), {asset_name, owner_name})
-        for name in (asset_name, owner_name):
+        for name, descriptor in ((asset_name, recipient_asset_descriptor),
+                                 (owner_name, recipient_owner_descriptor)):
             asset_input = {'txid': migration_txid, 'vout': asset_vouts[name]}
             spend = recipient.createrawtransaction(
                 [{'txid': asset_input['txid'], 'vout': asset_input['vout']}],
-                {recipient.getnewaddress() + '|' + pq_address:
-                 {'transfer': {name: 1}}})
+                {descriptor: {'transfer': {name: 1}}})
             spend_signed = recipient.signrawtransaction(spend)
             assert_equal(spend_signed['complete'], True)
+            spend_tx = from_hex(CTransaction(), spend_signed['hex'])
+            assert_equal(spend_tx.vin[0].scriptSig, b'')
             assert_raises_rpc_error(-26, 'bad-pq-asset-anchor',
                                     recipient.sendrawtransaction, spend_signed['hex'])
 
@@ -202,8 +205,8 @@ class PQAssetWalletOwnershipTest(RavenTestFramework):
             assert_equal(len(received), 1)
             assert received[0] in new_destinations
             received_destinations.add(received[0])
-            classical, pq = received[0].split('|')
-            assert_equal(sender.validateaddress(classical)['ismine'], True)
+            asset_id, pq = received[0].split('|')
+            assert_equal(sender.validateaddress(asset_id)['ismine'], False)
             assert_equal(sender.validateaddress(pq)['ismine'], True)
             assert_equal(sender.listmyassets(name, True)[name]['balance'], 1)
         assert_equal(received_destinations, new_destinations)

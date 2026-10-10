@@ -995,6 +995,8 @@ public:
     bool StoreOwnedPQAssetDestination(const CKeyID& classicalKey, const uint256& pqProgram);
     //! Return persisted asset destinations whose pairing and private-key ownership still validate.
     std::vector<std::string> GetOwnedPQAssetDestinations() const;
+    //! Recognize a synthetic PQ-only asset identifier in this wallet's destination data.
+    bool IsPQOnlyAssetID(const CTxDestination& dest) const;
 
     //! Adds a watch-only address to the store, and saves it to disk.
     bool AddWatchOnly(const CScript& dest, int64_t nCreateTime);

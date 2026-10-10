@@ -623,6 +623,61 @@ BOOST_AUTO_TEST_CASE(protected_asset_destination_pair_survives_reload)
     BOOST_CHECK(unrelatedWallet.GetOwnedPQAssetDestinations().empty());
 }
 
+BOOST_AUTO_TEST_CASE(pq_only_asset_destination_needs_no_classical_key)
+{
+    const std::string filename = "pq-only-asset-destination-wallet.dat";
+    CPQKey pqKey;
+    pqKey.MakeNewKey();
+    BOOST_REQUIRE(pqKey.IsValid());
+    const uint256 program = pqKey.GetPubKey().GetWitnessProgram();
+    const CKeyID pseudoAddress(Hash160(program.begin(), program.end()));
+    const std::string descriptor = EncodePQAssetDestination(pseudoAddress, program);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        LOCK(wallet->cs_wallet);
+        BOOST_REQUIRE(wallet->AddPQKeyPubKey(pqKey, pqKey.GetPubKey()));
+        BOOST_CHECK(!wallet->HaveKey(pseudoAddress));
+        BOOST_REQUIRE(wallet->StoreOwnedPQAssetDestination(pseudoAddress, program));
+        BOOST_CHECK(wallet->IsPQOnlyAssetID(pseudoAddress));
+        BOOST_CHECK(wallet->GetOwnedPQAssetDestinations() ==
+                    std::vector<std::string>{descriptor});
+    }
+    bitdb.Flush(false);
+
+    std::unique_ptr<CWallet> reloaded = LoadPQWallet(filename);
+    BOOST_CHECK(!reloaded->HaveKey(pseudoAddress));
+    BOOST_CHECK(reloaded->IsPQOnlyAssetID(pseudoAddress));
+    BOOST_CHECK(reloaded->GetOwnedPQAssetDestinations() ==
+                std::vector<std::string>{descriptor});
+
+    CWallet dummyWallet;
+    std::string backupFilename;
+    BOOST_REQUIRE(CWalletDB::Recover(
+        filename, &dummyWallet, CWalletDB::RecoverKeysOnlyFilter, backupFilename));
+    bitdb.Flush(false);
+    std::unique_ptr<CWallet> recovered = LoadPQWallet(filename);
+    BOOST_CHECK(recovered->GetOwnedPQAssetDestinations() ==
+                std::vector<std::string>{descriptor});
+    BOOST_CHECK(recovered->IsPQOnlyAssetID(pseudoAddress));
+    BOOST_CHECK_EQUAL(recovered->mapAddressBook[pseudoAddress].purpose, "pqasset");
+
+    auto retainedPair = [&](const CKeyID& address, const std::string& key) {
+        CWallet filterWallet;
+        CDataStream dbKey(SER_DISK, CLIENT_VERSION);
+        CDataStream dbValue(SER_DISK, CLIENT_VERSION);
+        dbKey << std::string("destdata") << EncodeDestination(address) << key;
+        dbValue << descriptor;
+        return CWalletDB::RecoverKeysOnlyFilter(
+            &filterWallet, std::move(dbKey), std::move(dbValue));
+    };
+    BOOST_CHECK(retainedPair(pseudoAddress, "pqasset:destination:v2"));
+    CKey unrelatedKey;
+    unrelatedKey.MakeNewKey(true);
+    BOOST_CHECK(!retainedPair(unrelatedKey.GetPubKey().GetID(),
+                              "pqasset:destination:v2"));
+}
+
 BOOST_AUTO_TEST_CASE(protected_asset_destination_pair_survives_key_only_recovery)
 {
     const std::string filename = "pq-asset-pair-salvage-wallet.dat";

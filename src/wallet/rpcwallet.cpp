@@ -12,6 +12,7 @@
 #include "consensus/validation.h"
 #include "core_io.h"
 #include "httpserver.h"
+#include "hash.h"
 #include "validation.h"
 #include "net.h"
 #include "policy/feerate.h"
@@ -265,7 +266,7 @@ UniValue getnewpqassetaddress(const JSONRPCRequest& request)
     CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
     if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) return NullUniValue;
     if (request.fHelp || request.params.size() > 1)
-        throw std::runtime_error("getnewpqassetaddress ( \"account\" )\nReturns a classical|PQ asset destination for active RIP-25 asset rules.\n");
+        throw std::runtime_error("getnewpqassetaddress ( \"account\" )\nReturns an asset identifier|PQ address destination for active RIP-25 asset rules. The identifier does not have a classical private key.\n");
     LOCK2(cs_main, pwallet->cs_wallet);
 
     const int activationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
@@ -275,22 +276,17 @@ UniValue getnewpqassetaddress(const JSONRPCRequest& request)
 
     std::string account;
     if (!request.params[0].isNull()) account = AccountFromValue(request.params[0]);
-    pwallet->TopUpKeyPool();
-    CReserveKey reserveClassicalKey(pwallet);
-    CPubKey classicalPubKey;
-    if (!reserveClassicalKey.GetReservedKey(classicalPubKey))
-        throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out, please call keypoolrefill first");
     CPQPubKey pqPubKey;
     if (!pwallet->GenerateNewPQKey(pqPubKey))
         throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to derive and persist ML-DSA-44 keypair");
-    const CKeyID classicalKey = classicalPubKey.GetID();
     const WitnessV2PQDestination pqDestination(pqPubKey.GetWitnessProgram());
-    if (!pwallet->StoreOwnedPQAssetDestination(classicalKey, pqDestination.witnessProgram))
-        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to persist protected asset destination pairing");
-    reserveClassicalKey.KeepKey();
-    pwallet->SetAddressBook(classicalKey, account, "receive");
+    const CKeyID assetID(Hash160(pqDestination.witnessProgram.begin(),
+                                 pqDestination.witnessProgram.end()));
+    if (!pwallet->StoreOwnedPQAssetDestination(assetID, pqDestination.witnessProgram))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to persist PQ-only asset destination");
+    pwallet->SetAddressBook(assetID, account, "pqasset");
     pwallet->SetAddressBook(pqDestination, account, "receive");
-    return EncodePQAssetDestination(classicalKey, pqDestination.witnessProgram);
+    return EncodePQAssetDestination(assetID, pqDestination.witnessProgram);
 }
 
 UniValue listpqassetaddresses(const JSONRPCRequest& request)
@@ -299,7 +295,7 @@ UniValue listpqassetaddresses(const JSONRPCRequest& request)
     if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) return NullUniValue;
     if (request.fHelp || request.params.size() != 0)
         throw std::runtime_error(
-            "listpqassetaddresses\nReturns saved wallet-owned classical|PQ asset destinations and whether PQ asset rules are active for the next block. An inactive destination is not safe for receiving assets.\n");
+            "listpqassetaddresses\nReturns saved wallet-owned PQ-only and historical paired asset destinations and whether PQ asset rules are active for the next block. Historical pairs cannot receive newly created asset outputs after activation. An inactive destination is not safe for receiving assets.\n");
     LOCK2(cs_main, pwallet->cs_wallet);
 
     const int activationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
@@ -511,7 +507,7 @@ UniValue getaddressesbyaccount(const JSONRPCRequest& request)
     for (const std::pair<CTxDestination, CAddressBookData>& item : pwallet->mapAddressBook) {
         const CTxDestination& dest = item.first;
         const std::string& strName = item.second.name;
-        if (strName == strAccount) {
+        if (strName == strAccount && !pwallet->IsPQOnlyAssetID(dest)) {
             ret.push_back(EncodeDestination(dest));
         }
     }
@@ -797,6 +793,8 @@ UniValue listaddressgroupings(const JSONRPCRequest& request)
         UniValue jsonGrouping(UniValue::VARR);
         for (const CTxDestination& address : grouping)
         {
+            if (pwallet->IsPQOnlyAssetID(address))
+                continue;
             UniValue addressInfo(UniValue::VARR);
             addressInfo.push_back(EncodeDestination(address));
             addressInfo.push_back(ValueFromAmount(balances[address]));
@@ -807,7 +805,8 @@ UniValue listaddressgroupings(const JSONRPCRequest& request)
             }
             jsonGrouping.push_back(addressInfo);
         }
-        jsonGroupings.push_back(jsonGrouping);
+        if (!jsonGrouping.empty())
+            jsonGroupings.push_back(jsonGrouping);
     }
     return jsonGroupings;
 }
@@ -1575,6 +1574,8 @@ UniValue ListReceived(CWallet * const pwallet, const UniValue& params, bool fByA
     std::map<std::string, tallyitem> mapAccountTally;
     for (const std::pair<CTxDestination, CAddressBookData>& item : pwallet->mapAddressBook) {
         const CTxDestination& dest = item.first;
+        if (pwallet->IsPQOnlyAssetID(dest))
+            continue;
         const std::string& strAccount = item.second.name;
         std::map<CTxDestination, tallyitem>::iterator it = mapTally.find(dest);
         if (it == mapTally.end() && !fIncludeEmpty)

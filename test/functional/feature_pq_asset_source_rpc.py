@@ -8,6 +8,7 @@
 from decimal import Decimal
 
 from test_framework.mininode import CTransaction, from_hex
+from test_framework.script import hash160
 from test_framework.test_framework import RavenTestFramework
 from test_framework.util import assert_equal, assert_raises_rpc_error
 
@@ -52,10 +53,21 @@ class PQAssetSourceRPCTest(RavenTestFramework):
         assert_equal(node.getblockchaininfo()['bip9_softforks']['pq_assets']['status'],
                      'active')
 
-        source = node.getnewpqassetaddress()
+        source = node.getnewpqassetaddress('pq-assets')
         source_classical, source_pq = source.split('|')
         source_program = bytes.fromhex(
             node.validateaddress(source_pq)['scriptPubKey'])[2:]
+        source_identity = node.validateaddress(source_classical)
+        assert_equal(source_identity['ismine'], False)
+        assert_equal(bytes.fromhex(source_identity['scriptPubKey'])[3:23],
+                     hash160(source_program))
+        assert_equal(node.validateaddress(source_pq)['ismine'], True)
+        account_addresses = node.getaddressesbyaccount('pq-assets')
+        assert source_classical not in account_addresses
+        assert source_pq in account_addresses
+        received_addresses = {row['address'] for row in
+                              node.listreceivedbyaddress(0, True)}
+        assert source_classical not in received_addresses
         destination = node.getnewpqassetaddress()
         _, destination_pq = destination.split('|')
         destination_program = bytes.fromhex(
@@ -69,7 +81,7 @@ class PQAssetSourceRPCTest(RavenTestFramework):
                      {source, destination})
 
         # A confirmed legacy asset and its owner token can move in full to
-        # tagged outputs after activation without a PQ anchor on the old input.
+        # PQ-only outputs after activation without a PQ anchor on the old input.
         migrated_asset = node.transferfromaddress(
             'PQSOURCELEGACY', legacy_address, 1, destination)[0]
         migrated_second = node.transferfromaddresses(
@@ -106,6 +118,9 @@ class PQAssetSourceRPCTest(RavenTestFramework):
 
         node.issue('PQSOURCEACTIVE', 5, source)
         node.generate(1)
+        grouping_addresses = {entry[0] for group in node.listaddressgroupings()
+                              for entry in group}
+        assert source_classical not in grouping_addresses
         node.sendtoaddress(source_pq, Decimal('1'))
         node.generate(1)
 
@@ -123,11 +138,11 @@ class PQAssetSourceRPCTest(RavenTestFramework):
                 destination, '', 0, '', source)
 
         assert_raises_rpc_error(
-            -5, 'canonical classical|PQ asset destination',
+            -5, 'canonical PQ-only asset destination',
             node.transferfromaddress, 'PQSOURCEACTIVE', source, 2,
             destination, '', 0, '', source_classical)
         assert_raises_rpc_error(
-            -5, 'canonical classical|PQ asset destination',
+            -5, 'canonical PQ-only asset destination',
             node.transferfromaddresses, 'PQSOURCEACTIVE', [source], 2,
             destination, '', 0, '', source_classical)
 
@@ -148,14 +163,17 @@ class PQAssetSourceRPCTest(RavenTestFramework):
         assert_equal(node.listmyassets('PQSOURCEACTIVE', True)
                      ['PQSOURCEACTIVE']['balance'], 5)
 
-        # The address index combines protected outputs that share a
-        # classical key, even though their PQ programs differ. Its address
-        # row is not a valid active asset destination.
-        second_pq = node.getnewpqaddress()
-        second_pair = source_classical + '|' + second_pq
+        # Each PQ program has its own synthetic asset identifier. Reusing
+        # the first identifier with another program is not a destination.
+        second_pair = node.getnewpqassetaddress()
+        second_identity, second_pq = second_pair.split('|')
         second_program = bytes.fromhex(
             node.validateaddress(second_pq)['scriptPubKey'])[2:]
         assert second_program != source_program
+        assert_raises_rpc_error(
+            -5, 'canonical PQ-only asset destination',
+            node.transferfromaddress, 'PQSOURCEACTIVE', source, 1,
+            source_classical + '|' + second_pq)
         index_asset = 'PQINDEXSHARED'
         node.issue(index_asset, 2, source)
         node.sendtoaddress(source_pq, Decimal('1'))
@@ -168,14 +186,16 @@ class PQAssetSourceRPCTest(RavenTestFramework):
         assert_equal(node.listmyassets(index_asset, True)
                      [index_asset]['balance'], 2)
         assert_equal(node.listaddressesbyasset(index_asset),
-                     {source_classical: 2})
+                     {source_classical: 1, second_identity: 1})
         assert_equal(node.listassetbalancesbyaddress(source_classical)
-                     [index_asset], 2)
+                     [index_asset], 1)
+        assert_equal(node.listassetbalancesbyaddress(second_identity)
+                     [index_asset], 1)
         assert_raises_rpc_error(-5, 'Invalid Raven address',
                                 node.listassetbalancesbyaddress,
                                 second_pair)
         assert_raises_rpc_error(
-            -5, 'canonical classical|PQ asset destination',
+            -5, 'canonical PQ-only asset destination',
             node.transferfromaddress, index_asset, source, 1,
             source_classical)
 

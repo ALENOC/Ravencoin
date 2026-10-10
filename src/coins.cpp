@@ -29,16 +29,7 @@ static bool WalletOwnsAssetForMessageSubscription(const CTxOut& output,
     const auto candidate = mapBlockIndex.find(blockHash);
     if (candidate == mapBlockIndex.end() || candidate->second->nHeight != height)
         return false;
-    if (vpwallets[0]->IsMine(output) != ISMINE_SPENDABLE)
-        return false;
-
-    const int activationHeight = GetPQAssetActivationHeightForPrev(
-        candidate->second->pprev, GetParams().GetConsensus());
-    if (activationHeight < 0 || height < activationHeight)
-        return true;
-
-    uint256 program;
-    return GetPQAssetProgram(output.scriptPubKey, program) && vpwallets[0]->HavePQKey(program);
+    return vpwallets[0]->IsMine(output, candidate->second) == ISMINE_SPENDABLE;
 }
 #endif
 
