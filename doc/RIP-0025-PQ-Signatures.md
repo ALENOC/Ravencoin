@@ -338,7 +338,11 @@ Core 4.8.0 node. A local two-binary regtest accepted a 7,600,636-WU block
 on both binaries, then accepted an 8,801,320-WU block only on the bit-12
 candidate; Core 4.8.0 returned `bad-blk-length`. This is a hard-fork
 boundary for block validation, even though the witness-v2 signature rule
-alone is restrictive.
+alone is restrictive. A separate block with a valid ML-DSA witness-v2
+spend weighed 8,000,697 WU under the old calculation and about
+7,998,831 WU after the PQ discount. Core 4.8.0 returned
+`bad-blk-weight`, while the candidate accepted it. The discount alone
+also crosses the old validation boundary.
 
 #### 4.3 Dust Threshold
 
