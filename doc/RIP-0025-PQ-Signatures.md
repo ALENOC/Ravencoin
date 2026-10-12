@@ -16,7 +16,11 @@ License: MIT
 
 This RIP proposes adding **ML-DSA-44** (FIPS 204) as a post-quantum digital signature scheme to Ravencoin via a new **witness version 2** program. New PQ addresses use ML-DSA-44 exclusively (no ECDSA). Existing ECDSA addresses (witness v0) continue working unchanged. Users can migrate native RVN from ECDSA to ML-DSA-44 addresses before quantum computers can break ECDSA. Ravencoin asset outputs are not covered by this version of RIP-25.
 
-The upgrade is deployed as a **soft fork** following the SegWit extensibility model. A phased block weight increase from 8 MWU to 16 MWU, combined with a PQ witness discount factor, ensures that network throughput remains adequate during and after migration.
+The witness-v2 signature rule uses the SegWit extensibility model and bit-12
+signaling. The combined deployment also raises the block weight limit from
+8 MWU to 12 MWU at activation and to 16 MWU one nominal year later, and
+discounts PQ witness bytes. Those block rules require a coordinated network
+upgrade from Core 4.8.0. See Backwards Compatibility below.
 
 ---
 
@@ -327,6 +331,15 @@ The wallet estimates transaction size before signing using `DummySignTx`. For PQ
 
 At 1-minute block times, even Phase 1 provides thousands of PQ transactions per minute, far exceeding current real-world usage.
 
+The 12 and 16 MWU limits are part of the original RIP-25 plan. Core 4.8.0
+rejects blocks above 8 MWU. The new acceptance range and the PQ witness
+discount make the combined bit-12 activation incompatible with an unupgraded
+Core 4.8.0 node. A local two-binary regtest accepted a 7,600,636-WU block
+on both binaries, then accepted an 8,801,320-WU block only on the bit-12
+candidate; Core 4.8.0 returned `bad-blk-length`. This is a hard-fork
+boundary for block validation, even though the witness-v2 signature rule
+alone is restrictive.
+
 #### 4.3 Dust Threshold
 
 For PQ outputs, the spend cost increases proportionally to the ML-DSA witness size:
@@ -436,7 +449,7 @@ public:
 | Phase | Timeline | Description |
 |-------|----------|-------------|
 | **Phase 0: Preparation** | Months 1-6 | Software release with dormant PQ code. Community education. Testnet deployment. |
-| **Phase 1: Activation** | Months 7-12 | Soft fork activates via BIP9. PQ addresses available. Block weight increases to 12 MWU. |
+| **Phase 1: Activation** | Months 7-12 | Bit 12 activates after signaling and lock-in. PQ addresses are available. Block weight increases to 12 MWU, requiring upgraded validating nodes. |
 | **Phase 2: Encouraged** | Months 13-18 | Wallets default to PQ addresses for new keys. Warnings for legacy addresses. |
 | **Phase 3: Standard** | Months 19-24 | Block weight increases to 16 MWU. |
 | **Phase 4: Deprecation** | Months 25-48 | Legacy-only transactions increasingly discouraged. |
@@ -489,7 +502,17 @@ If ECDSA is broken before migration completes:
 
 ## Backwards Compatibility
 
-This proposal is a **soft fork**. Backwards compatibility is maintained as follows:
+The original draft described the whole proposal as a soft fork. That
+description applies to the witness-v2 signature restriction alone, not to
+the higher block limits or PQ witness discount. Core 4.8.0 validating nodes
+can reject blocks that a post-activation node accepts. All validating
+services that intend to follow the upgraded chain must install compatible
+software before bit 12 becomes active. Miner signaling measures miner
+readiness; it does not upgrade old nodes or guarantee their acceptance of
+12/16 MWU blocks. Public activation therefore requires a reviewed network
+upgrade plan, testnet history verification, and explicit release guidance.
+
+The remaining transaction compatibility properties are:
 
 - **Unupgraded nodes**: See witness v2 outputs as "anyone-can-spend" per BIP141 rules
 - **Legacy addresses**: Continue to work indefinitely
