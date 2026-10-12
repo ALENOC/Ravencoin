@@ -2841,6 +2841,27 @@ BOOST_AUTO_TEST_CASE(bip44_encryption_write_failure_returns_and_aborts)
     BOOST_CHECK(loadedSeed == seed);
 }
 
+BOOST_AUTO_TEST_CASE(wallet_database_clears_entire_new_page)
+{
+    const std::string filename = "pq-full-page-clear-wallet.dat";
+    CWalletDBWrapper dbw(&bitdb, filename);
+    CDB db(dbw, "c+");
+
+    LOCK(bitdb.cs_db);
+    const auto it = bitdb.mapDb.find(filename);
+    BOOST_REQUIRE(it != bitdb.mapDb.end());
+    BOOST_REQUIRE(it->second != nullptr);
+
+    u_int32_t pageSize = 0;
+    u_int32_t clearLength = 0;
+    BOOST_REQUIRE_EQUAL(it->second->get_pagesize(&pageSize), 0);
+    DbMpoolFile* mpoolFile = it->second->get_mpf();
+    BOOST_REQUIRE(mpoolFile != nullptr);
+    BOOST_REQUIRE_EQUAL(mpoolFile->get_clear_len(&clearLength), 0);
+    BOOST_REQUIRE_GT(pageSize, 32U);
+    BOOST_CHECK_EQUAL(clearLength, pageSize);
+}
+
 BOOST_AUTO_TEST_CASE(rewrite_discards_stale_regular_temporary_database)
 {
     const std::string filename = "pq-rewrite-stale-wallet.dat";
