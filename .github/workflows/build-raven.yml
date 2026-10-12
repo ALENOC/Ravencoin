@@ -65,7 +65,15 @@ jobs:
       - name: Build and run unit tests
         run: |
           make -j2
-          make check
+          if ! make check; then
+            for log in src/test-suite.log src/test/test_raven.log; do
+              if [ -f "$log" ]; then
+                echo "Failure details from $log:"
+                tail -n 160 "$log"
+              fi
+            done
+            exit 1
+          fi
 
       - name: Exercise the real PQ verifier fuzz target
         run: |
