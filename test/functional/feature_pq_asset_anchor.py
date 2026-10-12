@@ -1281,6 +1281,81 @@ class PQAssetAnchorTest(RavenTestFramework):
                                  exact_descriptor)
         node.generate(1)
 
+        # Funded raw change below the dust threshold is added to the fee.
+        # The protected asset remains owned, but its sole anchor is gone.
+        dust_name = 'PQDUSTCHANGE'
+        dust_descriptor = node.getnewpqassetaddress()
+        _, dust_pq = dust_descriptor.split('|')
+        dust_script = bytes.fromhex(
+            node.validateaddress(dust_pq)['scriptPubKey'])
+        node.issue(dust_name, 1, dust_descriptor)
+        dust_anchor_txid = node.sendtoaddress(dust_pq, Decimal('1'))
+        node.generate(1)
+        dust_anchor = {'txid': dust_anchor_txid, 'vout': self.output_index(
+            node.getrawtransaction(dust_anchor_txid),
+            lambda script: script == dust_script)}
+        dust_outpoint = node.listmyassets(dust_name, True)
+        dust_outpoint = dust_outpoint[dust_name]['outpoints'][0]
+        dust_input = {key: dust_outpoint[key] for key in ('txid', 'vout')}
+        dust_recipient = node.getnewaddress()
+        dust_outputs = {
+            dust_descriptor: {'transfer': {dust_name: 1}},
+            dust_recipient: Decimal('0.5'),
+        }
+        dust_options = {'changeAddress': dust_pq}
+        probe_raw = node.createrawtransaction(
+            [dust_input, dust_anchor], dust_outputs)
+        probe = node.fundrawtransaction(probe_raw, dust_options)
+        assert probe['changepos'] >= 0
+        probe_tx = from_hex(CTransaction(), probe['hex'])
+        probe_change = probe_tx.vout[probe['changepos']]
+        assert_equal(probe_change.scriptPubKey, dust_script)
+        assert probe_change.nValue > 1_000
+        assert_equal(self.input_outpoints(probe_tx), {
+            (dust_input['txid'], dust_input['vout']),
+            (dust_anchor['txid'], dust_anchor['vout']),
+        })
+
+        # Keep 1,000 satoshis of the probe's native change. This is below
+        # the wallet's PQ witness-v2 discard threshold, so no change output
+        # can refresh the anchor.
+        dust_outputs[dust_recipient] += (
+            Decimal(probe_change.nValue - 1_000) / Decimal(100_000_000))
+        dust_raw = node.createrawtransaction(
+            [dust_input, dust_anchor], dust_outputs)
+        dust_funded = node.fundrawtransaction(dust_raw, dust_options)
+        assert_equal(dust_funded['changepos'], -1)
+        assert dust_funded['fee'] > probe['fee']
+        dust_signed = node.signrawtransaction(dust_funded['hex'])
+        assert_equal(dust_signed['complete'], True)
+        dust_tx = from_hex(CTransaction(), dust_signed['hex'])
+        assert_equal(len(dust_tx.vout), 2)
+        assert_equal(self.input_outpoints(dust_tx), {
+            (dust_input['txid'], dust_input['vout']),
+            (dust_anchor['txid'], dust_anchor['vout']),
+        })
+        assert not any(output.scriptPubKey == dust_script
+                       for output in dust_tx.vout)
+        dust_txid = node.sendrawtransaction(dust_signed['hex'])
+        assert dust_txid in node.getblock(node.generate(1)[0])['tx']
+        assert_equal(node.listmyassets(dust_name, True)
+                     [dust_name]['balance'], 1)
+        assert_raises_rpc_error(-25, 'funded matching PQ anchor',
+                                node.transferfromaddress, dust_name,
+                                dust_descriptor, 1, dust_descriptor)
+
+        dust_topup_txid = node.sendtoaddress(dust_pq, Decimal('0.01'))
+        node.generate(1)
+        dust_topup = (dust_topup_txid, self.output_index(
+            node.getrawtransaction(dust_topup_txid),
+            lambda script: script == dust_script))
+        dust_restored_txid = node.transferfromaddress(
+            dust_name, dust_descriptor, 1, dust_descriptor)[0]
+        dust_restored = from_hex(
+            CTransaction(), node.getrawtransaction(dust_restored_txid))
+        assert dust_topup in self.input_outpoints(dust_restored)
+        node.generate(1)
+
     @staticmethod
     def input_outpoints(tx):
         return {(format(txin.prevout.hash, '064x'), txin.prevout.n)
