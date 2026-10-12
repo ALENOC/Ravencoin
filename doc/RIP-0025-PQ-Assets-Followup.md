@@ -459,17 +459,15 @@ with these steps:
 
 ## 18. Interpreting the Current Asset Index
 
-FINDING-153 is an address-index limitation. Two outputs can commit to different
-PQ programs while using the same classical P2PKH key. The index reports one
-classical-address row and their combined asset balance. The row cannot tell a
-spender which PQ anchor or private key a particular outpoint needs.
-`listassetbalancesbyaddress` accepts the classical address, not the composite
-descriptor. Copying an index row as an active asset recipient fails because a
-new output requires the canonical `classical|PQ` descriptor. Use the actual
-output's program and the recorded descriptor for custody and transfers;
-retain both keys and their association in backups. A descriptor assembled
-manually from two owned keys is not necessarily listed by
-`listpqassetaddresses`, which lists persisted wallet pairings.
+FINDING-153 described an earlier dual-signature candidate in which two PQ
+programs could share a classical address-index row. The PQ-only format now
+derives a distinct synthetic asset identifier from each PQ program. A
+historical classical output still has its original address identifier, so
+index rows alone do not establish whether an outpoint needs a classical key
+or a matching PQ anchor. Use the actual output's script and recorded
+descriptor for custody and transfers. A descriptor assembled manually from
+owned key material is not necessarily listed by `listpqassetaddresses`,
+which lists persisted wallet pairings.
 
 ## 19. Migrating Historical Assets and Owner Tokens
 
@@ -479,8 +477,9 @@ still authorize a spend, but every spendable asset output newly created after
 activation needs a canonical PQ tag. Migrate before the old classical key can
 be compromised:
 
-1. Back up the wallet and verify that both keys in each destination descriptor
-   can be recovered. Inventory historical asset and `ASSET!` owner-token
+1. Back up the wallet and verify that the destination PQ key and the
+   classical keys for historical outputs can be recovered. Inventory
+   historical asset and `ASSET!` owner-token
    outpoints, including their quantities and classical addresses.
 2. For a single legacy asset UTXO, transfer its entire quantity to a new
    canonical `classical|PQ` descriptor. Transfer an owner token's full unit
@@ -493,8 +492,9 @@ be compromised:
    asset change. The GUI path has no equivalent explicit asset-change field.
 4. Verify that every newly created spendable asset and owner-token output has
    its intended PQ program. Fund each destination's native PQ address with
-   RVN before its first protected spend. Keep the original descriptor and
-   both private keys available for recovery.
+   RVN before its first protected spend. Keep the original descriptor and PQ
+   key available for recovery, and retain classical keys for any historical
+   holdings.
 
 No software can distinguish the rightful owner from an attacker who already
 controls the old classical key. Migration does not retroactively protect the
@@ -503,19 +503,19 @@ historical UTXO, and a compromised holder can be raced before confirmation.
 ## 20. PQ-Only Asset Ownership Decision and Candidate Format
 
 The owner selected the native-RVN migration model for assets and owner tokens.
-Outputs created under the future bit-13 rule must require an ML-DSA-44 key
-without an ECDSA signature. Historical asset and owner-token outputs retain
-their classical spending rule and migrate voluntarily, with no sunset. The
-current `classical|PQ` candidate still needs an ECDSA signature and therefore
-does not meet this release requirement. FINDING-158 tracks the redesign.
+Outputs created under the bit-13 rule require an ML-DSA-44 key without an
+ECDSA signature. Historical asset and owner-token outputs retain their
+classical spending rule and migrate voluntarily, with no sunset. The
+PQ-only format and wallet path are implemented locally under FINDING-158;
+public activation and release qualification remain pending.
 
 An input carrying a native witness-v2 RVN output with the matching PQ program
-may provide the ML-DSA authorization for an asset input. The owner confirmed
-this construction is acceptable if the asset input needs no ECDSA signature.
-The separate native input still needs RVN funding and may need replenishment
-after the spend, as described in section 17.
+provides the ML-DSA authorization for an asset input. The asset input has an
+empty scriptSig and needs no ECDSA signature. The separate native input still
+needs RVN funding and may need replenishment after the spend, as described in
+section 17.
 
-One provisional asset locking prefix is exactly 25 bytes:
+The PQ-only asset locking prefix is exactly 25 bytes:
 
 ```
 OP_1 OP_1 PUSH20 HASH160(P) OP_DROP OP_DROP
@@ -526,22 +526,20 @@ The asset opcode remains at byte 25, so the existing asset parser identifies
 the output and extracts `HASH160(P)` as its address identifier. The prefix
 executes to one true stack item with an empty scriptSig; it does not execute
 ECDSA. The existing script interpreter treats every byte after
-`OP_RVN_ASSET` as asset data. A new consensus rule must require a matching
-valid witness-v2 anchor whenever such an output is spent at an active origin
-height, and must reject the old dual-signature prefix on new outputs. The
+`OP_RVN_ASSET` as asset data. Consensus requires a matching valid witness-v2
+anchor whenever such an output is spent at an active origin height and
+rejects the old dual-signature prefix on new outputs. The
 `HASH160(P)` binding prevents a sender from selecting an unrelated qualified
 or unfrozen classical address while assigning ownership to a different PQ
 program. The 160-bit address identifier and restricted-asset semantics need
 separate adversarial review.
 
-A red-then-green unit test now shows that this prefix passes the existing
+A red-then-green unit test shows that this prefix passes the existing
 standard script check with an empty scriptSig, is recognized as an asset,
 and is parsed only when the address identifier matches `HASH160(P)`. This
-is a format feasibility result, not full compatibility evidence. The
-following remain required before activation: old-node block acceptance,
-full asset conservation and index behavior, active-only output enforcement,
-wallet PQ ownership and signing, RPC and Qt destination handling, owner
-tokens, restricted address administration, migration, reorgs, recovery,
-independent review, and paired release-target CI at one exact SHA. The
-previously approved bit-13 deployment dates apply to the earlier candidate
-and must be reviewed against the final PQ-only rule before they enter code.
+is a format feasibility result, not full compatibility evidence. Before
+activation, FINDING-160 requires an explicit network upgrade plan for blocks
+above Core 4.8.0 limits. Wallet, RPC, Qt, migration and consensus regressions
+need paired release-target CI at one exact SHA. The owner approved bit-13
+start and timeout dates for this PQ-only rule; they remain dormant in code
+pending CI qualification and historical testnet compatibility review.
