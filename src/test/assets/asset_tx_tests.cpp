@@ -462,6 +462,12 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         pqOnly.insert(pqOnly.end(), tagged.begin() + 25, tagged.end());
         BOOST_REQUIRE(pqOnly.IsAssetScript());
 
+        CMutableTransaction policyCandidate;
+        policyCandidate.vout.emplace_back(0, pqOnly);
+        BOOST_CHECK(HasPQOnlyAssetOutput(CTransaction(policyCandidate)));
+        policyCandidate.vout[0].scriptPubKey = legacy;
+        BOOST_CHECK(!HasPQOnlyAssetOutput(CTransaction(policyCandidate)));
+
         CMutableTransaction spending;
         spending.vin.emplace_back(COutPoint(uint256S("06"), 0));
         spending.vout.emplace_back(0, legacy);
@@ -975,6 +981,9 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         // A lookalike created before activation remains outside the anchor
         // rule by origin height. Wallets must not label it as PQ custody.
         spend.vin[0].prevout = preActivationPQOnlyOut;
+        CValidationState preActivationSpend;
+        BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(spend),
+                                               preActivationSpend, coins, -1));
         CValidationState preActivationPQOnly;
         BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(spend),
                                                preActivationPQOnly, coins,

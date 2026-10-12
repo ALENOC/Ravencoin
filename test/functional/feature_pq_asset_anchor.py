@@ -47,6 +47,8 @@ class PQAssetAnchorTest(RavenTestFramework):
 
         node.generate(861)
         node.issue(asset_name, 1, legacy_address)
+        preactivation_asset = 'PQEARLYPREFIX'
+        node.issue(preactivation_asset, 1, legacy_address)
         restricted_base = 'PQRESTRICTBASE'
         node.issue(restricted_base, 1, legacy_address)
         node.issuerestrictedasset('$' + restricted_base, 1, 'true',
@@ -116,6 +118,68 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(node.submitblock(invalid_block.serialize().hex()),
                      'bad-pq-asset-output')
 
+        # An active-tip transfer can be held in the mempool while a reorg
+        # returns the next block to pre-activation rules. The lookalike must
+        # leave the mempool and must not be relayed again at the old tip.
+        early_outpoint = node.listmyassets(preactivation_asset, True)[
+            preactivation_asset]['outpoints'][0]
+        early_native = next(coin for coin in node.listunspent()
+                            if coin['amount'] > Decimal('2'))
+        early_descriptor = node.getnewpqassetaddress()
+        early_inputs = [
+            {'txid': early_outpoint['txid'], 'vout': early_outpoint['vout']},
+            {'txid': early_native['txid'], 'vout': early_native['vout']},
+        ]
+        early_outputs = {
+            early_descriptor: {'transfer': {preactivation_asset: 1}},
+            legacy_address: early_native['amount'] - Decimal('0.01'),
+        }
+        early_raw = node.createrawtransaction(early_inputs, early_outputs)
+        early_signed = node.signrawtransaction(early_raw)
+        assert_equal(early_signed['complete'], True)
+        early_txid = node.sendrawtransaction(early_signed['hex'])
+        assert early_txid in node.getrawmempool()
+        node.invalidateblock(boundary_hash)
+        assert_equal(node.getblockcount(), 862)
+        assert early_txid not in node.getrawmempool()
+        assert_raises_rpc_error(-26, 'premature-pq-asset',
+                                node.sendrawtransaction, early_signed['hex'])
+        node.reconsiderblock(boundary_hash)
+        assert_equal(node.getblockcount(), 863)
+
+        # Historical blocks remain valid. Mine the same lookalike directly
+        # before the rule activates, then prove its spend needs no anchor.
+        node.invalidateblock(boundary_hash)
+        parent_hash = node.getbestblockhash()
+        block_time = node.getblockheader(parent_hash)['time'] + 1
+        historical_block = create_block(int(parent_hash, 16),
+                                        create_coinbase(863), block_time)
+        historical_block.nVersion = node.getblockheader(boundary_hash)['version']
+        historical_block.vtx.append(from_hex(CTransaction(), early_signed['hex']))
+        historical_block.hashMerkleRoot = historical_block.calc_merkle_root()
+        historical_block.solve()
+        assert_equal(node.submitblock(historical_block.serialize().hex()), None)
+        assert_equal(node.getblockcount(), 863)
+        assert preactivation_asset not in node.listmyassets(preactivation_asset, True)
+
+        early_asset_index = self.output_index(
+            early_signed['hex'],
+            lambda script: len(script) > 31 and script[25] == ASSET_OPCODE)
+        early_fee_coin = next(coin for coin in node.listunspent()
+                              if coin['amount'] > Decimal('2'))
+        historical_spend = node.createrawtransaction(
+            [{'txid': early_txid, 'vout': early_asset_index},
+             {'txid': early_fee_coin['txid'], 'vout': early_fee_coin['vout']}],
+            {early_descriptor: {'transfer': {preactivation_asset: 1}},
+             legacy_address: early_fee_coin['amount'] - Decimal('0.01')})
+        historical_spend = node.signrawtransaction(historical_spend)
+        assert_equal(historical_spend['complete'], True)
+        historical_spend_tx = from_hex(CTransaction(), historical_spend['hex'])
+        assert_equal(historical_spend_tx.vin[0].scriptSig, b'')
+        assert historical_spend_tx.wit.is_null()
+        historical_spend_txid = node.sendrawtransaction(historical_spend['hex'])
+        assert historical_spend_txid in node.getrawmempool()
+
         asset_outpoint = node.listmyassets(asset_name, True)[asset_name]['outpoints'][0]
         native_coin = next(coin for coin in node.listunspent()
                            if coin['amount'] > Decimal('2'))
@@ -147,6 +211,18 @@ class PQAssetAnchorTest(RavenTestFramework):
         node.generate(1)
         assert_equal(node.getblockcount(), 864)
         assert_equal(node.listmyassets(asset_name, True)[asset_name]['balance'], 1)
+        protected_early = node.listmyassets(preactivation_asset, True)[
+            preactivation_asset]
+        assert_equal(protected_early['balance'], 1)
+        protected_early_outpoint = protected_early['outpoints'][0]
+        no_early_anchor = node.createrawtransaction(
+            [{'txid': protected_early_outpoint['txid'],
+              'vout': protected_early_outpoint['vout']}],
+            {early_descriptor: {'transfer': {preactivation_asset: 1}}})
+        no_early_anchor = node.signrawtransaction(no_early_anchor)
+        assert_equal(no_early_anchor['complete'], True)
+        assert_raises_rpc_error(-26, 'bad-pq-asset-anchor',
+                                node.sendrawtransaction, no_early_anchor['hex'])
 
         asset_index = self.output_index(
             migration_signed['hex'],
