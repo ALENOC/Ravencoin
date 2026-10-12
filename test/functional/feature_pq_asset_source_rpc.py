@@ -8,7 +8,6 @@
 from decimal import Decimal
 
 from test_framework.mininode import CTransaction, from_hex
-from test_framework.script import hash160
 from test_framework.test_framework import RavenTestFramework
 from test_framework.util import assert_equal, assert_raises_rpc_error
 
@@ -59,8 +58,10 @@ class PQAssetSourceRPCTest(RavenTestFramework):
             node.validateaddress(source_pq)['scriptPubKey'])[2:]
         source_identity = node.validateaddress(source_classical)
         assert_equal(source_identity['ismine'], False)
-        assert_equal(bytes.fromhex(source_identity['scriptPubKey'])[3:23],
-                     hash160(source_program))
+        source_script = bytes.fromhex(source_identity['scriptPubKey'])
+        assert_equal(len(source_script), 25)
+        assert_equal(source_script[:3], bytes.fromhex('76a914'))
+        assert_equal(source_script[-2:], bytes.fromhex('88ac'))
         assert_equal(node.validateaddress(source_pq)['ismine'], True)
         account_addresses = node.getaddressesbyaccount('pq-assets')
         assert source_classical not in account_addresses

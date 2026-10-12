@@ -13,7 +13,6 @@ import shutil
 from test_framework.blocktools import create_block, create_coinbase
 from test_framework.address import byte_to_base58
 from test_framework.mininode import CTransaction, from_hex, to_hex
-from test_framework.script import hash160
 from test_framework.test_framework import RavenTestFramework
 from test_framework import util as test_util
 from test_framework.util import assert_equal, assert_raises_rpc_error
@@ -770,10 +769,7 @@ class PQAssetAnchorTest(RavenTestFramework):
                              if len(output.scriptPubKey) > 57), 1)
             node.generate(1)
 
-        unpaired_pq = node.getnewpqaddress()
-        unpaired_program = bytes.fromhex(
-            node.validateaddress(unpaired_pq)['scriptPubKey'])[2:]
-        unpaired_asset_id = byte_to_base58(hash160(unpaired_program), 111)
+        unpaired_asset_id = byte_to_base58(bytes.fromhex('01' * 20), 111)
         assert_equal(node.validateaddress(unpaired_asset_id)['ismine'], False)
         assert_protected_admin_return(
             'addtagtoaddress', (qualifier_name, unpaired_asset_id,
