@@ -484,15 +484,20 @@ RIP-25 witness-v2 protects native RVN outputs only. It does not change the Raven
 
 This scope statement describes the approved bit 12 baseline and the default
 public-network state. A 4.8.1 working branch has a separate, dormant bit 13
-asset candidate with a classical-plus-PQ ownership rule. That candidate is
-not included in the approved PR #1281 semantics and is not public-network
-release-qualified. Its local wallet tests do not protect existing holdings
-without an authorized migration. See the linked
-asset extension note for its constraints and release blockers.
+asset candidate. Once bit 13 activates, new asset and owner-token outputs
+commit to a PQ program. Spending them requires a matching native RVN
+witness-v2 input signed with ML-DSA-44, without an ECDSA signature. Asset
+and owner-token outputs use an asset carrier keyed by the PQ program, not a
+direct witness-v2 script. Outputs created before activation remain classically
+spendable. Their owners may migrate voluntarily by sending them to new
+PQ-protected outputs; activation does not protect historical holdings
+retroactively. This candidate is outside the approved PR #1281 semantics
+and is not yet qualified for public-network release. See the linked asset
+extension note for its constraints and release blockers.
 
 A wallet or raw-transaction RPC must reject a witness-v2 PQ destination when constructing an asset-bearing output. Appending `OP_RVN_ASSET` data to an `OP_2 <32-byte-program>` script does not create a PQ asset output: it makes the script cease to be a witness program, and current consensus rejects the misplaced asset opcode.
 
-Asset owners therefore retain a post-quantum exposure until a separately specified and activated PQ asset extension exists. In particular, theft of `ASSET!` can transfer administrative control and can authorize reissuance where the asset remains reissuable. See [RIP-25 PQ Asset Extension Design Note](RIP-0025-PQ-Assets-Followup.md).
+Under the default public-network parameters, asset owners retain a post-quantum exposure. Even after bit 13 activation, historical outputs retain that exposure until their owners migrate them. In particular, theft of `ASSET!` can transfer administrative control and can authorize reissuance where the asset remains reissuable. See [RIP-25 PQ Asset Extension Design Note](RIP-0025-PQ-Assets-Followup.md).
 
 #### 7.4 Emergency Response Plan
 
