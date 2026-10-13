@@ -184,8 +184,8 @@ public:
 
         // RIP-25: ML-DSA-44 witness-v2 deployment (historical DEPLOYMENT_PQ_HYBRID enum name retained)
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12;
-        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 1798761600; // placeholder
-        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1830297600; // placeholder
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 1814400000; // 2027-07-01 00:00:00 UTC
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1861920000; // 2029-01-01 00:00:00 UTC
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 1714; // Approx 85% of 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 2016;
         // RIP-25: PQ-only asset deployment
