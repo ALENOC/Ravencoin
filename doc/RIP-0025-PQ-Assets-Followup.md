@@ -532,6 +532,11 @@ classical spending rule and migrate voluntarily, with no sunset. The
 PQ-only format and wallet path passed paired CI on `9151946ad` under
 FINDING-158; public activation and release qualification remain pending.
 
+This means a holder can reach PQ-only custody after migrating all historical
+UTXOs, but consensus continues to accept classical spends of unmigrated
+historical outputs. Bits 12 and 13 do not by themselves impose a global
+PQ-only spending rule on the earlier UTXO set.
+
 An input carrying a native witness-v2 RVN output with the matching PQ program
 provides the ML-DSA authorization for an asset input. The asset input has an
 empty scriptSig and needs no ECDSA signature. The separate native input still

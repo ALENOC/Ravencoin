@@ -69,6 +69,11 @@ condition until their owners move them to new protected outputs. Activation
 does not retroactively protect them. If bit 12 fails or activates too late,
 the bit-13 window must be reviewed before it starts.
 
+There is no automatic network-wide point at which only PQ keys can spend
+all existing holdings. Each owner reaches PQ-only custody after moving every
+historical RVN, asset, and owner-token UTXO they hold. Unmigrated historical
+outputs remain spendable with their original classical keys.
+
 For the asset format, wallet recovery routes, and current limitations in
 automatic anchor refresh and raw transaction funding, see
 [RIP-25 PQ Asset Extension Design Note](../RIP-0025-PQ-Assets-Followup.md).
