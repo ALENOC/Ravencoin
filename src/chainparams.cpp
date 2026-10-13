@@ -188,10 +188,10 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1830297600; // placeholder
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 1714; // Approx 85% of 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 2016;
-        // Keep the asset phase dormant until its consensus and wallet paths are qualified.
+        // RIP-25: PQ-only asset deployment
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].bit = 13;
-        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nStartTime = 999999999999LL;
-        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nTimeout = 999999999999LL;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nStartTime = 1861920000; // 2029-01-01 00:00:00 UTC
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nTimeout = 1909094400; // 2030-07-01 00:00:00 UTC
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nOverrideRuleChangeActivationThreshold = 1714;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nOverrideMinerConfirmationWindow = 2016;
         consensus.nPQHybridEnabled = false;
@@ -373,15 +373,15 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideRuleChangeActivationThreshold = 1411; // Approx 70% of 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].nOverrideMinerConfirmationWindow = 2016;
 
-        // RIP-25: Post-Quantum Hybrid Signatures — testnet activates immediately for testing
+        // RIP-25: Post-Quantum Hybrid Signatures; testnet activates immediately for testing
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].bit = 12;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nStartTime = 1199145601;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nTimeout = 1893456000;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideRuleChangeActivationThreshold = 1310;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_HYBRID].nOverrideMinerConfirmationWindow = 2016;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].bit = 13;
-        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nStartTime = 999999999999LL;
-        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nTimeout = 999999999999LL;
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nStartTime = 1806537600; // 2027-04-01 00:00:00 UTC
+        consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nTimeout = 1853971200; // 2028-10-01 00:00:00 UTC
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nOverrideRuleChangeActivationThreshold = 1310;
         consensus.vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS].nOverrideMinerConfirmationWindow = 2016;
         consensus.nPQHybridEnabled = true;

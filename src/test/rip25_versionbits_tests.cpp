@@ -86,6 +86,31 @@ Consensus::Params MakeRIP25VersionBitsParams()
 
 BOOST_AUTO_TEST_SUITE(rip25_versionbits_tests)
 
+BOOST_AUTO_TEST_CASE(pq_asset_public_deployment_parameters)
+{
+    const auto main = CreateChainParams(CBaseChainParams::MAIN);
+    const auto testnet = CreateChainParams(CBaseChainParams::TESTNET);
+    const auto regtest = CreateChainParams(CBaseChainParams::REGTEST);
+    const auto& mainAssets = main->GetConsensus().vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS];
+    const auto& testAssets = testnet->GetConsensus().vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS];
+    const auto& regAssets = regtest->GetConsensus().vDeployments[Consensus::DEPLOYMENT_PQ_ASSETS];
+
+    BOOST_CHECK_EQUAL(mainAssets.bit, 13);
+    BOOST_CHECK_EQUAL(mainAssets.nStartTime, 1861920000LL);
+    BOOST_CHECK_EQUAL(mainAssets.nTimeout, 1909094400LL);
+    BOOST_CHECK_EQUAL(mainAssets.nOverrideRuleChangeActivationThreshold, 1714);
+    BOOST_CHECK_EQUAL(mainAssets.nOverrideMinerConfirmationWindow, 2016);
+
+    BOOST_CHECK_EQUAL(testAssets.bit, 13);
+    BOOST_CHECK_EQUAL(testAssets.nStartTime, 1806537600LL);
+    BOOST_CHECK_EQUAL(testAssets.nTimeout, 1853971200LL);
+    BOOST_CHECK_EQUAL(testAssets.nOverrideRuleChangeActivationThreshold, 1310);
+    BOOST_CHECK_EQUAL(testAssets.nOverrideMinerConfirmationWindow, 2016);
+
+    BOOST_CHECK_EQUAL(regAssets.nStartTime, 999999999999LL);
+    BOOST_CHECK_EQUAL(regAssets.nTimeout, 999999999999LL);
+}
+
 BOOST_AUTO_TEST_CASE(pq_bit12_activates_independently_from_v48_overflow_bit11)
 {
     Consensus::Params params = MakeRIP25VersionBitsParams();
