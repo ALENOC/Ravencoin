@@ -27,13 +27,13 @@ New **witness v2** addresses use ML-DSA-44 (a NIST-standardized post-quantum sig
 | **Policy** | `TX_WITNESS_V2_PQ_KEYHASH` standard type and PQ-aware dust threshold |
 | **Addresses** | Bech32m encoding for witness v2 (HRP: `rvn` mainnet, `trvn` testnet, `rcrt` regtest) |
 | **Network** | `NODE_PQ_HYBRID` service flag (bit 5), 16 MB protocol message limit |
-| **Crypto** | `src/crypto/mldsa.h/cpp` — ML-DSA-44 via [liboqs](https://github.com/open-quantum-safe/liboqs) (FIPS 204 compliant) |
-| **Keys** | `src/pqkey.h/cpp` — `CPQKey` / `CPQPubKey` for ML-DSA-44 key management |
+| **Crypto** | `src/crypto/mldsa.h/cpp`: ML-DSA-44 via [liboqs](https://github.com/open-quantum-safe/liboqs) (FIPS 204 compliant) |
+| **Keys** | `src/pqkey.h/cpp`: `CPQKey` / `CPQPubKey` for ML-DSA-44 key management |
 | **Wallet** | `getnewpqaddress` RPC, PQ keystore integration, `IsMine` for witness v2 |
 | **Assets** | Bit 13 adds PQ-only asset carriers paired with native RVN witness-v2 inputs; historical asset outputs remain classically spendable |
 | **Signing** | ML-DSA-44 signing in `sign.cpp` via `TransactionSignatureCreator` |
 | **Build** | liboqs added as dependency (`depends/packages/liboqs.mk`, `configure.ac --with-liboqs`) |
-| **Tests** | `src/test/pqkey_tests.cpp` — unit tests for ML-DSA-44 keygen, sign/verify, witness programs |
+| **Tests** | `src/test/pqkey_tests.cpp`: unit tests for ML-DSA-44 keygen, sign/verify, witness programs |
 
 ### Building with liboqs
 
