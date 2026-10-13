@@ -520,8 +520,44 @@ can reject blocks that a post-activation node accepts. All validating
 services that intend to follow the upgraded chain must install compatible
 software before bit 12 becomes active. Miner signaling measures miner
 readiness; it does not upgrade old nodes or guarantee their acceptance of
-12/16 MWU blocks. Public activation therefore requires a reviewed network
-upgrade plan, testnet history verification, and explicit release guidance.
+12/16 MWU blocks. The public activation plan below is an incompatible
+consensus upgrade, approved for documentation by the owner. Release and
+activation still depend on the listed qualification gates.
+
+### Public network activation plan for bit 12
+
+1. Distribute the qualified 4.8.1 release before the bit-12 STARTED window.
+   Announce the exact start, timeout, threshold, and 2016-block window with
+   binaries, checksums, upgrade instructions, and the native RVN migration
+   path. Tell miners, pools, validating nodes, exchanges, custodians, and
+   explorers that Core 4.8.0 can reject blocks accepted by upgraded nodes.
+2. Before requesting bit-12 signaling, validate the complete shared testnet
+   history against the network-bound ML-DSA rule. Repeat the two-binary
+   block tests around the Core 4.8.0 8 MWU boundary, including a PQ witness
+   spend whose old and new weights straddle that boundary. Qualify the
+   final versioned SHA with mandatory `make check`, all release targets,
+   and the Final Gate. If a required gate is missing or the network is not
+   ready, change the public parameters in a reviewed release before the
+   STARTED window rather than relying on miner signaling to protect old
+   validators.
+3. Bit-12 BIP9 signaling measures miner readiness. LOCKED_IN is followed
+   by ACTIVE after the next full window. All validating services that need
+   to follow the upgraded chain must update before ACTIVE. Signaling does
+   not measure their adoption, and there is no automatic rollback to the
+   Core 4.8.0 weight rules after ACTIVE.
+4. At the bit-12 activation height `H12`, the limit becomes 12 MWU and
+   the contextual PQ witness discount takes effect. At `H12 + 525600`
+   blocks, one nominal year at the 60-second target spacing, the limit
+   becomes 16 MWU. This second phase is height-based, not a fixed calendar
+   date. Operators must treat both phases as part of the same incompatible
+   network upgrade.
+
+The old and new binaries agreed below 8 MWU in the recorded regtest
+comparison. Core 4.8.0 rejected a larger candidate-accepted block and a
+separate discounted PQ-witness block just across its old 8 MWU boundary.
+The exact blocks, weights, and outcomes are recorded in FINDING-160 of the
+security remediation register. Approval of this plan does not assert that
+testnet history or final release qualification has already passed.
 
 The remaining transaction compatibility properties are:
 
