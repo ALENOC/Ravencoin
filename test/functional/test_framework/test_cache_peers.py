@@ -8,6 +8,7 @@ import logging
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -50,7 +51,9 @@ class CachePeerTest(unittest.TestCase):
                 raise FirstSyncComplete()
 
             try:
-                with patch.object(TestNode, "start", start_without_node7_peer), \
+                ravend = Path(__file__).resolve().parents[3] / "src" / "ravend"
+                with patch.dict(os.environ, {"RAVEND": str(ravend)}), \
+                        patch.object(TestNode, "start", start_without_node7_peer), \
                         patch.object(framework_module, "sync_blocks", stop_after_first_sync):
                     with self.assertRaises(FirstSyncComplete):
                         framework._initialize_chain()
