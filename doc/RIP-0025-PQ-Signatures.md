@@ -364,13 +364,18 @@ or about 1866 weight units for these bytes
 ```
 Deployment parameters:
   bit:                                    12
-  nStartTime:                             <6 months after release>
-  nTimeout:                               <18 months after start>
+  mainnet nStartTime:                     1814400000 (2027-07-01 00:00 UTC)
+  mainnet nTimeout:                       1861920000 (2029-01-01 00:00 UTC)
   nOverrideRuleChangeActivationThreshold: 1714  (85% of 2016 blocks)
-  nOverrideMinerConfirmationWindow:       2016  (~33.6 hours)
+  nOverrideMinerConfirmationWindow:       2016  (~33.6 hours at the target spacing)
 ```
 
-The 85% threshold provides additional safety margin for this cryptographically significant upgrade.
+The owner approved this 18-month mainnet window on 2026-10-13. BIP9 uses
+median time past at window boundaries; the start timestamp is not an
+activation date. At least 1714 signals in one complete STARTED window
+lead to one LOCKED_IN window, then ACTIVE. If the timeout is reached
+before lock-in, the deployment fails. The 85% threshold provides an
+additional safety margin for this cryptographically significant upgrade.
 
 ### 6. Implementation
 
@@ -529,8 +534,10 @@ activation still depend on the listed qualification gates.
 
 ### Public network activation plan for bit 12
 
-1. Distribute the qualified 4.8.1 release before the bit-12 STARTED window.
-   Announce the exact start, timeout, threshold, and 2016-block window with
+1. Distribute the qualified 4.8.1 release before the mainnet bit-12
+   STARTED window beginning no earlier than 2027-07-01 00:00 UTC by
+   median time past. Its timeout is 2029-01-01 00:00 UTC. Announce the
+   exact start, timeout, 1714/2016 threshold, and 2016-block window with
    binaries, checksums, upgrade instructions, and the native RVN migration
    path. Tell miners, pools, validating nodes, exchanges, custodians, and
    explorers that Core 4.8.0 can reject blocks accepted by upgraded nodes.
@@ -554,6 +561,12 @@ activation still depend on the listed qualification gates.
    becomes 16 MWU. This second phase is height-based, not a fixed calendar
    date. Operators must treat both phases as part of the same incompatible
    network upgrade.
+5. The bit-13 mainnet STARTED timestamp is also 2029-01-01 00:00 UTC.
+   Bit 13 cannot enforce PQ-only asset spending until bit 12 and the
+   transfer-script deployment on bit 8 are ACTIVE.
+   If bit 12 fails or activates too late for a safe asset rollout, review
+   the bit-13 window in a separate release before it starts. Do not treat
+   the shared timestamp as evidence that bit 12 has activated.
 
 The old and new binaries agreed below 8 MWU in the recorded regtest
 comparison. Core 4.8.0 rejected a larger candidate-accepted block and a

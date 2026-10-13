@@ -387,9 +387,12 @@ outputs and 35 later spends from the candidate, including an asset spend
 with empty scriptSig. This checks the asset format at ordinary block sizes;
 Core 4.8.0 does not enforce ML-DSA. FINDING-160 separately proves a split
 at the native 8 MWU boundary and requires a coordinated incompatible-rule
-upgrade plan. Testnet history, the bit-12 mainnet date, the old unexplained
-CI failure, final-SHA artifacts, and operator migration guidance remain
-release gates. Reusing bit 12 for assets would change the meaning of its
+upgrade plan. The bit-12 mainnet dates are now fixed at 2027-07-01 and
+2029-01-01 UTC. Testnet history, final-SHA artifacts and `make check`,
+the 8 MWU boundary proof on that SHA, and operator readiness remain
+release gates. The historical unexplained CI failure has an accepted
+disposition, but any new failure still requires investigation. Reusing
+bit 12 for assets would change the meaning of its
 earlier deployment and is excluded.
 
 ## 16. Proposed Operator Activation Sequence
@@ -398,8 +401,11 @@ This is the operator sequence for the approved bit-13 windows, not an
 authorization to publish the release or activate a public chain. Testnet
 starts on 2027-04-01 and times out on 2028-10-01 at 1310/2016;
 mainnet starts on 2029-01-01 and times out on 2030-07-01 at 1714/2016.
-FINDING-160, testnet-history review, and final release qualification
-remain gates before public deployment.
+The mainnet bit-12 window starts on 2027-07-01 and times out on
+2029-01-01 at 1714/2016. The approved FINDING-160 operator plan,
+testnet-history review, and final release qualification remain gates
+before public deployment. If bit 12 fails or activates too late for a
+safe asset rollout, review the bit-13 window before it starts.
 
 1. Deploy and review the native RIP-25 bit-12 implementation. Its BIP9
    transition enables witness-v2 ML-DSA-44 script validation, the 12 MWU
@@ -413,7 +419,7 @@ remain gates before public deployment.
    cover the `H-2` through `H+2` boundary, restart, invalidate/reconsider,
    and reorgs across BIP9 `LOCKED_IN` and `ACTIVE`.
 3. Before public deployment, verify the full shared testnet history and
-   bit-12 prerequisite, finish the incompatible block-rule upgrade plan,
+   bit-12 prerequisite, execute the incompatible block-rule upgrade plan,
    obtain same-SHA final release artifacts, and communicate migration.
    Updating software without a network deployment does not protect assets.
 4. At or after `H`, newly created spendable asset outputs of every class,
