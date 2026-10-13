@@ -350,7 +350,8 @@ For PQ outputs, the spend cost increases proportionally to the ML-DSA witness si
 
 ```
 PQ witness input: mldsa_sig (2420) + mldsa_pk (1312) = 3732 bytes
-With PQ discount: 3732 / 8 = ~467 weight units
+With contextual PQ discount: 3732 / 8 = ~467 virtual bytes,
+or about 1866 weight units for these bytes
 ```
 
 ### 5. Activation Mechanism
@@ -467,10 +468,10 @@ Users migrate native RVN by sending it from legacy addresses to new PQ addresses
 3. Sign with existing ECDSA key (standard legacy transaction)
 4. Broadcast and confirm
 
-After migration, native RVN change outputs can go to PQ addresses. On default
-public-network parameters, asset-bearing change still uses the legacy asset
-format. The separate dormant bit-13 extension defines protected asset change
-for a future activation.
+After migration, native RVN change outputs can go to PQ addresses. Until
+the separate bit-13 rule activates, asset-bearing change still uses the
+historical format. After activation, newly created spendable asset change
+must use the PQ-only asset format.
 
 #### 7.3 Asset Scope
 
@@ -483,8 +484,9 @@ RIP-25 witness-v2 protects native RVN outputs only. It does not change the Raven
 - qualifier and sub-qualifier assets.
 
 This scope statement describes the approved bit 12 baseline and the default
-public-network state. A 4.8.1 working branch has a separate, dormant bit 13
-asset candidate. Once bit 13 activates, new asset and owner-token outputs
+public-network state. A 4.8.1 working branch has separate, approved future
+bit-13 windows for testnet and mainnet. Once bit 13 activates, new asset
+and owner-token outputs
 commit to a PQ program. Spending them requires a matching native RVN
 witness-v2 input signed with ML-DSA-44, without an ECDSA signature. Asset
 and owner-token outputs use an asset carrier keyed by the PQ program, not a
@@ -526,7 +528,7 @@ The remaining transaction compatibility properties are:
 - **Unupgraded nodes**: See witness v2 outputs as "anyone-can-spend" per BIP141 rules
 - **Legacy addresses**: Continue to work indefinitely
 - **Legacy transactions**: Continue to be valid. No existing transaction type is modified
-- **Asset transactions**: Unchanged by the approved bit-12 baseline. The separate dormant bit-13 extension retains the legacy P2PKH condition and adds a required PQ anchor for newly created asset outputs after its own activation
+- **Asset transactions**: Unchanged by the approved bit-12 baseline. The separate bit-13 rule requires a PQ-only carrier and matching native ML-DSA anchor for newly created spendable asset outputs after its own activation. These outputs need no ECDSA signature; historical outputs retain their classical rule
 - **Migration**: Voluntary. Users migrate funds at their own pace
 
 The network context was added before mainnet RIP-25 activation. Mainnet has no

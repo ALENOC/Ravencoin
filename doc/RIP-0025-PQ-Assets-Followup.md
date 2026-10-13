@@ -1,22 +1,30 @@
 # RIP-25 PQ Asset Extension Design Note
 
-Status: dormant bit 13 consensus candidate for the 4.8.1 working branch.
-Default public-network parameters do not activate it. Wallet construction
-and recovery paths have local tests; public activation and release
-qualification remain open.
+Status: bit 13 PQ-only asset candidate with approved mainnet and testnet
+BIP9 windows in the 4.8.1 working branch. Bit 13 is not active on either
+public network. Public activation and release qualification remain blocked
+by the native bit-12 deployment plan, testnet history review, and final
+same-SHA release evidence.
 
 ## 1. Current Scope
 
-On the default public-network parameters, RIP-25 witness-v2 protects native RVN outputs only. No current Ravencoin asset class is yet qualified for issuance, custody, transfer, reissue, tagging, freezing, or spending under an ML-DSA-44 ownership condition. The 4.8.1 candidate assigns a separate, dormant bit 13 for a dependent asset rule and exercises it on regtest. That candidate is not a deployed public-network protection or a release-qualified feature.
+Until bit 13 activates, no Ravencoin asset class gains ML-DSA-44 ownership
+from this candidate. The 4.8.1 working branch schedules a separate,
+dependent bit-13 rule for new asset and owner-token outputs. The PQ-only
+implementation passed a same-SHA CI pair on `9151946ad`, but it is not a
+deployed public-network protection or a release-qualified feature.
 
-The current spendable asset envelope is:
+The historical spendable asset envelope is:
 
 ```
 OP_DUP OP_HASH160 <20-byte-key-id> OP_EQUALVERIFY OP_CHECKSIG
 OP_RVN_ASSET <serialized-asset-data> OP_DROP
 ```
 
-`CScript::IsAssetScript` recognizes `OP_RVN_ASSET` only at byte offset 25. `Solver` then extracts the 20-byte key identifier from the P2PKH prefix. Wallet ownership and signing consequently resolve the output through a classical secp256k1 `CKeyID`.
+`CScript::IsAssetScript` recognizes `OP_RVN_ASSET` only at byte offset 25.
+Historical outputs use the P2PKH prefix and a secp256k1 `CKeyID`.
+The candidate PQ-only prefix in Section 20 preserves that offset while
+replacing classical authorization with a program-derived asset identifier.
 
 The limitation applies to all current asset classes:
 
@@ -38,7 +46,7 @@ A cryptographically relevant quantum computer that recovers a secp256k1 private 
 Wallet and RPC messages must not imply that a native-RVN PQ address alone
 protects asset owner or administrator tokens. The asset builder rejects
 that bare address and, at active bit 13, requires a canonical
-classical|PQ asset descriptor.
+`assetID|PQ` descriptor. The asset identifier has no classical private key.
 
 ## 3. Why the Proposed Concatenation Is Unsafe
 
@@ -114,21 +122,20 @@ No asset extension should be coupled silently to an already deployed RIP-25 bit.
 The wallet uses a distinct composite PQ asset destination rather than
 reusing a native-RVN address without a defined asset meaning.
 
-The working branch defines a wallet-facing, network-bound descriptor of
-the form `<classical-P2PKH-address>|<PQ-witness-v2-address>`. Its decoder
-requires exactly one separator, the expected destination types, and exact
-canonical re-encoding on the selected network. The descriptor is not a
-consensus script and not a native RVN payment address. At active bit 13,
-the wallet uses it for root, subasset, unique, restricted, qualifier,
-reissue, transfer, and administrative outputs. The raw asset constructor
-accepts it for corresponding output forms. `getnewpqassetaddress` generates
-both keys only after the dependent rule is active, persists the pairing,
-and `listpqassetaddresses` retrieves owned pairs after reload and validated
-key-only salvage. A single Bech32m address cannot be used
-for the two independent keys without defining a new encoding and changing
-the existing address-length assumptions. The descriptor is split before
-restricted-asset verifier or qualifier-index lookups: those indexes remain
-keyed by the classical address. The wallet selects a matching funded native
+The working branch defines a wallet-facing, network-bound `assetID|PQ`
+descriptor. `assetID` encodes `HASH160(P)` as a legacy-sized address field;
+`P` is the native witness-v2 program. Its decoder requires exactly one
+separator, the expected destination types, the program-derived identifier,
+and canonical re-encoding on the selected network. The identifier has no
+classical private key and is not a native RVN payment address. At active
+bit 13, the wallet uses the descriptor for root, subasset, unique,
+restricted, qualifier, reissue, transfer, and administrative outputs. The
+raw asset constructor accepts it for corresponding forms.
+`getnewpqassetaddress` generates an ML-DSA key only after the dependent
+rule is active, persists the descriptor, and `listpqassetaddresses`
+retrieves owned descriptors after reload and validated key-only salvage.
+Restricted-asset verifier and qualifier indexes use the program-derived
+asset identifier. The wallet selects a matching funded native
 PQ anchor and returns protected asset change or owner authority. For one
 consumed program, ordinary positive native change can refresh the anchor at
 the same PQ address. Exact-fee, dust, multiple-program, or explicit native
@@ -156,7 +163,12 @@ All high-level and raw-transaction RPCs must construct only canonical activated 
 
 ## 8. Asset Index and Database Compatibility
 
-Asset indexes currently derive an address identity from legacy 20-byte data. A PQ program is 32 bytes. The current candidate still indexes protected outputs under their classical address. `listaddressesbyasset` and `listassetbalancesbyaddress` therefore aggregate distinct PQ programs that share one classical key. Their classical address value is accounting data, not a complete protected destination. The follow-up design must version index keys or otherwise prevent truncation and type confusion.
+Asset indexes use 20-byte identifiers. In the PQ-only candidate that
+identifier is `HASH160(P)`, rather than an independently selected
+classical key identifier. A bare identifier is accounting data, not the complete PQ
+destination: custody and spending still require the committed 32-byte
+program and a matching funded anchor. The historical two-program collision
+described in FINDING-153 belonged to the superseded dual-signature form.
 
 It must specify:
 
@@ -212,20 +224,23 @@ The follow-up implementation should not be proposed for activation without:
 
 ## 12. Current Decision
 
-The approved native-RVN RIP-25 rules remain unchanged. The 4.8.1 working
-branch includes a dependent, dormant bit 13 asset-consensus candidate. Wallet
-asset builders still reject a bare witness-v2 destination, since a native PQ
-address alone is not a hybrid asset destination. The candidate has passed
-local unit, functional, invariant, and Qt compilation checks but is not
-qualified for public-network activation or a 4.8.1 asset-PQ release claim.
-Cross-platform exact-SHA CI, release artifacts, a second independent audit,
-and an explicit protocol-owner activation decision remain required.
+The native-RVN bit-12 rules retain their 8 to 12 to 16 MWU plan. The
+4.8.1 working branch implements a dependent PQ-only bit-13 asset rule and
+sets the approved public BIP9 windows. Wallet asset builders still reject
+a bare native witness-v2 destination: an asset requires its canonical
+`assetID|PQ` descriptor. Unit, functional, wallet-recovery, and pinned-Qt
+checks passed with all five Build Raven artifacts and a green Final Gate
+on candidate SHA `9151946ad`. A second independent audit froze and tracked
+its findings. Release qualification still needs the bit-12 network upgrade
+plan, historical testnet review, remaining finding closure, and final-SHA
+artifacts. The dates in code do not authorize publishing or mining under
+the new rule.
 
-## 13. Experimental Compatibility Direction
+## 13. Historical Dual-Signature Compatibility Research
 
-The following records the compatibility research behind the dormant bit 13
-candidate. It must not be described as protecting assets on the default
-public-network parameters.
+This section records earlier compatibility research. Its P2PKH plus PQ
+tail was superseded by the PQ-only format in Section 20. It is not the
+current ownership rule or a public-network protection claim.
 
 Directly appending a witness-v2 program or witness to a legacy P2PKH asset
 output does not work as a compatible soft fork. The complete script is not a
@@ -261,8 +276,8 @@ compatibility, not evidence that the proposed new consensus rule is safe.
 
 A canonical helper recognizes the narrow envelope and rejects
 short/long tails, nonminimal pushes, malformed payloads, and transfer messages
-without an explicit expiry field. The dormant bit 13 candidate uses this
-helper in consensus only after its effective activation height. An old-valid
+without an explicit expiry field. The earlier dual-signature candidate used
+this helper only after its effective activation height. An old-valid
 script ending in `OP_DROP` plus 31 arbitrary bytes
 is byte-identical to a candidate with a 32-byte program beginning `OP_DROP`.
 The helper necessarily classifies it as a candidate. The spend rule therefore
@@ -270,25 +285,20 @@ checks the creating UTXO's height against the asset extension's
 activation height. Applying the rule only at spending height would retroactively
 lock historical coins and could split nodes after reorg or reindex.
 
-The proposed new rule would not put an unexpected witness on the asset input.
+The earlier proposal would not put an unexpected witness on the asset input.
 Instead, the spending transaction would also consume a native RIP-25
 witness-v2 UTXO whose program equals the program committed in the asset output.
 Its fixed `SIGHASH_ALL` ML-DSA signature commits to every asset input and
 output in the same transaction. A quantum attacker with only the P2PKH
 private key could not create the required PQ input.
 
-This construction remains a candidate rather than a release-qualified
-specification. The 4.8.1 working branch assigns BIP9 bit 13 but leaves its
-start and timeout equal and far in the future on every network, so default
-nodes do not activate it. Its tested consensus prototype uses the canonical
-parser and creation-height gate described below. Before public-network
-activation it still needs a documented, fail-safe anchor funding policy, cross-platform
-exact-SHA qualification, independent review, and an explicit migration and
-activation decision. The wallet now has tested protected owner returns,
-asset change, restricted-address checks, and representative all-class
-vectors. Bit 13 timing must not be enabled without protocol-owner review.
+This dual-signature construction has been superseded. Section 20 specifies
+the current PQ-only output: its asset input has an empty scriptSig and
+does not require a classical signature. The public bit-13 windows are
+scheduled in code, but network activation and release remain gated as
+described in Section 16 and the security remediation register.
 
-## 14. Contextual Enforcement Map (Dormant Candidate)
+## 14. Contextual Enforcement Map (PQ-Only Candidate)
 
 The candidate's UTXO-aware hook runs in `ConnectBlock` before `UpdateCoins`.
 `Consensus::CheckTxPQAssets` requires canonical tagged asset outputs at the
@@ -305,17 +315,20 @@ Effective asset enforcement requires bit 13, the historical bit 8 transfer
 parser, and native RIP-25 bit 12 all to be active. Its first enforcement
 height is the maximum of their activation heights. This prevents a node
 validating a side branch from borrowing the global active tip's state.
-The parser's historical `OP_DROP` lookalike requires a creation-height check
-against the asset extension activation height, not merely a spend-height
-check. Reorgs across activation revalidate affected mempool transactions
+The PQ-only prefix remains historically valid before activation, so the
+input rule uses its creating height rather than only its spending height.
+The wallet does not label an early lookalike as PQ custody, and mempool
+policy rejects its premature creation. Reorgs across activation revalidate
+affected mempool transactions
 through staged removal so asset reissue reservations and compact-block
 indexes stay consistent. Reusing the existing RIP-25 bit 12 would be unsafe
 because it
 would make the newly upgraded nodes enforce a rule older RIP-25 nodes do not.
 
 `CheckTxPQAssets` runs outside the script cache. When it finds an asset input
-created after activation, `ConnectBlock` forces both the classical and PQ
-script checks even under assumevalid. A native witness-v2 input is verified
+created after activation, `ConnectBlock` requires the matching PQ anchor
+and an empty asset scriptSig even under assumevalid; ECDSA is not required.
+A native witness-v2 input is verified
 under the contextual RIP-25 flag, not by treating the asset envelope itself
 as a witness program. `TestBlockValidity` is the miner's final template
 check, but template selection and package policy still need boundary tests.
@@ -326,29 +339,29 @@ program requires a different anchor input. The wallet selects a funded
 matching anchor and signs it. A newly received asset output does not itself
 fund its matching native anchor: the recipient must send RVN to the
 descriptor's PQ address. A single-program spend can refresh that anchor
-from ordinary native change, but the edge cases listed in Section 7 still
-require manual top-up. Bit 13 is assigned but dormant.
+from ordinary native change, but the edge cases listed in Section 17 still
+require manual top-up. Bit 13 has future public windows but is not active.
 
 ## 15. 4.8.1 Integration Candidate and Release Gate
 
 The 4.8.1 integration request expands RIP-25 to assets. The native-RVN
-implementation and its bit 12 deployment remain unchanged. This section
-records the dormant bit 13 consensus candidate, not a public-network rule
-already in force or a release-qualified feature.
+8 to 12 to 16 MWU plan remains a separate bit-12 deployment concern. This
+section records the scheduled bit-13 PQ-only candidate, not a rule already
+in force or a release-qualified feature.
 
 Let `H` be the first candidate-block height at which bit 13, bit 8, and
-native RIP-25 bit 12 are all active. A safe soft-fork direction requires both:
+native RIP-25 bit 12 are all active. The asset rule requires both:
 
-1. Every spendable asset output created at height `h >= H`, including an owner
-   token, has one canonical 32-byte PQ program in the validated legacy-compatible
-   envelope. Null asset metadata outputs remain governed by their existing
-   rules. An asset output without the canonical program is invalid at `h >= H`.
+1. Every spendable asset output created at height `h >= H`, including an
+   owner token, has the canonical 25-byte PQ-only prefix and one bound
+   32-byte program. Null asset metadata outputs retain their existing
+   rules. An asset output without this form is invalid at `h >= H`.
 2. A transaction spending an asset UTXO created at `h >= H` must also spend a
    native RIP-25 witness-v2 UTXO whose 32-byte program equals that asset
    output's committed program. One valid anchor input may authorize several
    tagged asset inputs only when their programs match. The native witness-v2
    fixed `SIGHASH_ALL` signature then binds every input and output of the
-   transaction. Classical asset-script authorization remains required too.
+   transaction. The asset input has an empty scriptSig and needs no ECDSA.
 
 The candidate block's previous index, not the global active tip, must select
 the BIP9 state. Mempool admission uses the current tip and treats an unconfirmed
@@ -357,11 +370,11 @@ assumevalid shortcuts. Native witness-v2 signature verification must still run
 under assumevalid when the asset anchor is needed. A transaction may not remove
 the PQ condition by sending its asset to a legacy-only output after activation.
 
-The creation-height rule is essential. A pre-activation script ending in
-`OP_DROP` plus 31 bytes can be byte-identical to a tagged candidate. Requiring
-an anchor from such a historical coin would retroactively make old-valid
-spends invalid. Conversely, a pre-activation tagged-looking output cannot be
-advertised as PQ-protected merely because its spend happens after activation.
+The creation-height rule is essential. A pre-activation PQ-only lookalike
+was valid under historical script rules and may be spent without an anchor.
+Requiring one retroactively would lock an old-valid coin. The wallet must
+not advertise that historical output as PQ custody. Mempool policy rejects
+new lookalikes before activation and removes them after a boundary reorg.
 
 This construction still does not retroactively secure existing owner tokens.
 Their classical key holder must authorize a migration into a newly tagged
@@ -369,22 +382,24 @@ output before that classical key is compromised. A quantum attacker who obtains
 the old key can race that migration. Software cannot distinguish the rightful
 holder from the attacker using the old signature alone.
 
-The following remain release-blocking before assigning public-network
-activation times or publishing a 4.8.1 artifact as asset-PQ-qualified:
-independent protocol review of the hybrid address and anchor construction,
-the manual-funding and refresh policy, exact-SHA cross-platform CI and
-artifacts, miner and mempool equivalence, BIP9 reorg evidence, and an
-operator-visible migration plan for existing owner and administrative
-holdings. The local tests cover ownership, selection, output classes,
-restricted indexes, same-block and mempool-parent heights, and reorgs, but
-do not replace independent deployment review. Reusing bit 12 would change
-the meaning of an already active deployment on testnet/regtest and is
-excluded from this candidate.
+Core 4.8.0 accepted a 932-block regtest chain containing 66 PQ-only asset
+outputs and 35 later spends from the candidate, including an asset spend
+with empty scriptSig. This checks the asset format at ordinary block sizes;
+Core 4.8.0 does not enforce ML-DSA. FINDING-160 separately proves a split
+at the native 8 MWU boundary and requires a coordinated incompatible-rule
+upgrade plan. Testnet history, the bit-12 mainnet date, the old unexplained
+CI failure, final-SHA artifacts, and operator migration guidance remain
+release gates. Reusing bit 12 for assets would change the meaning of its
+earlier deployment and is excluded.
 
 ## 16. Proposed Operator Activation Sequence
 
-This is a sequence for review, not a scheduled public-network activation.
-The default public-network bit-13 start and timeout values remain dormant.
+This is the operator sequence for the approved bit-13 windows, not an
+authorization to publish the release or activate a public chain. Testnet
+starts on 2027-04-01 and times out on 2028-10-01 at 1310/2016;
+mainnet starts on 2029-01-01 and times out on 2030-07-01 at 1714/2016.
+FINDING-160, testnet-history review, and final release qualification
+remain gates before public deployment.
 
 1. Deploy and review the native RIP-25 bit-12 implementation. Its BIP9
    transition enables witness-v2 ML-DSA-44 script validation, the 12 MWU
@@ -397,26 +412,28 @@ The default public-network bit-13 start and timeout values remain dormant.
    height `H` is the maximum of the three activation heights. Tests must
    cover the `H-2` through `H+2` boundary, restart, invalidate/reconsider,
    and reorgs across BIP9 `LOCKED_IN` and `ACTIVE`.
-3. Before assigning public bit-13 parameters, obtain an independent
-   consensus and wallet review, reproducible cross-platform builds, and
-   a migration communication plan. Updating software without a network
-   deployment does not protect assets.
+3. Before public deployment, verify the full shared testnet history and
+   bit-12 prerequisite, finish the incompatible block-rule upgrade plan,
+   obtain same-SHA final release artifacts, and communicate migration.
+   Updating software without a network deployment does not protect assets.
 4. At or after `H`, newly created spendable asset outputs of every class,
    including `ASSET!` owner authority, must carry the canonical PQ program.
-   A spend of such an output requires its classical signature and a native
-   witness-v2 input with the matching program and valid network-context
-   ML-DSA-44 signature. The asset itself is not a witness program.
+   A spend of such an output has an empty asset scriptSig and requires a
+   native witness-v2 input with the matching program and a valid
+   network-context ML-DSA-44 signature. No ECDSA key authorizes the new
+   output. The asset itself is not a witness program.
 5. Holders of older asset and owner-token outputs must explicitly transfer
    them into tagged outputs with their existing classical authorization.
-   They should obtain a canonical classical|PQ descriptor and fund its PQ
+   They should obtain a canonical `assetID|PQ` descriptor and fund its PQ
    native address with RVN for the first protected spend. There is no
    automatic or retroactive migration, and a compromised classical key
    can race a migration.
 6. After each protected asset spend, inspect the native PQ anchor balance.
    Ordinary single-program native change can replenish it, but exact-fee,
    dust, explicit-change, and multiple-program cases may need a manual
-   RVN top-up before another spend. Backup and verify both private keys
-   and their descriptor association before moving administrative tokens.
+   RVN top-up before another spend. Back up and verify the ML-DSA key and
+   descriptor association before moving administrative tokens. Preserve
+   classical keys for historical UTXOs until those holdings are migrated.
 
 ## 17. Current Anchor Funding Procedure
 
@@ -448,7 +465,7 @@ with these steps:
 2. Select at least one funded native witness-v2 UTXO with the same program for
    each distinct protected program. Include those outpoints explicitly in
    the raw transaction's input list beside the asset outpoints.
-3. Use a canonical `classical|PQ` descriptor for each new asset output. Add a
+3. Use a canonical `assetID|PQ` descriptor for each new asset output. Add a
    positive, spendable native RVN output back to every PQ address whose last
    anchor is being consumed. Reserve enough RVN for fees and future spends.
 4. If using `fundrawtransaction` for the remaining fee, inspect its resulting
@@ -482,7 +499,7 @@ be compromised:
    historical asset and `ASSET!` owner-token
    outpoints, including their quantities and classical addresses.
 2. For a single legacy asset UTXO, transfer its entire quantity to a new
-   canonical `classical|PQ` descriptor. Transfer an owner token's full unit
+   canonical `assetID|PQ` descriptor. Transfer an owner token's full unit
    the same way. If a source address holds several UTXOs, use explicit
    outpoint selection when exact UTXO control is needed.
 3. For a partial transfer through `transferfromaddress` or
@@ -506,8 +523,8 @@ The owner selected the native-RVN migration model for assets and owner tokens.
 Outputs created under the bit-13 rule require an ML-DSA-44 key without an
 ECDSA signature. Historical asset and owner-token outputs retain their
 classical spending rule and migrate voluntarily, with no sunset. The
-PQ-only format and wallet path are implemented locally under FINDING-158;
-public activation and release qualification remain pending.
+PQ-only format and wallet path passed paired CI on `9151946ad` under
+FINDING-158; public activation and release qualification remain pending.
 
 An input carrying a native witness-v2 RVN output with the matching PQ program
 provides the ML-DSA authorization for an asset input. The asset input has an
@@ -531,15 +548,17 @@ anchor whenever such an output is spent at an active origin height and
 rejects the old dual-signature prefix on new outputs. The
 `HASH160(P)` binding prevents a sender from selecting an unrelated qualified
 or unfrozen classical address while assigning ownership to a different PQ
-program. The 160-bit address identifier and restricted-asset semantics need
-separate adversarial review.
+program. The 160-bit identifier and restricted-asset semantics were included
+in the independent asset review; final release-SHA regression remains due.
 
 A red-then-green unit test shows that this prefix passes the existing
 standard script check with an empty scriptSig, is recognized as an asset,
-and is parsed only when the address identifier matches `HASH160(P)`. This
-is a format feasibility result, not full compatibility evidence. Before
-activation, FINDING-160 requires an explicit network upgrade plan for blocks
-above Core 4.8.0 limits. Wallet, RPC, Qt, migration and consensus regressions
-need paired release-target CI at one exact SHA. The owner approved bit-13
-start and timeout dates for this PQ-only rule; they remain dormant in code
-pending CI qualification and historical testnet compatibility review.
+and is parsed only when the address identifier matches `HASH160(P)`.
+Core 4.8.0 also accepted a 932-block regtest chain with 66 such outputs
+and 35 later spends at ordinary block sizes. This does not resolve the
+native block-limit split in FINDING-160. Wallet, RPC, Qt, migration and
+consensus regressions passed paired release-target CI at `9151946ad`.
+The owner-approved bit-13 dates are in `src/chainparams.cpp` at
+`1dfae5b21`, with a red-then-green parameter regression and local
+`make check`. Final-SHA CI and historical testnet compatibility review
+are still required.
