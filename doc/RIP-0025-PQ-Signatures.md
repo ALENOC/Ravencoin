@@ -267,7 +267,10 @@ When a node encounters a witness version 2 program of length 32 bytes:
 7. Verify: `ML_DSA_44_Verify(mldsa_pk, sighash, network_context, mldsa_sig)` (ML-DSA check)
 8. If all checks pass, the input is valid
 
-For unupgraded nodes, witness version 2 outputs are treated as "anyone-can-spend" per BIP141 rules, which is safe as long as a supermajority of miners enforce the new rules.
+Unupgraded nodes treat witness version 2 outputs as "anyone-can-spend"
+under BIP141. They do not enforce the ML-DSA signature rule, and miner
+signaling does not make them compatible with the higher block limits or
+PQ witness discount. See the public activation plan below.
 
 #### 3.4 Script Size Limits
 

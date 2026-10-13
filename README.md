@@ -22,9 +22,9 @@ New **witness v2** addresses use ML-DSA-44 (a NIST-standardized post-quantum sig
 
 | Area | Change |
 |------|--------|
-| **Consensus** | BIP9 soft-fork deployment (bit 12, 85% threshold), phased block weight increase (8 → 12 → 16 MWU) |
+| **Consensus** | Bit-12 BIP9 signaling (1714 of 2016); incompatible 8 to 12 to 16 MWU block-limit transition and contextual PQ witness discount |
 | **Script** | Witness version 2 validation: 2-element witness stack [mldsa_sig, mldsa_pk], SHA256(pk) == program |
-| **Policy** | `TX_WITNESS_V2_PQ_KEYHASH` standard type, PQ witness discount (8x), PQ-aware dust threshold |
+| **Policy** | `TX_WITNESS_V2_PQ_KEYHASH` standard type and PQ-aware dust threshold |
 | **Addresses** | Bech32m encoding for witness v2 (HRP: `rvn` mainnet, `trvn` testnet, `rcrt` regtest) |
 | **Network** | `NODE_PQ_HYBRID` service flag (bit 5), 16 MB protocol message limit |
 | **Crypto** | `src/crypto/mldsa.h/cpp` — ML-DSA-44 via [liboqs](https://github.com/open-quantum-safe/liboqs) (FIPS 204 compliant) |
