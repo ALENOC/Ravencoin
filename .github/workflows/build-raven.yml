@@ -60,7 +60,7 @@ jobs:
           ./autogen.sh
           mkdir -p "$HOME/.ccache"
           CONFIG_SITE="$PWD/depends/x86_64-pc-linux-gnu/share/config.site" \
-            ./configure --without-gui --disable-bench
+            ./configure --without-gui --with-tx --disable-bench
 
       - name: Build and run unit tests
         run: |
