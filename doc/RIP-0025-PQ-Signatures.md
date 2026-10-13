@@ -374,8 +374,8 @@ The owner approved this 18-month mainnet window on 2026-10-13. BIP9 uses
 median time past at window boundaries; the start timestamp is not an
 activation date. At least 1714 signals in one complete STARTED window
 lead to one LOCKED_IN window, then ACTIVE. If the timeout is reached
-before lock-in, the deployment fails. The 85% threshold provides an
-additional safety margin for this cryptographically significant upgrade.
+before lock-in, the deployment fails. The 85% threshold measures miner
+signaling only; it does not establish readiness of validating services.
 
 ### 6. Implementation
 
