@@ -73,6 +73,22 @@ For the asset format, wallet recovery routes, and current limitations in
 automatic anchor refresh and raw transaction funding, see
 [RIP-25 PQ Asset Extension Design Note](../RIP-0025-PQ-Assets-Followup.md).
 
+## Known asset and build limitations
+
+An asset PQ anchor is native RVN at the protected output's matching PQ
+address. Some asset spends and ordinary RVN payments consume the last
+anchor without creating a replacement. Exact-fee, dust, multiple-program,
+and explicit native-change cases need the owner to fund the matching PQ
+address again before the next protected asset spend. The asset output
+remains unspent; consensus rejects a spend without its anchor.
+
+`fundrawtransaction` does not discover or select anchors for protected
+asset inputs. Raw transaction callers must supply matching funded PQ
+inputs and check the final transaction before broadcast. The optional
+`raven-tx` target does not currently link with `--with-tx` and is absent
+from the five release artifacts. Its current manual is included for
+reference; it is not a qualified 4.8.1 binary.
+
 ## Release qualification still required
 
 This draft does not assert that 4.8.1 artifacts, the complete testnet
