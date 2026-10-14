@@ -41,6 +41,16 @@ through this deployment. The 16 MWU phase is height-based, not tied to
 a calendar date. There is no automatic return to Core 4.8.0 validation
 rules after activation.
 
+Testnet differs from this mainnet schedule. Its native RIP-25 rule is
+force-enabled from genesis by `nPQHybridEnabled=true`. At the reviewed
+2026-10-14 testnet tip, `getblocktemplate` therefore advertises the later
+16 MWU limit, even while the raw bit-12 BIP9 state reads STARTED. This
+does not imply that mainnet has activated bit 12. The testnet override
+cannot demonstrate the public 8-to-12-MWU BIP9 transition; controlled
+regtest boundary tests cover that transition. Testnet miners and node
+operators should account for the already active PQ and block-weight
+rules when comparing with Core 4.8.0.
+
 Before miners begin signaling, the complete shared testnet history must
 be checked against the network-bound ML-DSA rule, the old and new binaries
 must be retested on both sides of the 8 MWU boundary, and the final 4.8.1
@@ -93,7 +103,17 @@ inputs and check the final transaction before broadcast.
 
 ## Release qualification still required
 
-This draft does not assert that 4.8.1 artifacts, the complete testnet
-history check, operator readiness, or the final source SHA have passed.
+The available testnet active chain was replayed from genesis by a clean
+4.8.1 candidate with `-assumevalid=0`, then synchronized with public
+peers; the exact snapshot and limits are in the remediation register.
+The scanned chain contained no native witness-v2 outputs or spends, so
+the replay checks historical compatibility rather than an on-chain PQ
+signature. It does not test unknown side branches or future bit-13
+activation.
+CRITICAL FINDING-104 through FINDING-107 remain open for release
+qualification because their mined activation and side-branch regression
+matrix is incomplete. FINDING-112 remains open for intermittent wallet
+test-gate diagnosis. Final-SHA artifacts, operator readiness, manual
+GUI checks, checksums, and signatures still require qualification.
 The release will be tagged and published only after those checks and
 the owner's separate release approval.
