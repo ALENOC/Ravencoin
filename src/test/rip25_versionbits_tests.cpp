@@ -298,14 +298,23 @@ BOOST_FIXTURE_TEST_CASE(asset_deployment_queries_rewind_after_active_tip, Transf
         lockedBranch.Mine(period - threshold, VERSIONBITS_TOP_BITS);
 
         SyntheticVersionBitsChain activeBranch(lockedBranch.Tip());
-        activeBranch.Mine(period, VERSIONBITS_TOP_BITS);
+        activeBranch.Mine(period - 1, VERSIONBITS_TOP_BITS);
+        CBlockIndex* beforeActivation = activeBranch.Tip();
+        activeBranch.Mine(1, VERSIONBITS_TOP_BITS);
+        CBlockIndex* activationParent = activeBranch.Tip();
+        activeBranch.Mine(2, VERSIONBITS_TOP_BITS);
+        CBlockIndex* afterActivation = activeBranch.Tip();
 
         SyntheticVersionBitsChain startedBranch(common.Tip());
         startedBranch.Mine(2 * period, VERSIONBITS_TOP_BITS);
 
         VersionBitsCache expectedCache;
         BOOST_REQUIRE_EQUAL(VersionBitsState(lockedBranch.Tip(), params, check.deployment, expectedCache), THRESHOLD_LOCKED_IN);
-        BOOST_REQUIRE_EQUAL(VersionBitsState(activeBranch.Tip(), params, check.deployment, expectedCache), THRESHOLD_ACTIVE);
+        BOOST_REQUIRE_EQUAL(VersionBitsState(beforeActivation, params, check.deployment, expectedCache), THRESHOLD_LOCKED_IN);
+        BOOST_REQUIRE_EQUAL(VersionBitsState(activationParent, params, check.deployment, expectedCache), THRESHOLD_ACTIVE);
+        BOOST_REQUIRE_EQUAL(VersionBitsState(afterActivation, params, check.deployment, expectedCache), THRESHOLD_ACTIVE);
+        BOOST_CHECK_EQUAL(VersionBitsStateSinceHeight(activationParent, params, check.deployment, expectedCache),
+                          3 * period);
         BOOST_REQUIRE_EQUAL(VersionBitsState(startedBranch.Tip(), params, check.deployment, expectedCache), THRESHOLD_STARTED);
 
         SetAssetsDeployed(false);
@@ -316,15 +325,21 @@ BOOST_FIXTURE_TEST_CASE(asset_deployment_queries_rewind_after_active_tip, Transf
             LOCK(cs_main);
             originalTip = chainActive.Tip();
             versionbitscache.Clear();
-            chainActive.SetTip(lockedBranch.Tip());
+            chainActive.SetTip(beforeActivation);
         }
-        const bool lockedResult = check.query();
+        const bool beforeResult = check.query();
 
         {
             LOCK(cs_main);
-            chainActive.SetTip(activeBranch.Tip());
+            chainActive.SetTip(activationParent);
         }
         const bool activeResult = check.query();
+
+        {
+            LOCK(cs_main);
+            chainActive.SetTip(afterActivation);
+        }
+        const bool laterResult = check.query();
 
         {
             LOCK(cs_main);
@@ -338,8 +353,9 @@ BOOST_FIXTURE_TEST_CASE(asset_deployment_queries_rewind_after_active_tip, Transf
             versionbitscache.Clear();
         }
         const bool expectedLocked = check.deployment == Consensus::DEPLOYMENT_ENFORCE_VALUE;
-        BOOST_CHECK_MESSAGE(lockedResult == expectedLocked, check.name << " has the wrong LOCKED_IN rule");
-        BOOST_CHECK_MESSAGE(activeResult, check.name << " did not activate");
+        BOOST_CHECK_MESSAGE(beforeResult == expectedLocked, check.name << " has the wrong pre-activation rule");
+        BOOST_CHECK_MESSAGE(activeResult, check.name << " did not activate for the first active candidate");
+        BOOST_CHECK_MESSAGE(laterResult, check.name << " did not stay active for later candidates");
         BOOST_CHECK_MESSAGE(!rewoundResult, check.name << " remained active after rewind");
     }
 }
