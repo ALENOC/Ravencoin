@@ -414,8 +414,8 @@ BOOST_FIXTURE_TEST_CASE(checkblock_asset_result_does_not_depend_on_unrelated_tip
         chainActive.SetTip(originalTip);
         versionbitscache.Clear();
     }
-    BOOST_CHECK_MESSAGE(activeResult == startedResult,
-                        "CheckBlock judged the same candidate differently after the active tip changed");
+    BOOST_CHECK_MESSAGE(activeResult, activeState.GetRejectReason());
+    BOOST_CHECK_MESSAGE(startedResult, startedState.GetRejectReason());
 }
 
 BOOST_FIXTURE_TEST_CASE(transfer_payload_uses_explicit_candidate_context, TransferOverflowRegtestSetup)
