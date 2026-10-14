@@ -113,6 +113,7 @@ BASE_SCRIPTS= [
     'feature_asset_activation_reorg.py',
     'feature_transfer_script_reorg.py',
     'feature_rip5_activation_reorg.py',
+    'feature_enforced_coinbase_activation.py',
     'feature_assets_mempool.py',
     'feature_restricted_assets.py',
     'feature_raw_restricted_assets.py',
