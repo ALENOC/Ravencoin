@@ -51,32 +51,68 @@ class AssetActivationReorgTest(RavenTestFramework):
         issue_block = node.generate(1)[0]
         assert_equal(node.getblockcount(), active_height + 1)
         assert issue_txid in node.getblock(issue_block)['tx']
+        after_one_txid = node.issue('LATCHPLUSONE', 1)[0]
         after_block = node.generate(1)[0]
         assert_equal(node.getblockcount(), active_height + 2)
-        assert_equal(node.verifychain(4, 3), True)
+        assert after_one_txid in node.getblock(after_block)['tx']
+        after_two_txid = node.issue('LATCHPLUSTWO', 1)[0]
+        after_two_block = node.generate(1)[0]
+        assert_equal(node.getblockcount(), active_height + 3)
+        assert after_two_txid in node.getblock(after_two_block)['tx']
+        assert_equal(node.verifychain(4, 5), True)
 
-        node.invalidateblock(active_block)
-        assert_equal(node.getblockchaininfo()['bip9_softforks']['assets']['status'], 'locked_in')
-        live_result = node.testmempoolaccept([raw])[0]
-        assert_equal(live_result['allowed'], False)
-
-        # Check one more pre-activation tip with the same signed issue.
-        locked_tip = node.getbestblockhash()
+        # Reject the same signed issue in mined candidates at H-2 and H-1
+        # while this node's unrelated active tip is already past activation.
+        active_tip = node.getbestblockhash()
+        locked_tip = node.getblockhash(active_height - 1)
         config = configparser.ConfigParser()
         config.read(self.options.configfile)
         test_util.x16r_hash_cmd = os.path.join(
             config['environment']['BUILDDIR'], 'src', 'test',
             'test_raven_hash' + config['environment']['EXEEXT'])
-        block_time = node.getblockheader(locked_tip)['time'] + 1
-        invalid_issue = create_block(int(locked_tip, 16), create_coinbase(active_height), block_time)
-        invalid_issue.nVersion = node.getblockheader(active_block)['version']
-        invalid_issue.vtx.append(from_hex(CTransaction(), raw))
-        invalid_issue.hashMerkleRoot = invalid_issue.calc_merkle_root()
-        invalid_issue.solve()
-        rejected = node.submitblock(invalid_issue.serialize().hex())
-        self.log.info('Pre-activation issue block rejected: %s', rejected)
-        assert_equal(rejected, 'bad-txns-assets-not-active')
+        for candidate_height in (active_height - 1, active_height):
+            parent = node.getblockhash(candidate_height - 1)
+            original_block = node.getblockhash(candidate_height)
+            block_time = node.getblockheader(parent)['time'] + 1
+            invalid_issue = create_block(int(parent, 16),
+                                         create_coinbase(candidate_height), block_time)
+            invalid_issue.nVersion = node.getblockheader(original_block)['version']
+            invalid_issue.vtx.append(from_hex(CTransaction(), raw))
+            invalid_issue.hashMerkleRoot = invalid_issue.calc_merkle_root()
+            invalid_issue.solve()
+            rejected = node.submitblock(invalid_issue.serialize().hex())
+            self.log.info('Pre-activation side-branch block %d: %s',
+                          candidate_height, rejected)
+            assert_equal(rejected, 'inconclusive')
+            assert_equal(node.getbestblockhash(), active_tip)
+            # Make this candidate the next possible block. It must not
+            # replace the parent even after its branch is considered.
+            node.invalidateblock(original_block)
+            assert_equal(node.getbestblockhash(), parent)
+            side_tip = next(tip for tip in node.getchaintips()
+                            if tip['hash'] == invalid_issue.hash)
+            assert_equal(side_tip['status'], 'invalid')
+
+            # A distinct candidate at the same height now reaches the
+            # active-chain rejection path and reports the exact reason.
+            direct_issue = create_block(int(parent, 16),
+                                        create_coinbase(candidate_height),
+                                        block_time + 2)
+            direct_issue.nVersion = invalid_issue.nVersion
+            direct_issue.vtx.append(from_hex(CTransaction(), raw))
+            direct_issue.hashMerkleRoot = direct_issue.calc_merkle_root()
+            direct_issue.solve()
+            assert_equal(node.submitblock(direct_issue.serialize().hex()),
+                         'bad-txns-assets-not-active')
+            assert_equal(node.getbestblockhash(), parent)
+            node.reconsiderblock(original_block)
+            assert_equal(node.getbestblockhash(), active_tip)
+
+        node.invalidateblock(active_block)
         assert_equal(node.getbestblockhash(), locked_tip)
+        assert_equal(node.getblockchaininfo()['bip9_softforks']['assets']['status'], 'locked_in')
+        live_result = node.testmempoolaccept([raw])[0]
+        assert_equal(live_result['allowed'], False)
 
         node.invalidateblock(locked_tip)
         before_two = node.testmempoolaccept([raw])[0]
@@ -96,9 +132,11 @@ class AssetActivationReorgTest(RavenTestFramework):
         assert_equal(live_result['allowed'], restarted_result['allowed'])
 
         node.reconsiderblock(active_block)
-        assert_equal(node.getbestblockhash(), after_block)
+        assert_equal(node.getbestblockhash(), after_two_block)
         assert issue_txid in node.getblock(issue_block)['tx']
-        assert_equal(node.verifychain(4, 3), True)
+        assert after_one_txid in node.getblock(after_block)['tx']
+        assert after_two_txid in node.getblock(after_two_block)['tx']
+        assert_equal(node.verifychain(4, 5), True)
 
 
 if __name__ == '__main__':
