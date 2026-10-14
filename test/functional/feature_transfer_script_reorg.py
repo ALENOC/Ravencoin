@@ -27,8 +27,20 @@ class TransferScriptReorgTest(RavenTestFramework):
         script = node.decoderawtransaction(raw)['vout'][0]['scriptPubKey']['hex']
         assert_equal(script[52:54], '4c')  # OP_PUSHDATA1 after P2PKH and OP_RVN_ASSET.
 
-        node.generate(287)
+        # The tip first reports the ACTIVE next-block state at height 863.
+        # Check the two preceding tips with the identical OP_PUSHDATA1
+        # transaction before crossing that boundary.
+        node.generate(286)
+        assert_equal(node.getblockcount(), 861)
         assert_equal(node.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'locked_in')
+        before_two = node.testmempoolaccept([raw])[0]
+        assert_equal(before_two['reject-reason'], '16: bad-txns-transfer-asset-bad-deserialize')
+
+        node.generate(1)
+        assert_equal(node.getblockcount(), 862)
+        assert_equal(node.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'locked_in')
+        before_one = node.testmempoolaccept([raw])[0]
+        assert_equal(before_one['reject-reason'], before_two['reject-reason'])
         locked_in_tip = node.getbestblockhash()
         issue_txid = node.issue(asset_name, 2)[0]
         active_block = None
@@ -58,6 +70,8 @@ class TransferScriptReorgTest(RavenTestFramework):
         assert_equal(message_outputs[0]['asset']['amount'], 1)
         assert_equal(message_outputs[0]['asset']['expire_time'], 123456789)
         assert_equal(message_outputs[0]['hex'][52:54], '4c')
+        after_one = node.testmempoolaccept([raw])[0]
+        assert_equal(after_one['reject-reason'], active_result['reject-reason'])
         # Recheck blocks on both sides of the activation boundary.
         assert_equal(node.verifychain(4, 4), True)
 
