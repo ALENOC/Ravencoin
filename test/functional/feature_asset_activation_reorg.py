@@ -108,6 +108,42 @@ class AssetActivationReorgTest(RavenTestFramework):
             node.reconsiderblock(original_block)
             assert_equal(node.getbestblockhash(), active_tip)
 
+        # Connect a longer competing branch with the signed issue at the
+        # first active height. The later main-chain issues are absent on this
+        # branch, then restored after it is invalidated.
+        side_parent = active_block
+        side_first = None
+        for candidate_height in range(active_height + 1, active_height + 5):
+            block = create_block(
+                int(side_parent, 16), create_coinbase(candidate_height),
+                node.getblockheader(side_parent)['time'] + 2)
+            block.nVersion = node.getblockheader(issue_block)['version']
+            if candidate_height == active_height + 1:
+                block.vtx.append(from_hex(CTransaction(), raw))
+            block.hashMerkleRoot = block.calc_merkle_root()
+            block.solve()
+            result = node.submitblock(block.serialize().hex())
+            assert_equal(result, None if candidate_height == active_height + 4
+                         else 'inconclusive')
+            if side_first is None:
+                side_first = block.hash
+                assert side_first != issue_block
+            side_parent = block.hash
+        assert_equal(node.getbestblockhash(), side_parent)
+        assert issue_txid in node.getblock(side_first)['tx']
+        assert_equal(node.getassetdata('LATCHASSET')['amount'], 1)
+        assert_equal(node.getassetdata('LATCHPLUSONE'), None)
+        assert_equal(node.getassetdata('LATCHPLUSTWO'), None)
+        self.stop_node(0)
+        self.start_node(0, ['-assetindex', '-persistmempool=0'])
+        node = self.nodes[0]
+        assert_equal(node.getbestblockhash(), side_parent)
+        assert_equal(node.getassetdata('LATCHASSET')['amount'], 1)
+        node.invalidateblock(side_first)
+        assert_equal(node.getbestblockhash(), active_tip)
+        assert_equal(node.getassetdata('LATCHPLUSONE')['amount'], 1)
+        assert_equal(node.getassetdata('LATCHPLUSTWO')['amount'], 1)
+
         node.invalidateblock(active_block)
         assert_equal(node.getbestblockhash(), locked_tip)
         assert_equal(node.getblockchaininfo()['bip9_softforks']['assets']['status'], 'locked_in')
@@ -132,6 +168,9 @@ class AssetActivationReorgTest(RavenTestFramework):
         assert_equal(live_result['allowed'], restarted_result['allowed'])
 
         node.reconsiderblock(active_block)
+        assert_equal(node.getbestblockhash(), side_parent)
+        assert issue_txid in node.getblock(side_first)['tx']
+        node.invalidateblock(side_first)
         assert_equal(node.getbestblockhash(), after_two_block)
         assert issue_txid in node.getblock(issue_block)['tx']
         assert after_one_txid in node.getblock(after_block)['tx']
