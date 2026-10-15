@@ -250,6 +250,14 @@ jobs:
     - name: Build Raven
       run: make -j2
 
+    - name: Install Qt runtime test prerequisites
+      if: matrix.OS == 'linux'
+      run: sudo apt-get install -y xvfb xauth
+
+    - name: Test Qt startup without wallet
+      if: matrix.OS == 'linux'
+      run: ./contrib/devtools/test-qt-no-wallet-startup.sh
+
 # Skip the binary checks for now.
 #      name: Check Binary Security
 #      run: ${SCRIPTS}/05-binary-checks.sh ${{ MATRIX.OS }} ${{ GITHUB.WORKSPACE }}
