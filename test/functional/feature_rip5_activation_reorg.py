@@ -57,19 +57,21 @@ class Rip5ActivationReorgTest(RavenTestFramework):
         self.restart_node(0, ['-assetindex', '-persistmempool=0',
                               '-blockversion={}'.format(ASSETS_AND_RIP5_VERSION)])
         node = self.nodes[0]
-        node.generate(activation_height - 3 - node.getblockcount())
+        node.generate(activation_height - 4 - node.getblockcount())
         assert_equal(node.getblockchaininfo()['bip9_softforks']['assets']['status'], 'active')
         assert_equal(self.rip5_status(node), 'locked_in')
-        base_name = 'RIP5BOUNDARY'
+        base_names = ('RIP5BOUNDARY', 'RIP5PLUSONE', 'RIP5PLUSTWO')
+        base_name = base_names[0]
         restricted_name = '$' + base_name
-        base_txid = node.issue(base_name, 1)[0]
+        base_txids = [node.issue(name, 1)[0] for name in base_names]
         base_block = node.generate(1)[0]
-        assert_equal(node.getblockcount(), activation_height - 2)
-        assert base_txid in node.getblock(base_block)['tx']
+        assert_equal(node.getblockcount(), activation_height - 3)
+        assert all(txid in node.getblock(base_block)['tx'] for txid in base_txids)
         assert_equal(node.getblockchaininfo()['bip9_softforks']['assets']['status'], 'active')
         assert_equal(self.rip5_status(node), 'locked_in')
 
-        original_pre_activation = node.generate(1)[0]
+        original_h_minus_two = node.generate(1)[0]
+        original_h_minus_one = node.generate(1)[0]
         node.generate(1)
         assert_equal(node.getblockcount(), activation_height)
         assert_equal(self.rip5_status(node), 'active')
@@ -78,9 +80,9 @@ class Rip5ActivationReorgTest(RavenTestFramework):
         txid = node.decoderawtransaction(raw)['txid']
         assert_equal(node.testmempoolaccept([raw])[0]['allowed'], True)
 
-        # Rewind to H-2. A competing H-1 block must reject the same valid
+        # Rewind to H-3. H-2 and H-1 candidates must reject the same
         # transaction even though this process has already reached ACTIVE.
-        node.invalidateblock(original_pre_activation)
+        node.invalidateblock(original_h_minus_two)
         assert_equal(node.getbestblockhash(), base_block)
         assert_equal(self.rip5_status(node), 'locked_in')
         assert_raises_rpc_error(-1, 'Restricted assets must be active',
@@ -95,18 +97,25 @@ class Rip5ActivationReorgTest(RavenTestFramework):
         test_util.x16r_hash_cmd = os.path.join(
             config['environment']['BUILDDIR'], 'src', 'test',
             'test_raven_hash' + config['environment']['EXEEXT'])
-        block = create_block(int(base_block, 16), create_coinbase(activation_height - 1),
-                             node.getblockheader(base_block)['time'] + 1)
-        block.nVersion = node.getblockheader(original_pre_activation)['version']
-        block.vtx.append(from_hex(CTransaction(), raw))
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
-        assert_equal(node.submitblock(block.serialize().hex()),
-                     'bad-tx-null-asset-data-before-restricted-assets-activated')
-        assert_equal(node.getbestblockhash(), base_block)
+        for candidate_height, original in (
+                (activation_height - 2, original_h_minus_two),
+                (activation_height - 1, original_h_minus_one)):
+            parent = node.getbestblockhash()
+            block = create_block(
+                int(parent, 16), create_coinbase(candidate_height),
+                node.getblockheader(parent)['time'] + 1)
+            block.nVersion = node.getblockheader(original)['version']
+            block.vtx.append(from_hex(CTransaction(), raw))
+            block.hashMerkleRoot = block.calc_merkle_root()
+            block.solve()
+            assert_equal(node.submitblock(block.serialize().hex()),
+                         'bad-tx-null-asset-data-before-restricted-assets-activated')
+            assert_equal(node.getbestblockhash(), parent)
+            node.generate(1)
+            assert_equal(node.getblockcount(), candidate_height)
 
         # Mempool admission at H-1 targets H, the first active block.
-        pre_activation = node.generate(1)[0]
+        pre_activation = node.getbestblockhash()
         assert_equal(node.getblockcount(), activation_height - 1)
         assert_equal(self.rip5_status(node), 'active')
         assert_equal(node.testmempoolaccept([raw])[0]['allowed'], True)
@@ -115,16 +124,27 @@ class Rip5ActivationReorgTest(RavenTestFramework):
         assert_equal(node.getblockcount(), activation_height)
         assert txid in node.getblock(activation_block)['tx']
         assert_equal(node.getassetdata(restricted_name)['amount'], 1)
+        plus_one_name = '$' + base_names[1]
+        plus_one_raw = self.issue_raw(node, plus_one_name)
+        plus_one_txid = node.sendrawtransaction(plus_one_raw)
+        plus_one_block = node.generate(1)[0]
+        assert plus_one_txid in node.getblock(plus_one_block)['tx']
+        plus_two_name = '$' + base_names[2]
+        plus_two_raw = self.issue_raw(node, plus_two_name)
+        plus_two_txid = node.sendrawtransaction(plus_two_raw)
         post_activation = node.generate(1)[0]
-        assert_equal(node.getblockcount(), activation_height + 1)
+        assert plus_two_txid in node.getblock(post_activation)['tx']
+        assert_equal(node.getblockcount(), activation_height + 2)
         assert_equal(self.rip5_status(node), 'active')
         assert_equal(node.verifychain(4, 4), True)
 
         # Disconnect both sides of the boundary and restart while the old
         # rules apply. Reconsidering the saved branch must restore the asset.
         node.invalidateblock(pre_activation)
-        assert_equal(node.getbestblockhash(), base_block)
+        assert_equal(node.getblockcount(), activation_height - 2)
         assert_equal(node.getassetdata(restricted_name), None)
+        assert_equal(node.getassetdata(plus_one_name), None)
+        assert_equal(node.getassetdata(plus_two_name), None)
         assert_equal(self.rip5_status(node), 'locked_in')
         assert_equal(node.getblockchaininfo()['bip9_softforks']['assets']['status'], 'active')
         assert_raises_rpc_error(-1, 'Restricted assets must be active',
@@ -134,7 +154,7 @@ class Rip5ActivationReorgTest(RavenTestFramework):
         self.restart_node(0, ['-assetindex', '-persistmempool=0',
                               '-blockversion={}'.format(ASSETS_AND_RIP5_VERSION)])
         node = self.nodes[0]
-        assert_equal(node.getbestblockhash(), base_block)
+        assert_equal(node.getblockcount(), activation_height - 2)
         assert_equal(self.rip5_status(node), 'locked_in')
         assert_raises_rpc_error(-1, 'Restricted assets must be active',
                                 node.listglobalrestrictions)
@@ -142,9 +162,13 @@ class Rip5ActivationReorgTest(RavenTestFramework):
                      early_result['reject-reason'])
         node.reconsiderblock(pre_activation)
         assert_equal(node.getbestblockhash(), post_activation)
-        assert_equal(node.getblockcount(), activation_height + 1)
+        assert_equal(node.getblockcount(), activation_height + 2)
         assert txid in node.getblock(activation_block)['tx']
+        assert plus_one_txid in node.getblock(plus_one_block)['tx']
+        assert plus_two_txid in node.getblock(post_activation)['tx']
         assert_equal(node.getassetdata(restricted_name)['amount'], 1)
+        assert_equal(node.getassetdata(plus_one_name)['amount'], 1)
+        assert_equal(node.getassetdata(plus_two_name)['amount'], 1)
         assert_equal(node.listglobalrestrictions(), [])
         assert_equal(node.verifychain(4, 4), True)
 
