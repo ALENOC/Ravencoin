@@ -43,7 +43,7 @@ rules after activation.
 
 Testnet differs from this mainnet schedule. Its native RIP-25 rule is
 force-enabled from genesis by `nPQHybridEnabled=true`. At the reviewed
-2026-10-14 testnet tip, `getblocktemplate` therefore advertises the later
+2026-10-15 testnet tip, `getblocktemplate` therefore advertises the later
 16 MWU limit, even while the raw bit-12 BIP9 state reads STARTED. This
 does not imply that mainnet has activated bit 12. The testnet override
 cannot demonstrate the public 8-to-12-MWU BIP9 transition; controlled
@@ -105,14 +105,16 @@ inputs and check the final transaction before broadcast.
 
 The available testnet active chain was replayed from genesis by a clean
 4.8.1 candidate with `-assumevalid=0`, then synchronized with public
-peers; the exact snapshot and limits are in the remediation register.
+peers through height 2,554,210. The exact snapshot and limits are in the
+remediation register.
 The scanned chain contained no native witness-v2 outputs or spends, so
 the replay checks historical compatibility rather than an on-chain PQ
 signature. It does not test unknown side branches or future bit-13
 activation.
 CRITICAL FINDING-104 through FINDING-107 remain open for release
-qualification because their mined activation and side-branch regression
-matrix is incomplete. FINDING-112 remains open for intermittent wallet
+qualification. Local regressions now cover the known boundary heights
+and competing asset branches; their final coverage review and exact-SHA
+CI remain due. FINDING-112 remains open for intermittent wallet
 test-gate diagnosis. Final-SHA artifacts, operator readiness, manual
 GUI checks, checksums, and signatures still require qualification.
 The release will be tagged and published only after those checks and
