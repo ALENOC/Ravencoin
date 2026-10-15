@@ -105,9 +105,11 @@ inputs and check the final transaction before broadcast.
 ## Node-only GUI
 
 The Qt GUI now starts with `-disablewallet` without accessing the
-wallet-only currency selector. The crash was inherited from Core 4.8.0.
-The Linux release build runs a wallet-disabled GUI startup and RPC
-shutdown check.
+wallet-only currency selector. Its Options dialog can also submit
+the Icons only setting without accessing absent wallet toolbar controls.
+Both crashes were inherited from Core 4.8.0. The Linux release build
+runs wallet-disabled GUI startup, Options interaction, and RPC
+shutdown checks.
 
 ## Release qualification still required
 
@@ -123,14 +125,15 @@ The scoped activation and side-branch defects FINDING-104 through
 FINDING-107 are fixed after H-2 through H+2 regressions, connected
 alternate branches, rollback and restart checks, and a green exact-SHA
 Build Raven and Final Gate pair on `0c33cc92c`. All five packages from
-that run passed downloaded checksum and provenance review. Subsequent
-source-availability fixes for pinned xproto and libXau require a new
-exact-SHA pair and artifact review. The owner accepted a documented
+that run passed downloaded checksum and provenance review. The
+pinned xproto and libXau source-availability fixes passed both
+workflows on `35fa04a40`; all five downloaded packages passed
+provenance and checksum review. The owner accepted a documented
 cause-not-reconstructible disposition for two historical intermittent
 wallet recovery test failures (FINDING-112); a renewed failure blocks
 release, and `make check` remains mandatory on the final SHA.
-The wallet-disabled Qt correction (FINDING-177) also requires a
-passing unmodified Linux package smoke on the final SHA.
+The wallet-disabled Qt corrections (FINDING-177 and FINDING-178)
+require passing unmodified Linux package smokes on the final SHA.
 Operator readiness, manual GUI checks on release operating systems,
 final checksums, and signatures
 still require qualification.
