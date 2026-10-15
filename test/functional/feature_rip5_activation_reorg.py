@@ -80,6 +80,37 @@ class Rip5ActivationReorgTest(RavenTestFramework):
         txid = node.decoderawtransaction(raw)['txid']
         assert_equal(node.testmempoolaccept([raw])[0]['allowed'], True)
 
+        config = configparser.ConfigParser()
+        config.read(self.options.configfile)
+        test_util.x16r_hash_cmd = os.path.join(
+            config['environment']['BUILDDIR'], 'src', 'test',
+            'test_raven_hash' + config['environment']['EXEEXT'])
+
+        # Submit pre-active siblings while the unrelated active tip is at H.
+        # They are stored as side branches, then fail when the main child is
+        # invalidated and each sibling is considered for connection.
+        active_tip = node.getbestblockhash()
+        for candidate_height, parent, original in (
+                (activation_height - 1, original_h_minus_two,
+                 original_h_minus_one),
+                (activation_height - 2, base_block, original_h_minus_two)):
+            block = create_block(
+                int(parent, 16), create_coinbase(candidate_height),
+                node.getblockheader(parent)['time'] + 2)
+            block.nVersion = node.getblockheader(original)['version']
+            block.vtx.append(from_hex(CTransaction(), raw))
+            block.hashMerkleRoot = block.calc_merkle_root()
+            block.solve()
+            assert_equal(node.submitblock(block.serialize().hex()), 'inconclusive')
+            assert_equal(node.getbestblockhash(), active_tip)
+            node.invalidateblock(original)
+            assert_equal(node.getbestblockhash(), parent)
+            side_tip = next(tip for tip in node.getchaintips()
+                            if tip['hash'] == block.hash)
+            assert_equal(side_tip['status'], 'invalid')
+            node.reconsiderblock(original)
+            assert_equal(node.getbestblockhash(), active_tip)
+
         # Rewind to H-3. H-2 and H-1 candidates must reject the same
         # transaction even though this process has already reached ACTIVE.
         node.invalidateblock(original_h_minus_two)
@@ -92,11 +123,6 @@ class Rip5ActivationReorgTest(RavenTestFramework):
         assert_equal(early_result['reject-reason'],
                      '16: bad-tx-null-asset-data-before-restricted-assets-activated')
 
-        config = configparser.ConfigParser()
-        config.read(self.options.configfile)
-        test_util.x16r_hash_cmd = os.path.join(
-            config['environment']['BUILDDIR'], 'src', 'test',
-            'test_raven_hash' + config['environment']['EXEEXT'])
         for candidate_height, original in (
                 (activation_height - 2, original_h_minus_two),
                 (activation_height - 1, original_h_minus_one)):
@@ -138,6 +164,43 @@ class Rip5ActivationReorgTest(RavenTestFramework):
         assert_equal(self.rip5_status(node), 'active')
         assert_equal(node.verifychain(4, 4), True)
 
+        # A longer competing branch may issue the same asset at the first
+        # active height. Connect it, restart on it, and restore the main
+        # branch before the old-rule rollback below.
+        main_tip = post_activation
+        side_parent = pre_activation
+        side_first = None
+        for candidate_height in range(activation_height, activation_height + 4):
+            block = create_block(
+                int(side_parent, 16), create_coinbase(candidate_height),
+                node.getblockheader(side_parent)['time'] + 2)
+            block.nVersion = ASSETS_AND_RIP5_VERSION
+            if candidate_height == activation_height:
+                block.vtx.append(from_hex(CTransaction(), raw))
+            block.hashMerkleRoot = block.calc_merkle_root()
+            block.solve()
+            result = node.submitblock(block.serialize().hex())
+            assert_equal(result, None if candidate_height == activation_height + 3
+                         else 'inconclusive')
+            if side_first is None:
+                side_first = block.hash
+                assert side_first != activation_block
+            side_parent = block.hash
+        assert_equal(node.getbestblockhash(), side_parent)
+        assert txid in node.getblock(side_first)['tx']
+        assert_equal(node.getassetdata(restricted_name)['amount'], 1)
+        assert_equal(node.getassetdata(plus_one_name), None)
+        assert_equal(node.getassetdata(plus_two_name), None)
+        self.restart_node(0, ['-assetindex', '-persistmempool=0',
+                              '-blockversion={}'.format(ASSETS_AND_RIP5_VERSION)])
+        node = self.nodes[0]
+        assert_equal(node.getbestblockhash(), side_parent)
+        assert_equal(node.getassetdata(restricted_name)['amount'], 1)
+        node.invalidateblock(side_first)
+        assert_equal(node.getbestblockhash(), main_tip)
+        assert_equal(node.getassetdata(plus_one_name)['amount'], 1)
+        assert_equal(node.getassetdata(plus_two_name)['amount'], 1)
+
         # Disconnect both sides of the boundary and restart while the old
         # rules apply. Reconsidering the saved branch must restore the asset.
         node.invalidateblock(pre_activation)
@@ -161,6 +224,9 @@ class Rip5ActivationReorgTest(RavenTestFramework):
         assert_equal(node.testmempoolaccept([raw])[0]['reject-reason'],
                      early_result['reject-reason'])
         node.reconsiderblock(pre_activation)
+        assert_equal(node.getbestblockhash(), side_parent)
+        assert txid in node.getblock(side_first)['tx']
+        node.invalidateblock(side_first)
         assert_equal(node.getbestblockhash(), post_activation)
         assert_equal(node.getblockcount(), activation_height + 2)
         assert txid in node.getblock(activation_block)['tx']
