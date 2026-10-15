@@ -914,6 +914,9 @@ void RavenGUI::createToolBars()
 
 void RavenGUI::updateIconsOnlyToolbar(bool IconsOnly)
 {
+    if (!labelToolbar || !m_toolbar)
+        return;
+
     if(IconsOnly) {
         labelToolbar->setPixmap(QPixmap::fromImage(QImage(":/icons/rvntext")));
         m_toolbar->setMaximumWidth(65);
