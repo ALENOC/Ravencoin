@@ -101,20 +101,22 @@ class EnforcedCoinbaseActivationTest(RavenTestFramework):
         # Bit 9 must lag bit 6: its normal LOCKED_IN boundary at H288
         # precedes asset activation, so no reissue can exercise that rule.
         node = self.restart_with_version(ASSETS_VALUES_VERSION)
-        node.generate(142)
-        assert_equal(node.getblockcount(), 573)
+        node.generate(141)
+        assert_equal(node.getblockcount(), 572)
         asset_name = 'F106VALUE'
         issue_txid = node.issue(asset_name, 1)[0]
         issue_block = node.generate(1)[0]
-        assert_equal(node.getblockcount(), 574)
+        assert_equal(node.getblockcount(), 573)
         assert issue_txid in node.getblock(issue_block)['tx']
         assert_equal(self.deployment_status(node, 'enforce'), 'started')
         assert_equal(node.getassetdata(asset_name)['amount'], 1)
         reissue_raw = self.nonzero_reissue(node, asset_name)
         reissue_txid = node.decoderawtransaction(reissue_raw)['txid']
 
-        # H575 still uses STARTED, and H576 is the first LOCKED_IN
+        # H574 and H575 still use STARTED; H576 is the first LOCKED_IN
         # candidate. The value rule intentionally starts at LOCKED_IN.
+        original_574 = node.generate(1)[0]
+        assert_equal(node.getblockcount(), 574)
         original_575 = node.generate(1)[0]
         assert_equal(node.getblockcount(), 575)
         assert_equal(self.deployment_status(node, 'enforce'), 'locked_in')
@@ -143,24 +145,42 @@ class EnforcedCoinbaseActivationTest(RavenTestFramework):
         node.reconsiderblock(original_576)
         assert_equal(node.getbestblockhash(), active_value_tip)
 
+        for height in (577, 578):
+            invalid = self.candidate(
+                node, node.getblockhash(height - 1), height,
+                ASSETS_VALUES_COINBASE_VERSION, time_offset=2,
+                transaction=reissue_raw)
+            assert_equal(self.submit(node, invalid),
+                         "bad-txns-asset-reissued-amount-isn't-zero")
+
         valid_575 = self.candidate(
-            node, issue_block, 575, ASSETS_VALUES_VERSION,
+            node, original_574, 575, ASSETS_VALUES_VERSION,
             time_offset=2, transaction=reissue_raw)
         assert_equal(self.submit(node, valid_575), 'inconclusive')
+        valid_574 = self.candidate(
+            node, issue_block, 574, ASSETS_VALUES_VERSION,
+            time_offset=2, transaction=reissue_raw)
+        assert_equal(self.submit(node, valid_574), 'inconclusive')
         node.invalidateblock(original_575)
         assert_equal(node.getbestblockhash(), valid_575.hash)
         assert reissue_txid in node.getblock(valid_575.hash)['tx']
         assert_equal(node.getassetdata(asset_name)['amount'], 2)
 
+        node.invalidateblock(original_574)
+        assert_equal(node.getbestblockhash(), valid_574.hash)
+        assert reissue_txid in node.getblock(valid_574.hash)['tx']
+        assert_equal(node.getassetdata(asset_name)['amount'], 2)
+
         # Rewind across LOCKED_IN after this process saw ACTIVE. Restart at
         # the old-rule parent, then restore the long branch.
-        node.invalidateblock(valid_575.hash)
+        node.invalidateblock(valid_574.hash)
         assert_equal(node.getbestblockhash(), issue_block)
         assert_equal(self.deployment_status(node, 'enforce'), 'started')
         assert_equal(node.getassetdata(asset_name)['amount'], 1)
         node = self.restart_with_version(ASSETS_VALUES_COINBASE_VERSION)
         assert_equal(node.getbestblockhash(), issue_block)
         assert_equal(self.deployment_status(node, 'enforce'), 'started')
+        node.reconsiderblock(original_574)
         node.reconsiderblock(original_575)
         assert_equal(node.getbestblockhash(), active_value_tip)
         assert_equal(self.deployment_status(node, 'enforce'), 'active')
@@ -187,8 +207,8 @@ class EnforcedCoinbaseActivationTest(RavenTestFramework):
         original_1499 = node.generate(1)[0]
         assert_equal(node.getblockcount(), 1499)
         assert_equal(self.deployment_status(node, 'coinbase'), 'active')
-        node.generate(2)
-        assert_equal(node.getblockcount(), 1501)
+        node.generate(3)
+        assert_equal(node.getblockcount(), 1502)
         active_coinbase_tip = node.getbestblockhash()
 
         invalid_1500 = self.candidate(
@@ -208,20 +228,37 @@ class EnforcedCoinbaseActivationTest(RavenTestFramework):
         node.reconsiderblock(original_1500)
         assert_equal(node.getbestblockhash(), active_coinbase_tip)
 
+        for height in (1501, 1502):
+            invalid = self.candidate(
+                node, node.getblockhash(height - 1), height,
+                ASSETS_VALUES_COINBASE_VERSION, time_offset=2,
+                coinbase_asset_script=asset_script)
+            assert_equal(self.submit(node, invalid),
+                         'bad-txns-coinbase-contains-asset-txes')
+
         valid_1499 = self.candidate(
             node, transfer_block, 1499, ASSETS_VALUES_COINBASE_VERSION,
             time_offset=2, coinbase_asset_script=asset_script)
         assert_equal(self.submit(node, valid_1499), 'inconclusive')
+        valid_1498 = self.candidate(
+            node, issue_block_1497, 1498, ASSETS_VALUES_COINBASE_VERSION,
+            time_offset=2, coinbase_asset_script=asset_script)
+        assert_equal(self.submit(node, valid_1498), 'inconclusive')
         node.invalidateblock(original_1499)
         assert_equal(node.getbestblockhash(), valid_1499.hash)
         assert_equal(node.getblock(valid_1499.hash)['tx'][0], valid_1499.vtx[0].hash)
 
-        node.invalidateblock(valid_1499.hash)
-        assert_equal(node.getbestblockhash(), transfer_block)
+        node.invalidateblock(transfer_block)
+        assert_equal(node.getbestblockhash(), valid_1498.hash)
+        assert_equal(node.getblock(valid_1498.hash)['tx'][0], valid_1498.vtx[0].hash)
+
+        node.invalidateblock(valid_1498.hash)
+        assert_equal(node.getbestblockhash(), issue_block_1497)
         assert_equal(self.deployment_status(node, 'coinbase'), 'locked_in')
         node = self.restart_with_version(ASSETS_VALUES_COINBASE_VERSION)
-        assert_equal(node.getbestblockhash(), transfer_block)
+        assert_equal(node.getbestblockhash(), issue_block_1497)
         assert_equal(self.deployment_status(node, 'coinbase'), 'locked_in')
+        node.reconsiderblock(transfer_block)
         node.reconsiderblock(original_1499)
         assert_equal(node.getbestblockhash(), active_coinbase_tip)
         assert_equal(self.deployment_status(node, 'coinbase'), 'active')
