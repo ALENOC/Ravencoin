@@ -41,6 +41,16 @@ through this deployment. The 16 MWU phase is height-based, not tied to
 a calendar date. There is no automatic return to Core 4.8.0 validation
 rules after activation.
 
+On mainnet, upgraded 4.8.1 `getblocktemplate` mining templates
+automatically set bit 12 and signal during STARTED and LOCKED_IN.
+`CreateNewBlock` uses `ComputeBlockVersion`, and `pq_hybrid` is a forced
+getblocktemplate version bit. A pool can therefore signal as soon as its
+upgraded node reaches STARTED, even if other validators and services are
+still running Core 4.8.0. The `-blockversion` override is regtest-only;
+it cannot disable bit 12 in mainnet 4.8.1 templates. Pools should check
+the returned template version and coordinate their upgrade with the
+validators and services that depend on their blocks.
+
 Testnet differs from this mainnet schedule. Its native RIP-25 rule is
 force-enabled from genesis by `nPQHybridEnabled=true`. At the reviewed
 2026-10-15 testnet tip, `getblocktemplate` therefore advertises the later
@@ -51,14 +61,25 @@ regtest boundary tests cover that transition. Testnet miners and node
 operators should account for the already active PQ and block-weight
 rules when comparing with Core 4.8.0.
 
-Before miners begin signaling, the final 4.8.1 SHA must pass mandatory
-`make check`, Final Gate, all five Build Raven targets, and artifact
-checksum and provenance review. The clean candidate has already replayed
-the available public testnet history from genesis, and both old and new
-binaries have been tested on both sides of the 8 MWU boundary. Operators
-must have time to upgrade before ACTIVE. If the remaining release gates
-are not met before STARTED, a reviewed release must move the start and
-timeout before the original window begins.
+Before the original bit-12 STARTED window, the release owner must record
+an evidence-based go/no-go decision. The evidence includes a green
+`make check` on the final 4.8.1 SHA, paired green Build Raven and Final
+Gate runs on that SHA, checksum and provenance review of all five
+packages, and confirmed readiness of miners, pools, validators, and
+dependent services. The clean candidate has already replayed the
+available public testnet history from genesis, and both old and new
+binaries have been tested on both sides of the 8 MWU boundary. That
+history does not replace the final qualification or operator readiness
+decision. Operators must have time to upgrade before ACTIVE.
+
+If the decision is no-go or readiness is absent, a replacement release
+must revise both the start and timeout dates and pass the full release
+qualification again. The replacement release with revised parameters
+must be installed across miners, pools, validators, and dependent
+services before the original STARTED window begins. Merely preparing
+revised parameters, or relying on `-blockversion` on mainnet, does not
+prevent an already deployed 4.8.1 miner from signaling on the original
+schedule.
 
 ## Migration to PQ custody
 
