@@ -252,11 +252,18 @@ jobs:
 
     - name: Install Qt runtime test prerequisites
       if: matrix.OS == 'linux'
-      run: sudo apt-get install -y xvfb xauth
+      run: sudo apt-get install -y xvfb xauth x11-utils libxtst6
 
     - name: Test Qt startup without wallet
       if: matrix.OS == 'linux'
       run: ./contrib/devtools/test-qt-no-wallet-startup.sh
+
+    - name: Test Qt Options without wallet
+      if: matrix.OS == 'linux'
+      run: |
+        xvfb-run -a -s '-screen 0 1024x768x24' \
+          python3 contrib/devtools/test-qt-no-wallet-options.py \
+          src/qt/raven-qt src/raven-cli
 
 # Skip the binary checks for now.
 #      name: Check Binary Security
