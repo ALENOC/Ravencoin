@@ -51,13 +51,14 @@ regtest boundary tests cover that transition. Testnet miners and node
 operators should account for the already active PQ and block-weight
 rules when comparing with Core 4.8.0.
 
-Before miners begin signaling, the complete shared testnet history must
-be checked against the network-bound ML-DSA rule, the old and new binaries
-must be retested on both sides of the 8 MWU boundary, and the final 4.8.1
-SHA must pass mandatory `make check`, Final Gate, and all five Build Raven
-targets. Operators must have time to upgrade before ACTIVE. If these
-conditions are not met before STARTED, a reviewed release must move the
-start and timeout before the original window begins.
+Before miners begin signaling, the final 4.8.1 SHA must pass mandatory
+`make check`, Final Gate, all five Build Raven targets, and artifact
+checksum and provenance review. The clean candidate has already replayed
+the available public testnet history from genesis, and both old and new
+binaries have been tested on both sides of the 8 MWU boundary. Operators
+must have time to upgrade before ACTIVE. If the remaining release gates
+are not met before STARTED, a reviewed release must move the start and
+timeout before the original window begins.
 
 ## Migration to PQ custody
 
@@ -105,17 +106,21 @@ inputs and check the final transaction before broadcast.
 
 The available testnet active chain was replayed from genesis by a clean
 4.8.1 candidate with `-assumevalid=0`, then synchronized with public
-peers through height 2,554,210. The exact snapshot and limits are in the
-remediation register.
+peers through height 2,554,227. The exact snapshots and limits are in the
+remediation register and private audit evidence.
 The scanned chain contained no native witness-v2 outputs or spends, so
 the replay checks historical compatibility rather than an on-chain PQ
 signature. It does not test unknown side branches or future bit-13
 activation.
-CRITICAL FINDING-104 through FINDING-107 remain open for release
-qualification. Local regressions now cover the known boundary heights
-and competing asset branches; their final coverage review and exact-SHA
-CI remain due. FINDING-112 remains open for intermittent wallet
-test-gate diagnosis. Final-SHA artifacts, operator readiness, manual
-GUI checks, checksums, and signatures still require qualification.
+The scoped activation and side-branch defects FINDING-104 through
+FINDING-107 are fixed after H-2 through H+2 regressions, connected
+alternate branches, rollback and restart checks, and a green exact-SHA
+Build Raven and Final Gate pair on `0c33cc92c`. All five packages from
+that run passed downloaded checksum and provenance review. Subsequent
+source-availability fixes for pinned xproto and libXau require a new
+exact-SHA pair and artifact review. FINDING-112 remains open for
+intermittent wallet test-gate diagnosis. Operator readiness, manual
+GUI checks on release operating systems, final checksums, and signatures
+still require qualification.
 The release will be tagged and published only after those checks and
 the owner's separate release approval.
