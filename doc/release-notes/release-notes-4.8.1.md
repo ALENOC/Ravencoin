@@ -106,7 +106,7 @@ inputs and check the final transaction before broadcast.
 
 The available testnet active chain was replayed from genesis by a clean
 4.8.1 candidate with `-assumevalid=0`, then synchronized with public
-peers through height 2,554,227. The exact snapshots and limits are in the
+peers through height 2,554,504. The exact snapshots and limits are in the
 remediation register and private audit evidence.
 The scanned chain contained no native witness-v2 outputs or spends, so
 the replay checks historical compatibility rather than an on-chain PQ
@@ -118,8 +118,11 @@ alternate branches, rollback and restart checks, and a green exact-SHA
 Build Raven and Final Gate pair on `0c33cc92c`. All five packages from
 that run passed downloaded checksum and provenance review. Subsequent
 source-availability fixes for pinned xproto and libXau require a new
-exact-SHA pair and artifact review. FINDING-112 remains open for
-intermittent wallet test-gate diagnosis. Operator readiness, manual
+exact-SHA pair and artifact review. The owner accepted a documented
+cause-not-reconstructible disposition for two historical intermittent
+wallet recovery test failures (FINDING-112); a renewed failure blocks
+release, and `make check` remains mandatory on the final SHA.
+Operator readiness, manual
 GUI checks on release operating systems, final checksums, and signatures
 still require qualification.
 The release will be tagged and published only after those checks and
