@@ -102,6 +102,13 @@ remains unspent; consensus rejects a spend without its anchor.
 asset inputs. Raw transaction callers must supply matching funded PQ
 inputs and check the final transaction before broadcast.
 
+## Node-only GUI
+
+The Qt GUI now starts with `-disablewallet` without accessing the
+wallet-only currency selector. The crash was inherited from Core 4.8.0.
+The Linux release build runs a wallet-disabled GUI startup and RPC
+shutdown check.
+
 ## Release qualification still required
 
 The available testnet active chain was replayed from genesis by a clean
@@ -122,8 +129,10 @@ exact-SHA pair and artifact review. The owner accepted a documented
 cause-not-reconstructible disposition for two historical intermittent
 wallet recovery test failures (FINDING-112); a renewed failure blocks
 release, and `make check` remains mandatory on the final SHA.
-Operator readiness, manual
-GUI checks on release operating systems, final checksums, and signatures
+The wallet-disabled Qt correction (FINDING-177) also requires a
+passing unmodified Linux package smoke on the final SHA.
+Operator readiness, manual GUI checks on release operating systems,
+final checksums, and signatures
 still require qualification.
 The release will be tagged and published only after those checks and
 the owner's separate release approval.
