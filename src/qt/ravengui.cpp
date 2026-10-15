@@ -1869,6 +1869,10 @@ void RavenGUI::onCurrencyChange(int newIndex)
         return;
     }
 
+    if (!comboRvnUnit) {
+        return;
+    }
+
     this->unitChanged = true;
     this->currentPriceDisplay = &CurrencyUnits::CurrencyOptions[newIndex];
     //Update the main GUI box in case this was changed from the settings screen
