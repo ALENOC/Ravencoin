@@ -72,6 +72,7 @@ jobs:
         run: |
           ./autogen.sh
           mkdir -p "$HOME/.ccache"
+          "$PWD/depends/x86_64-pc-linux-gnu/native/bin/ccache" --print-config > /dev/null
           CONFIG_SITE="$PWD/depends/x86_64-pc-linux-gnu/share/config.site" \
             ./configure --without-gui --with-tx --disable-bench
 
@@ -218,6 +219,7 @@ jobs:
         run: |
           ./autogen.sh
           mkdir -p "$HOME/.ccache"
+          "$PWD/depends/${{ matrix.host }}/native/bin/ccache" --print-config > /dev/null
           CONFIG_SITE="$PWD/depends/${{ matrix.host }}/share/config.site" \
             ./configure ${{ matrix.configure_flags }}
 
