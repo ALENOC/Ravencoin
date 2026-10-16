@@ -252,7 +252,20 @@ jobs:
 
     - name: Install Qt runtime test prerequisites
       if: matrix.OS == 'linux'
-      run: sudo apt-get install -y xvfb xauth x11-utils libxtst6
+      run: sudo apt-get install -y xvfb xauth x11-utils libxtst6 libxkbcommon-x11-0
+
+    - name: Verify Qt smoke runtime libraries
+      if: matrix.OS == 'linux'
+      shell: bash
+      run: |
+        for binary in src/qt/raven-qt src/raven-cli; do
+          test -x "$binary"
+          libraries="$(ldd "$binary")"
+          if grep -Fq 'not found' <<< "$libraries"; then
+            printf 'Missing runtime libraries for %s:\n%s\n' "$binary" "$libraries"
+            exit 1
+          fi
+        done
 
     - name: Test Qt startup without wallet
       if: matrix.OS == 'linux'
