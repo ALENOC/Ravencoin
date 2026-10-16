@@ -6,6 +6,7 @@
 #include "myrestrictedassettablemodel.h"
 
 #include "addresstablemodel.h"
+#include "assets/assets.h"
 #include "guiconstants.h"
 #include "guiutil.h"
 #include "optionsmodel.h"
@@ -99,7 +100,7 @@ public:
                         sub.type = std::get<2>(item) ? MyRestrictedAssetRecord::Type::Tagged : MyRestrictedAssetRecord::Type::UnTagged;
                     else if (IsAssetNameAnRestricted(sub.assetName))
                         sub.type = std::get<2>(item) ? MyRestrictedAssetRecord::Type::Frozen : MyRestrictedAssetRecord::Type::UnFrozen;
-                    sub.involvesWatchAddress = IsMine(*this->wallet, DecodeDestination(sub.address)) & ISMINE_WATCH_ONLY;
+                    sub.involvesWatchAddress = GetRestrictedAddressOwnership(*this->wallet, sub.address) & ISMINE_WATCH_ONLY;
                     vectAssetData.push_back(qMakePair(QString::fromStdString(std::get<0>(item)), QString::fromStdString(std::get<1>(item))));
                     cacheMyAssetData[qMakePair(QString::fromStdString(std::get<0>(item)), QString::fromStdString(std::get<1>(item)))] = sub;
                 }
@@ -126,7 +127,7 @@ public:
             cacheMyAssetData[pair] = rec;
         } else {
             rec.involvesWatchAddress =
-                    IsMine(*this->wallet, DecodeDestination(address.toStdString())) & ISMINE_WATCH_ONLY ? true : false;
+                    GetRestrictedAddressOwnership(*this->wallet, address.toStdString()) & ISMINE_WATCH_ONLY;
             parent->beginInsertRows(QModelIndex(), 0, 0);
             cacheMyAssetData[pair] = rec;
             vectAssetData.push_front(pair);

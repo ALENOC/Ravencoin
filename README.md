@@ -7,37 +7,33 @@ https://ravencoin.org
 
 ## RIP-25: Post-Quantum Signatures (This Fork)
 
-This fork implements [RIP-25](doc/RIP-0025-PQ-Signatures.md) ([GitHub Issue #1280](https://github.com/RavenProject/Ravencoin/issues/1280)), a proposal to add **quantum-resistant native RVN transaction signing** to Ravencoin using ML-DSA-44 (FIPS 204).
+This fork implements [RIP-25](doc/RIP-0025-PQ-Signatures.md) ([GitHub Issue #1280](https://github.com/RavenProject/Ravencoin/issues/1280)), which adds **quantum-resistant native RVN transaction signing** using ML-DSA-44 (FIPS 204). The 4.8.1 candidate adds a separate bit-13 rule for new asset and owner-token outputs.
 
 ### What it does
 
-New **witness v2** addresses use ML-DSA-44 (a NIST-standardized post-quantum signature algorithm) exclusively. Existing ECDSA addresses (witness v0) continue working unchanged. Users can migrate native RVN from ECDSA to ML-DSA-44 addresses before quantum computers can break ECDSA. Ravencoin assets remain on their legacy ownership conditions and are outside the current RIP-25 scope.
+New **witness v2** addresses use ML-DSA-44 (a NIST-standardized post-quantum signature algorithm) exclusively. Existing ECDSA addresses continue working unchanged. Users can migrate native RVN to ML-DSA-44 addresses voluntarily. The original bit-12 rule does not change legacy asset ownership. Once bit 13 activates, newly created asset and owner-token outputs require a matching native RVN witness-v2 ML-DSA anchor when spent, with no ECDSA asset signature. Historical outputs retain their classical spending rule until their owners migrate them.
 
-- **Old addresses (witness v0):** ECDSA/secp256k1, unchanged
-- **New addresses (witness v2):** ML-DSA-44 only, quantum-resistant
+- **Classical addresses:** ECDSA/secp256k1, unchanged
+- **PQ addresses (witness v2):** ML-DSA-44 only, quantum-resistant
 - **Migration:** Users send native RVN from old to new addresses at their own pace
-- **Assets:** Normal, owner, reissuable, unique, restricted, and qualifier assets are not protected by RIP-25
+- **Assets:** New post-bit-13 asset and owner-token outputs require an ML-DSA anchor; historical holdings remain classical until voluntary migration
 
 ### Key changes
 
 | Area | Change |
 |------|--------|
-| **Consensus** | BIP9 soft-fork deployment (bit 12, 85% threshold), phased block weight increase (8 → 12 → 16 MWU) |
+| **Consensus** | Bit-12 BIP9 signaling (1714 of 2016); incompatible 8 to 12 to 16 MWU block-limit transition and contextual PQ witness discount |
 | **Script** | Witness version 2 validation: 2-element witness stack [mldsa_sig, mldsa_pk], SHA256(pk) == program |
-| **Policy** | `TX_WITNESS_V2_PQ_KEYHASH` standard type, PQ witness discount (8x), PQ-aware dust threshold |
+| **Policy** | `TX_WITNESS_V2_PQ_KEYHASH` standard type and PQ-aware dust threshold |
 | **Addresses** | Bech32m encoding for witness v2 (HRP: `rvn` mainnet, `trvn` testnet, `rcrt` regtest) |
 | **Network** | `NODE_PQ_HYBRID` service flag (bit 5), 16 MB protocol message limit |
-| **Crypto** | `src/crypto/mldsa.h/cpp` — ML-DSA-44 via [liboqs](https://github.com/open-quantum-safe/liboqs) (FIPS 204 compliant) |
-| **Keys** | `src/pqkey.h/cpp` — `CPQKey` / `CPQPubKey` for ML-DSA-44 key management |
+| **Crypto** | `src/crypto/mldsa.h/cpp`: ML-DSA-44 via [liboqs](https://github.com/open-quantum-safe/liboqs) (FIPS 204 compliant) |
+| **Keys** | `src/pqkey.h/cpp`: `CPQKey` / `CPQPubKey` for ML-DSA-44 key management |
 | **Wallet** | `getnewpqaddress` RPC, PQ keystore integration, `IsMine` for witness v2 |
-| **Assets** | Existing asset scripts remain legacy P2PKH-only; witness-v2 PQ destinations protect native RVN only |
+| **Assets** | Bit 13 adds PQ-only asset carriers paired with native RVN witness-v2 inputs; historical asset outputs remain classically spendable |
 | **Signing** | ML-DSA-44 signing in `sign.cpp` via `TransactionSignatureCreator` |
 | **Build** | liboqs added as dependency (`depends/packages/liboqs.mk`, `configure.ac --with-liboqs`) |
-| **Tests** | `src/test/pqkey_tests.cpp` — unit tests for ML-DSA-44 keygen, sign/verify, witness programs |
-
-### Branch
-
-Audit and remediation work is on [`fix/rip25-v48-glm-remediation`](https://github.com/ALENOC/Ravencoin/tree/fix/rip25-v48-glm-remediation).
+| **Tests** | `src/test/pqkey_tests.cpp`: unit tests for ML-DSA-44 keygen, sign/verify, witness programs |
 
 ### Building with liboqs
 

@@ -16,7 +16,11 @@ License: MIT
 
 This RIP proposes adding **ML-DSA-44** (FIPS 204) as a post-quantum digital signature scheme to Ravencoin via a new **witness version 2** program. New PQ addresses use ML-DSA-44 exclusively (no ECDSA). Existing ECDSA addresses (witness v0) continue working unchanged. Users can migrate native RVN from ECDSA to ML-DSA-44 addresses before quantum computers can break ECDSA. Ravencoin asset outputs are not covered by this version of RIP-25.
 
-The upgrade is deployed as a **soft fork** following the SegWit extensibility model. A phased block weight increase from 8 MWU to 16 MWU, combined with a PQ witness discount factor, ensures that network throughput remains adequate during and after migration.
+The witness-v2 signature rule uses the SegWit extensibility model and bit-12
+signaling. The combined deployment also raises the block weight limit from
+8 MWU to 12 MWU at activation and to 16 MWU one nominal year later, and
+discounts PQ witness bytes. Those block rules require a coordinated network
+upgrade from Core 4.8.0. See Backwards Compatibility below.
 
 ---
 
@@ -263,7 +267,10 @@ When a node encounters a witness version 2 program of length 32 bytes:
 7. Verify: `ML_DSA_44_Verify(mldsa_pk, sighash, network_context, mldsa_sig)` (ML-DSA check)
 8. If all checks pass, the input is valid
 
-For unupgraded nodes, witness version 2 outputs are treated as "anyone-can-spend" per BIP141 rules, which is safe as long as a supermajority of miners enforce the new rules.
+Unupgraded nodes treat witness version 2 outputs as "anyone-can-spend"
+under BIP141. They do not enforce the ML-DSA signature rule, and miner
+signaling does not make them compatible with the higher block limits or
+PQ witness discount. See the public activation plan below.
 
 #### 3.4 Script Size Limits
 
@@ -327,13 +334,27 @@ The wallet estimates transaction size before signing using `DummySignTx`. For PQ
 
 At 1-minute block times, even Phase 1 provides thousands of PQ transactions per minute, far exceeding current real-world usage.
 
+The 12 and 16 MWU limits are part of the original RIP-25 plan. Core 4.8.0
+rejects blocks above 8 MWU. The new acceptance range and the PQ witness
+discount make the combined bit-12 activation incompatible with an unupgraded
+Core 4.8.0 node. A local two-binary regtest accepted a 7,600,636-WU block
+on both binaries, then accepted an 8,801,320-WU block only on the bit-12
+candidate; Core 4.8.0 returned `bad-blk-length`. This is a hard-fork
+boundary for block validation, even though the witness-v2 signature rule
+alone is restrictive. A separate block with a valid ML-DSA witness-v2
+spend weighed 8,000,697 WU under the old calculation and about
+7,998,831 WU after the PQ discount. Core 4.8.0 returned
+`bad-blk-weight`, while the candidate accepted it. The discount alone
+also crosses the old validation boundary.
+
 #### 4.3 Dust Threshold
 
 For PQ outputs, the spend cost increases proportionally to the ML-DSA witness size:
 
 ```
 PQ witness input: mldsa_sig (2420) + mldsa_pk (1312) = 3732 bytes
-With PQ discount: 3732 / 8 = ~467 weight units
+With contextual PQ discount: 3732 / 8 = ~467 virtual bytes,
+or about 1866 weight units for these bytes
 ```
 
 ### 5. Activation Mechanism
@@ -343,13 +364,18 @@ With PQ discount: 3732 / 8 = ~467 weight units
 ```
 Deployment parameters:
   bit:                                    12
-  nStartTime:                             <6 months after release>
-  nTimeout:                               <18 months after start>
+  mainnet nStartTime:                     1814400000 (2027-07-01 00:00 UTC)
+  mainnet nTimeout:                       1861920000 (2029-01-01 00:00 UTC)
   nOverrideRuleChangeActivationThreshold: 1714  (85% of 2016 blocks)
-  nOverrideMinerConfirmationWindow:       2016  (~33.6 hours)
+  nOverrideMinerConfirmationWindow:       2016  (~33.6 hours at the target spacing)
 ```
 
-The 85% threshold provides additional safety margin for this cryptographically significant upgrade.
+The owner approved this 18-month mainnet window on 2026-10-13. BIP9 uses
+median time past at window boundaries; the start timestamp is not an
+activation date. At least 1714 signals in one complete STARTED window
+lead to one LOCKED_IN window, then ACTIVE. If the timeout is reached
+before lock-in, the deployment fails. The 85% threshold measures miner
+signaling only; it does not establish readiness of validating services.
 
 ### 6. Implementation
 
@@ -436,7 +462,7 @@ public:
 | Phase | Timeline | Description |
 |-------|----------|-------------|
 | **Phase 0: Preparation** | Months 1-6 | Software release with dormant PQ code. Community education. Testnet deployment. |
-| **Phase 1: Activation** | Months 7-12 | Soft fork activates via BIP9. PQ addresses available. Block weight increases to 12 MWU. |
+| **Phase 1: Activation** | Months 7-12 | Bit 12 activates after signaling and lock-in. PQ addresses are available. Block weight increases to 12 MWU, requiring upgraded validating nodes. |
 | **Phase 2: Encouraged** | Months 13-18 | Wallets default to PQ addresses for new keys. Warnings for legacy addresses. |
 | **Phase 3: Standard** | Months 19-24 | Block weight increases to 16 MWU. |
 | **Phase 4: Deprecation** | Months 25-48 | Legacy-only transactions increasingly discouraged. |
@@ -450,10 +476,10 @@ Users migrate native RVN by sending it from legacy addresses to new PQ addresses
 3. Sign with existing ECDSA key (standard legacy transaction)
 4. Broadcast and confirm
 
-After migration, native RVN change outputs can go to PQ addresses. On default
-public-network parameters, asset-bearing change still uses the legacy asset
-format. The separate dormant bit-13 extension defines protected asset change
-for a future activation.
+After migration, native RVN change outputs can go to PQ addresses. Until
+the separate bit-13 rule activates, asset-bearing change still uses the
+historical format. After activation, newly created spendable asset change
+must use the PQ-only asset format.
 
 #### 7.3 Asset Scope
 
@@ -466,16 +492,22 @@ RIP-25 witness-v2 protects native RVN outputs only. It does not change the Raven
 - qualifier and sub-qualifier assets.
 
 This scope statement describes the approved bit 12 baseline and the default
-public-network state. A 4.8.1 working branch has a separate, dormant bit 13
-asset candidate with a classical-plus-PQ ownership rule. That candidate is
-not included in the approved PR #1281 semantics and is not public-network
-release-qualified. Its local wallet tests do not protect existing holdings
-without an authorized migration. See the linked
-asset extension note for its constraints and release blockers.
+public-network state. A 4.8.1 working branch has separate, approved future
+bit-13 windows for testnet and mainnet. Once bit 13 activates, new asset
+and owner-token outputs
+commit to a PQ program. Spending them requires a matching native RVN
+witness-v2 input signed with ML-DSA-44, without an ECDSA signature. Asset
+and owner-token outputs use an asset carrier keyed by the PQ program, not a
+direct witness-v2 script. Outputs created before activation remain classically
+spendable. Their owners may migrate voluntarily by sending them to new
+PQ-protected outputs; activation does not protect historical holdings
+retroactively. This candidate is outside the approved PR #1281 semantics
+and is not yet qualified for public-network release. See the linked asset
+extension note for its constraints and release blockers.
 
 A wallet or raw-transaction RPC must reject a witness-v2 PQ destination when constructing an asset-bearing output. Appending `OP_RVN_ASSET` data to an `OP_2 <32-byte-program>` script does not create a PQ asset output: it makes the script cease to be a witness program, and current consensus rejects the misplaced asset opcode.
 
-Asset owners therefore retain a post-quantum exposure until a separately specified and activated PQ asset extension exists. In particular, theft of `ASSET!` can transfer administrative control and can authorize reissuance where the asset remains reissuable. See [RIP-25 PQ Asset Extension Design Note](RIP-0025-PQ-Assets-Followup.md).
+Under the default public-network parameters, asset owners retain a post-quantum exposure. Even after bit 13 activation, historical outputs retain that exposure until their owners migrate them. In particular, theft of `ASSET!` can transfer administrative control and can authorize reissuance where the asset remains reissuable. See [RIP-25 PQ Asset Extension Design Note](RIP-0025-PQ-Assets-Followup.md).
 
 #### 7.4 Emergency Response Plan
 
@@ -489,12 +521,66 @@ If ECDSA is broken before migration completes:
 
 ## Backwards Compatibility
 
-This proposal is a **soft fork**. Backwards compatibility is maintained as follows:
+The original draft described the whole proposal as a soft fork. That
+description applies to the witness-v2 signature restriction alone, not to
+the higher block limits or PQ witness discount. Core 4.8.0 validating nodes
+can reject blocks that a post-activation node accepts. All validating
+services that intend to follow the upgraded chain must install compatible
+software before bit 12 becomes active. Miner signaling measures miner
+readiness; it does not upgrade old nodes or guarantee their acceptance of
+12/16 MWU blocks. The public activation plan below is an incompatible
+consensus upgrade, approved for documentation by the owner. Release and
+activation still depend on the listed qualification gates.
+
+### Public network activation plan for bit 12
+
+1. Distribute the qualified 4.8.1 release before the mainnet bit-12
+   STARTED window beginning no earlier than 2027-07-01 00:00 UTC by
+   median time past. Its timeout is 2029-01-01 00:00 UTC. Announce the
+   exact start, timeout, 1714/2016 threshold, and 2016-block window with
+   binaries, checksums, upgrade instructions, and the native RVN migration
+   path. Tell miners, pools, validating nodes, exchanges, custodians, and
+   explorers that Core 4.8.0 can reject blocks accepted by upgraded nodes.
+2. Before requesting bit-12 signaling, validate the complete shared testnet
+   history against the network-bound ML-DSA rule. Repeat the two-binary
+   block tests around the Core 4.8.0 8 MWU boundary, including a PQ witness
+   spend whose old and new weights straddle that boundary. Qualify the
+   final versioned SHA with mandatory `make check`, all release targets,
+   and the Final Gate. If a required gate is missing or the network is not
+   ready, change the public parameters in a reviewed release before the
+   STARTED window rather than relying on miner signaling to protect old
+   validators.
+3. Bit-12 BIP9 signaling measures miner readiness. LOCKED_IN is followed
+   by ACTIVE after the next full window. All validating services that need
+   to follow the upgraded chain must update before ACTIVE. Signaling does
+   not measure their adoption, and there is no automatic rollback to the
+   Core 4.8.0 weight rules after ACTIVE.
+4. At the bit-12 activation height `H12`, the limit becomes 12 MWU and
+   the contextual PQ witness discount takes effect. At `H12 + 525600`
+   blocks, one nominal year at the 60-second target spacing, the limit
+   becomes 16 MWU. This second phase is height-based, not a fixed calendar
+   date. Operators must treat both phases as part of the same incompatible
+   network upgrade.
+5. The bit-13 mainnet STARTED timestamp is also 2029-01-01 00:00 UTC.
+   Bit 13 cannot enforce PQ-only asset spending until bit 12 and the
+   transfer-script deployment on bit 8 are ACTIVE.
+   If bit 12 fails or activates too late for a safe asset rollout, review
+   the bit-13 window in a separate release before it starts. Do not treat
+   the shared timestamp as evidence that bit 12 has activated.
+
+The old and new binaries agreed below 8 MWU in the recorded regtest
+comparison. Core 4.8.0 rejected a larger candidate-accepted block and a
+separate discounted PQ-witness block just across its old 8 MWU boundary.
+The exact blocks, weights, and outcomes are recorded in FINDING-160 of the
+security remediation register. Approval of this plan does not assert that
+testnet history or final release qualification has already passed.
+
+The remaining transaction compatibility properties are:
 
 - **Unupgraded nodes**: See witness v2 outputs as "anyone-can-spend" per BIP141 rules
 - **Legacy addresses**: Continue to work indefinitely
 - **Legacy transactions**: Continue to be valid. No existing transaction type is modified
-- **Asset transactions**: Unchanged by the approved bit-12 baseline. The separate dormant bit-13 extension retains the legacy P2PKH condition and adds a required PQ anchor for newly created asset outputs after its own activation
+- **Asset transactions**: Unchanged by the approved bit-12 baseline. The separate bit-13 rule requires a PQ-only carrier and matching native ML-DSA anchor for newly created spendable asset outputs after its own activation. These outputs need no ECDSA signature; historical outputs retain their classical rule
 - **Migration**: Voluntary. Users migrate funds at their own pace
 
 The network context was added before mainnet RIP-25 activation. Mainnet has no

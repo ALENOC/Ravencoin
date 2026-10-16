@@ -841,6 +841,9 @@ void CTxMemPool::removeForReorg(CCoinsViewCache *pcoins, unsigned int nMemPoolHe
             if (removeForPQRollback)
                 txToRemove.insert(it);
         }
+        if (pqAssetActivationHeight < 0 && !txToRemove.count(it) &&
+            HasPQOnlyAssetOutput(tx))
+            txToRemove.insert(it);
         if (!txToRemove.count(it)) {
             CValidationState state;
             bool valid = CheckTransaction(tx, state, true, true, false, &assetContext);

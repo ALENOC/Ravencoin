@@ -13,6 +13,7 @@
 #include "consensus/consensus.h"
 #include "consensus/validation.h"
 #include "fs.h"
+#include "hash.h"
 #include "init.h"
 #include "key.h"
 #include "keystore.h"
@@ -1941,12 +1942,22 @@ isminetype CWallet::IsMine(const CTxOut& txout) const
 isminetype CWallet::IsMine(const CTxOut& txout, const CBlockIndex* originBlock) const
 {
     LOCK2(cs_main, cs_wallet);
+    const int activationHeight =
+        GetPQAssetActivationHeightForPrev(
+            originBlock ? originBlock->pprev : chainActive.Tip(),
+            GetParams().GetConsensus());
+    uint256 pqOnlyProgram;
+    if (IsPQOnlyAssetScript(txout.scriptPubKey, pqOnlyProgram)) {
+        if (activationHeight < 0 ||
+            (originBlock && originBlock->nHeight < activationHeight))
+            return ISMINE_NO;
+        return HavePQKey(pqOnlyProgram) ? ISMINE_SPENDABLE : ISMINE_NO;
+    }
+
     const isminetype mine = IsMine(txout);
     if (!(mine & ISMINE_SPENDABLE) || !txout.scriptPubKey.IsAssetScript())
         return mine;
 
-    const int activationHeight =
-        GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
     return HasRequiredPQAssetKey(*this, txout, originBlock ? 1 : 0,
                                  originBlock, activationHeight) ? mine : ISMINE_NO;
 }
@@ -3092,10 +3103,7 @@ void CWallet::AvailableCoinsAll(std::vector<COutput>& vCoins, std::map<std::stri
                 bool fIsOwner;
                 bool isAssetScript = pcoin->tx->vout[i].scriptPubKey.IsAssetScript(nType, fIsOwner);
 
-                // A post-activation asset belongs to the wallet only if it
-                // has both its classical key and the PQ key named by the
-                // output. Historical lookalikes keep their old ownership
-                // semantics, including after a reorg across activation.
+                // Verify the PQ key required by a protected asset output.
                 if (fGetAssets && isAssetScript &&
                     !HasRequiredPQAssetKey(*this, pcoin->tx->vout[i], nDepth,
                                            originBlock, pqAssetActivationHeight))
@@ -3114,7 +3122,7 @@ void CWallet::AvailableCoinsAll(std::vector<COutput>& vCoins, std::map<std::stri
                 if (IsSpent(wtxid, i))
                     continue;
 
-                isminetype mine = IsMine(pcoin->tx->vout[i]);
+                isminetype mine = IsMine(pcoin->tx->vout[i], originBlock);
 
                 if (mine == ISMINE_NO) {
                     continue;
@@ -4086,8 +4094,8 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                 if (!pqAssetsActive)
                     return true;
                 CScript tagged;
-                if (!program || !BuildPQAssetTaggedScript(script, *program, tagged)) {
-                    strFailReason = _("Active PQ asset output requires a canonical classical|PQ asset destination");
+                if (!program || !BuildPQOnlyAssetScript(script, *program, tagged)) {
+                    strFailReason = _("Active PQ asset output requires a canonical PQ-only asset destination");
                     return false;
                 }
                 script = std::move(tagged);
@@ -4340,7 +4348,7 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                                 if (!boost::get<CNoDestination>(&coin_control.assetDestChange)) {
                                     if (!IsSupportedAssetDestination(coin_control.assetDestChange) ||
                                         !coin_control.pqAssetChangeProgram) {
-                                        strFailReason = _("Active PQ asset change requires a canonical classical|PQ destination");
+                                        strFailReason = _("Active PQ asset change requires a canonical PQ-only destination");
                                         return false;
                                     }
                                     changeDestination = coin_control.assetDestChange;
@@ -4397,7 +4405,7 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                                 CAssetTransfer assetTransfer(assetChange.first, assetChange.second);
                                 assetTransfer.ConstructTransaction(scriptAssetChange);
                                 CScript tagged;
-                                if (!BuildPQAssetTaggedScript(scriptAssetChange, changeProgram, tagged)) {
+                                if (!BuildPQOnlyAssetScript(scriptAssetChange, changeProgram, tagged)) {
                                     strFailReason = _("Could not construct canonical PQ asset change");
                                     return false;
                                 }
@@ -5293,7 +5301,9 @@ std::map<CTxDestination, CAmount> CWallet::GetAddressBalances()
             for (unsigned int i = 0; i < pcoin->tx->vout.size(); i++)
             {
                 CTxDestination addr;
-                if (!IsMine(pcoin->tx->vout[i], originBlock))
+                uint256 assetProgram;
+                if (IsPQOnlyAssetScript(pcoin->tx->vout[i].scriptPubKey, assetProgram) ||
+                    !IsMine(pcoin->tx->vout[i], originBlock))
                     continue;
                 if(!ExtractDestination(pcoin->tx->vout[i].scriptPubKey, addr))
                     continue;
@@ -5331,7 +5341,10 @@ std::set< std::set<CTxDestination> > CWallet::GetAddressGroupings()
                 CTxDestination address;
                 if(!IsMine(txin)) /* If this input isn't mine, ignore it */
                     continue;
-                if(!ExtractDestination(mapWallet[txin.prevout.hash].tx->vout[txin.prevout.n].scriptPubKey, address))
+                const CScript& prevScript = mapWallet[txin.prevout.hash].tx->vout[txin.prevout.n].scriptPubKey;
+                uint256 assetProgram;
+                if (IsPQOnlyAssetScript(prevScript, assetProgram) ||
+                    !ExtractDestination(prevScript, address))
                     continue;
                 grouping.insert(address);
                 any_mine = true;
@@ -5345,7 +5358,9 @@ std::set< std::set<CTxDestination> > CWallet::GetAddressGroupings()
                    {
                        CTxDestination txoutAddr;
                        const CTxOut& txout = pcoin->tx->vout[i];
-                       if(!ExtractDestination(txout.scriptPubKey, txoutAddr))
+                       uint256 assetProgram;
+                       if (IsPQOnlyAssetScript(txout.scriptPubKey, assetProgram) ||
+                           !ExtractDestination(txout.scriptPubKey, txoutAddr))
                            continue;
                        grouping.insert(txoutAddr);
                    }
@@ -5362,7 +5377,9 @@ std::set< std::set<CTxDestination> > CWallet::GetAddressGroupings()
             if (IsMine(txout, originBlock))
             {
                 CTxDestination address;
-                if(!ExtractDestination(txout.scriptPubKey, address))
+                uint256 assetProgram;
+                if (IsPQOnlyAssetScript(txout.scriptPubKey, assetProgram) ||
+                    !ExtractDestination(txout.scriptPubKey, address))
                     continue;
                 grouping.insert(address);
                 groupings.insert(grouping);
@@ -5414,7 +5431,7 @@ std::set<CTxDestination> CWallet::GetAccountAddresses(const std::string& strAcco
     {
         const CTxDestination& address = item.first;
         const std::string& strName = item.second.name;
-        if (strName == strAccount)
+        if (strName == strAccount && !IsPQOnlyAssetID(address))
             result.insert(address);
     }
     return result;
@@ -5663,7 +5680,16 @@ bool CWallet::EraseDestData(const CTxDestination &dest, const std::string &key)
 
 bool CWallet::LoadDestData(const CTxDestination &dest, const std::string &key, const std::string &value)
 {
-    mapAddressBook[dest].destdata.insert(std::make_pair(key, value));
+    CAddressBookData& data = mapAddressBook[dest];
+    data.destdata.insert(std::make_pair(key, value));
+    if (key == "pqasset:destination:v2") {
+        const CKeyID* assetID = boost::get<CKeyID>(&dest);
+        CKeyID decodedID;
+        uint256 program;
+        if (assetID && DecodePQOnlyAssetDestination(value, decodedID, program) &&
+            decodedID == *assetID && EncodePQAssetDestination(decodedID, program) == value)
+            data.purpose = "pqasset";
+    }
     return true;
 }
 
@@ -5699,13 +5725,35 @@ std::vector<std::string> CWallet::GetDestValues(const std::string& prefix) const
 
 namespace {
 const char* const PQ_ASSET_DESTDATA_KEY = "pqasset:destination:v1";
+const char* const PQ_ONLY_ASSET_DESTDATA_KEY = "pqasset:destination:v2";
+}
+
+bool CWallet::IsPQOnlyAssetID(const CTxDestination& dest) const
+{
+    LOCK(cs_wallet);
+    const CKeyID* assetID = boost::get<CKeyID>(&dest);
+    if (!assetID)
+        return false;
+    const auto address = mapAddressBook.find(dest);
+    if (address == mapAddressBook.end())
+        return false;
+    const auto pair = address->second.destdata.find(PQ_ONLY_ASSET_DESTDATA_KEY);
+    if (pair == address->second.destdata.end())
+        return false;
+    CKeyID decodedID;
+    uint256 program;
+    return DecodePQOnlyAssetDestination(pair->second, decodedID, program) &&
+           decodedID == *assetID &&
+           EncodePQAssetDestination(decodedID, program) == pair->second;
 }
 
 bool CWallet::StoreOwnedPQAssetDestination(const CKeyID& classicalKey, const uint256& pqProgram)
 {
     LOCK(cs_wallet);
-    if (!HaveKey(classicalKey) || !HavePQKey(pqProgram))
+    const bool pqOnly = classicalKey == CKeyID(Hash160(pqProgram.begin(), pqProgram.end()));
+    if (!HavePQKey(pqProgram) || (!pqOnly && !HaveKey(classicalKey)))
         return false;
+    const char* const destdataKey = pqOnly ? PQ_ONLY_ASSET_DESTDATA_KEY : PQ_ASSET_DESTDATA_KEY;
 
     const std::string descriptor = EncodePQAssetDestination(classicalKey, pqProgram);
     CKeyID decodedClassical;
@@ -5717,27 +5765,29 @@ bool CWallet::StoreOwnedPQAssetDestination(const CKeyID& classicalKey, const uin
 
     const auto existingAddress = mapAddressBook.find(classicalKey);
     if (existingAddress != mapAddressBook.end()) {
-        const auto existingPair = existingAddress->second.destdata.find(PQ_ASSET_DESTDATA_KEY);
+        const auto existingPair = existingAddress->second.destdata.find(destdataKey);
         if (existingPair != existingAddress->second.destdata.end())
             return existingPair->second == descriptor;
     }
 
-    // A PQ key must not be silently reused by a different classical owner.
+    // A PQ key must not be silently reused by another asset identity.
     for (const auto& address : mapAddressBook) {
-        const auto existingPair = address.second.destdata.find(PQ_ASSET_DESTDATA_KEY);
-        if (existingPair == address.second.destdata.end())
-            continue;
-        CKeyID pairedClassical;
-        uint256 pairedProgram;
-        if (DecodePQAssetDestination(existingPair->second, pairedClassical, pairedProgram) &&
-            pairedProgram == pqProgram)
-            return false;
+        for (const char* key : {PQ_ASSET_DESTDATA_KEY, PQ_ONLY_ASSET_DESTDATA_KEY}) {
+            const auto existingPair = address.second.destdata.find(key);
+            if (existingPair == address.second.destdata.end())
+                continue;
+            CKeyID pairedClassical;
+            uint256 pairedProgram;
+            if (DecodePQAssetDestination(existingPair->second, pairedClassical, pairedProgram) &&
+                pairedProgram == pqProgram)
+                return false;
+        }
     }
 
     if (!CWalletDB(*dbw).WriteDestData(
-            EncodeDestination(classicalKey), PQ_ASSET_DESTDATA_KEY, descriptor))
+            EncodeDestination(classicalKey), destdataKey, descriptor))
         return false;
-    mapAddressBook[classicalKey].destdata.emplace(PQ_ASSET_DESTDATA_KEY, descriptor);
+    mapAddressBook[classicalKey].destdata.emplace(destdataKey, descriptor);
     return true;
 }
 
@@ -5750,18 +5800,23 @@ std::vector<std::string> CWallet::GetOwnedPQAssetDestinations() const
         const CKeyID* associatedClassical = boost::get<CKeyID>(&address.first);
         if (!associatedClassical)
             continue;
-        const auto pair = address.second.destdata.find(PQ_ASSET_DESTDATA_KEY);
-        if (pair == address.second.destdata.end())
-            continue;
-        CKeyID decodedClassical;
-        uint256 decodedProgram;
-        if (!DecodePQAssetDestination(pair->second, decodedClassical, decodedProgram) ||
-            decodedClassical != *associatedClassical ||
-            EncodePQAssetDestination(decodedClassical, decodedProgram) != pair->second ||
-            !HaveKey(decodedClassical) || !HavePQKey(decodedProgram) ||
-            !usedPrograms.insert(decodedProgram).second)
-            continue;
-        descriptors.push_back(pair->second);
+        for (const char* key : {PQ_ASSET_DESTDATA_KEY, PQ_ONLY_ASSET_DESTDATA_KEY}) {
+            const auto pair = address.second.destdata.find(key);
+            if (pair == address.second.destdata.end())
+                continue;
+            CKeyID decodedClassical;
+            uint256 decodedProgram;
+            if (!DecodePQAssetDestination(pair->second, decodedClassical, decodedProgram) ||
+                decodedClassical != *associatedClassical ||
+                EncodePQAssetDestination(decodedClassical, decodedProgram) != pair->second ||
+                !HavePQKey(decodedProgram) ||
+                (key == PQ_ASSET_DESTDATA_KEY && !HaveKey(decodedClassical)) ||
+                (key == PQ_ONLY_ASSET_DESTDATA_KEY &&
+                 decodedClassical != CKeyID(Hash160(decodedProgram.begin(), decodedProgram.end()))) ||
+                !usedPrograms.insert(decodedProgram).second)
+                continue;
+            descriptors.push_back(pair->second);
+        }
     }
     return descriptors;
 }

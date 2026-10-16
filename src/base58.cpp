@@ -426,6 +426,13 @@ bool DecodePQAssetDestination(const std::string& descriptor, CKeyID& classicalKe
     return true;
 }
 
+bool DecodePQOnlyAssetDestination(const std::string& descriptor, CKeyID& assetID, uint256& pqProgram)
+{
+    if (!DecodePQAssetDestination(descriptor, assetID, pqProgram))
+        return false;
+    return assetID == CKeyID(Hash160(pqProgram.begin(), pqProgram.end()));
+}
+
 bool IsValidDestinationString(const std::string& str, const CChainParams& params)
 {
     // Check bech32m first

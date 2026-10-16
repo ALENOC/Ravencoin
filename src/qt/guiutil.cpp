@@ -226,7 +226,7 @@ void setupAssetAddressWidget(QValidatedLineEdit *widget, QWidget *parent)
 {
     parent->setFocusProxy(widget);
     widget->setFont(getSubLabelFont());
-    widget->setPlaceholderText(QObject::tr("Enter an asset destination (classical|PQ after activation)"));
+    widget->setPlaceholderText(QObject::tr("Enter an asset destination (PQ-only after activation)"));
     widget->setValidator(new RavenAssetAddressEntryValidator(parent));
     widget->setCheckValidator(new RavenAssetAddressCheckValidator(parent));
 }
@@ -244,7 +244,7 @@ bool isValidAssetDestination(const QString& address)
     if (pqAssetDestinationRequired()) {
         CKeyID classicalKey;
         uint256 pqProgram;
-        return DecodePQAssetDestination(encoded, classicalKey, pqProgram);
+        return DecodePQOnlyAssetDestination(encoded, classicalKey, pqProgram);
     }
     return IsSupportedAssetDestination(DecodeDestination(encoded));
 }

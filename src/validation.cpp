@@ -564,6 +564,9 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
     if (!pqEnabled && HasPQWitnessV2Output(tx))
         return state.DoS(0, false, REJECT_NONSTANDARD, "premature-pq-witness", true);
 
+    if (pqAssetActivationHeight < 0 && HasPQOnlyAssetOutput(tx))
+        return state.DoS(0, false, REJECT_NONSTANDARD, "premature-pq-asset", true);
+
     // Rather not work on nonstandard transactions (unless -testnet/-regtest)
     std::string reason;
     if (fRequireStandard && !IsStandardTx(tx, reason, witnessEnabled))

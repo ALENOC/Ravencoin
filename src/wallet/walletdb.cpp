@@ -10,6 +10,7 @@
 #include "consensus/tx_verify.h"
 #include "consensus/validation.h"
 #include "fs.h"
+#include "hash.h"
 #include "protocol.h"
 #include "serialize.h"
 #include "sync.h"
@@ -1335,14 +1336,18 @@ bool CWalletDB::RecoverKeysOnlyFilter(void *callbackData, CDataStream ssKey, CDa
             std::string parsedType, address, key, descriptor;
             ssKey >> parsedType >> address >> key;
             ssValue >> descriptor;
-            if (parsedType != "destdata" || key != "pqasset:destination:v1" ||
+            if (parsedType != "destdata" ||
+                (key != "pqasset:destination:v1" &&
+                 key != "pqasset:destination:v2") ||
                 !ssKey.empty() || !ssValue.empty())
                 return false;
             CKeyID classicalKey;
             uint256 pqProgram;
             return DecodePQAssetDestination(descriptor, classicalKey, pqProgram) &&
                 address == EncodeDestination(classicalKey) &&
-                descriptor == EncodePQAssetDestination(classicalKey, pqProgram);
+                descriptor == EncodePQAssetDestination(classicalKey, pqProgram) &&
+                (key == "pqasset:destination:v1" ||
+                 classicalKey == CKeyID(Hash160(pqProgram.begin(), pqProgram.end())));
         } catch (...) {
             return false;
         }

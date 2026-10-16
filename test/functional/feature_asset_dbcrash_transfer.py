@@ -8,7 +8,7 @@ import http.client
 import os
 
 from test_framework.test_framework import RavenTestFramework
-from test_framework.util import assert_equal, connect_nodes
+from test_framework.util import assert_equal, connect_nodes, wait_until
 
 
 class AssetTransferCrashTest(RavenTestFramework):
@@ -63,6 +63,9 @@ class AssetTransferCrashTest(RavenTestFramework):
         assert 'Simulating a crash. Goodbye.' in debug_log
         assert 'Asset database state is interrupted or not certified' in debug_log
         assert 'Replaying blocks' not in debug_log
+        wait_until(lambda: source_node.getbestblockhash() == transfer_block,
+                   err_msg='asset transfer recovery did not reach the expected tip',
+                   timeout=60)
         assert_equal(source_node.getbestblockhash(), transfer_block)
         recovered_utxo = source_node.gettxoutsetinfo()
         recovered_balances = source_node.listaddressesbyasset(asset_name)

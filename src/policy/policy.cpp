@@ -82,6 +82,18 @@ bool HasPQWitnessV2Output(const CTransaction& tx)
     return false;
 }
 
+bool HasPQOnlyAssetOutput(const CTransaction& tx)
+{
+    for (const CTxOut& txout : tx.vout) {
+        const CScript& script = txout.scriptPubKey;
+        if (script.size() > 25 && script[0] == OP_1 && script[1] == OP_1 &&
+            script[2] == 20 && script[23] == OP_DROP &&
+            script[24] == OP_DROP && script[25] == OP_RVN_ASSET)
+            return true;
+    }
+    return false;
+}
+
 bool SpendsPQWitnessV2Program(const CTxIn& txin, const CScript& prevScriptPubKey)
 {
     if (IsPQWitnessV2Program(prevScriptPubKey))

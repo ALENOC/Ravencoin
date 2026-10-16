@@ -804,6 +804,7 @@ echo "$fuzz_smoke_output"
 "$fuzz_binary" --pq-seed-tx | "$fuzz_binary"
 
 python3 contrib/devtools/test-required-functional-gate.py
+PYTHONPATH=test/functional python3 -m unittest test_framework.test_cache_peers
 python3 test/functional/test_runner.py --require-tests --jobs=2 \
   wallet_encryption_rewrite.py rpc_assettransfer.py feature_chainstate_ahead.py feature_pq_asset_anchor.py feature_pq_asset_authority_selection.py feature_pq_asset_source_rpc.py feature_pq_asset_wallet_ownership.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py
 

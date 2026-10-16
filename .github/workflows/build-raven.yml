@@ -59,13 +59,22 @@ jobs:
         run: |
           ./autogen.sh
           mkdir -p "$HOME/.ccache"
+          "$PWD/depends/x86_64-pc-linux-gnu/native/bin/ccache" --print-config > /dev/null
           CONFIG_SITE="$PWD/depends/x86_64-pc-linux-gnu/share/config.site" \
-            ./configure --without-gui --disable-bench
+            ./configure --without-gui --with-tx --disable-bench
 
       - name: Build and run unit tests
         run: |
           make -j2
-          make check
+          if ! make check; then
+            for log in src/test-suite.log src/test/test_raven.log; do
+              if [ -f "$log" ]; then
+                echo "Failure details from $log:"
+                tail -n 160 "$log"
+              fi
+            done
+            exit 1
+          fi
 
       - name: Exercise the real PQ verifier fuzz target
         run: |
@@ -82,7 +91,7 @@ jobs:
           python3 contrib/devtools/test-required-functional-gate.py
           python3 test/functional/test_runner.py --require-tests --jobs=2 \
             wallet_encryption_rewrite.py wallet_asset_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py \
-            feature_asset_activation_reorg.py feature_transfer_script_reorg.py feature_rip5_activation_reorg.py \
+            feature_asset_activation_reorg.py feature_transfer_script_reorg.py feature_rip5_activation_reorg.py feature_enforced_coinbase_activation.py \
             feature_asset_dbcrash.py feature_asset_dbcrash_transfer.py feature_asset_db_missing_block.py \
             feature_asset_verifydb_sameblock.py feature_transfer_mempool_reorg.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py feature_transfer_sidebranch.py feature_pq_asset_anchor.py feature_pq_asset_authority_selection.py feature_pq_asset_source_rpc.py feature_pq_asset_wallet_ownership.py feature_loadblock.py \
             feature_restricted_dbcrash.py feature_restricted_verifydb.py feature_restricted_verifydb_root.py \
@@ -227,6 +236,7 @@ jobs:
       run: |
         ./autogen.sh
         mkdir -p "$HOME/.ccache"
+        "$PWD/depends/${{ matrix.host }}/native/bin/ccache" --print-config > /dev/null
 
     - name: Configure Build
       run: bash -Eeuo pipefail "${SCRIPTS}/04-configure-build.sh" "${{ matrix.OS }}" "$GITHUB_WORKSPACE"
@@ -239,6 +249,34 @@ jobs:
 
     - name: Build Raven
       run: make -j2
+
+    - name: Install Qt runtime test prerequisites
+      if: matrix.OS == 'linux'
+      run: sudo apt-get install -y xvfb xauth x11-utils libxtst6 libxkbcommon-x11-0
+
+    - name: Verify Qt smoke runtime libraries
+      if: matrix.OS == 'linux'
+      shell: bash
+      run: |
+        for binary in src/qt/raven-qt src/raven-cli; do
+          test -x "$binary"
+          libraries="$(ldd "$binary")"
+          if grep -Fq 'not found' <<< "$libraries"; then
+            printf 'Missing runtime libraries for %s:\n%s\n' "$binary" "$libraries"
+            exit 1
+          fi
+        done
+
+    - name: Test Qt startup without wallet
+      if: matrix.OS == 'linux'
+      run: ./contrib/devtools/test-qt-no-wallet-startup.sh
+
+    - name: Test Qt Options without wallet
+      if: matrix.OS == 'linux'
+      run: |
+        xvfb-run -a -s '-screen 0 1024x768x24' \
+          python3 contrib/devtools/test-qt-no-wallet-options.py \
+          src/qt/raven-qt src/raven-cli
 
 # Skip the binary checks for now.
 #      name: Check Binary Security

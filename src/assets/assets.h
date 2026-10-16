@@ -7,6 +7,7 @@
 #define RAVENCOIN_ASSET_PROTOCOL_H
 
 #include "amount.h"
+#include "script/ismine.h"
 #include "tinyformat.h"
 #include "assettypes.h"
 
@@ -535,9 +536,9 @@ bool GetAssetInfoFromScript(const CScript& scriptPubKey, std::string& strName, C
 
 bool GetAssetData(const CScript& script, CAssetOutputEntry& data, const TxAssetDeploymentContext* pAssetContext = nullptr);
 
-// Experimental PQ asset extension: recognize a canonical 32-byte program
-// tail without changing the legacy asset parser or script evaluator.
+// Recognize a canonical 32-byte program tail under either asset prefix.
 bool GetPQAssetProgram(const CScript& script, uint256& program);
+bool IsPQOnlyAssetScript(const CScript& script, uint256& program);
 /** Encode an asset destination according to the output's protection at its origin height.
  *  Pass -1 for originHeight when the output is not confirmed on the active chain.
  *  An empty result means the output lacks the required active PQ tag.
@@ -546,6 +547,8 @@ std::string EncodeContextualAssetDestination(const CScript& script,
                                              int originHeight, int pqAssetActivationHeight);
 /** Tag a canonical legacy P2PKH asset output for the dependent PQ asset rule. */
 bool BuildPQAssetTaggedScript(const CScript& legacyScript, const uint256& program, CScript& taggedScript);
+/** Replace legacy asset ownership with a PQ-only, anchor-protected prefix. */
+bool BuildPQOnlyAssetScript(const CScript& legacyScript, const uint256& program, CScript& pqOnlyScript);
 
 bool GetBestAssetAddressAmount(CAssetsCache& cache, const std::string& assetName, const std::string& address);
 
@@ -557,6 +560,9 @@ std::string DecodeIPFS(std::string encoded);
 std::string EncodeIPFS(std::string decoded);
 
 #ifdef ENABLE_WALLET
+
+/** Include wallet-owned PQ-only asset identifiers in tag and freeze history. */
+isminetype GetRestrictedAddressOwnership(const CWallet& wallet, const std::string& address);
 
 /** Find a wallet-owned protected authority output for an active PQ asset return. */
 bool GetWalletProtectedAssetReturnDescriptor(CWallet* pwallet, const std::string& authorityName,
