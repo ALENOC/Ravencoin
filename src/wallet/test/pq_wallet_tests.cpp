@@ -2227,6 +2227,71 @@ BOOST_AUTO_TEST_CASE(bip44_incomplete_or_malformed_seed_fails_load)
     expectCorrupt("long-seed", true, true, std::vector<unsigned char>(65, 0x22));
 }
 
+BOOST_AUTO_TEST_CASE(bip44_plaintext_lineage_requires_semantic_integrity)
+{
+    const std::vector<unsigned char> validWords = Bip39TestWords();
+    const std::vector<unsigned char> validPassphrase = Bip39TestPassphrase();
+    const std::vector<unsigned char> validSeed = Bip39TestSeed();
+    const uint256 validHash = Hash(validWords.begin(), validWords.end());
+
+    for (int fault = 0; fault < 5; ++fault) {
+        const std::string filename = strprintf("bip44-lineage-integrity-%d.dat", fault);
+        std::vector<unsigned char> words = validWords;
+        std::vector<unsigned char> passphrase = validPassphrase;
+        std::vector<unsigned char> seed = validSeed;
+        uint256 wordHash = validHash;
+        if (fault == 1)
+            wordHash.begin()[0] ^= 1;
+        else if (fault == 2) {
+            const std::string invalidMnemonic =
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon";
+            words.assign(invalidMnemonic.begin(), invalidMnemonic.end());
+            wordHash = Hash(words.begin(), words.end());
+            const SecureString invalidWords(words.begin(), words.end());
+            const SecureString securePassphrase(passphrase.begin(), passphrase.end());
+            SecureVector invalidSeed;
+            BOOST_REQUIRE(CMnemonic::ToSeed(invalidWords, securePassphrase, invalidSeed));
+            seed.assign(invalidSeed.begin(), invalidSeed.end());
+        } else if (fault == 3)
+            passphrase.push_back('!');
+        else if (fault == 4)
+            seed[0] ^= 1;
+
+        {
+            std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+            BOOST_REQUIRE(wallet->SetHDChain(Bip44TestChain(wallet.get()), false));
+            CWalletDB walletdb(wallet->GetDBHandle());
+            BOOST_REQUIRE(walletdb.WriteBip39Words(wordHash, words, false));
+            BOOST_REQUIRE(walletdb.WriteBip39Passphrase(passphrase, false));
+            BOOST_REQUIRE(walletdb.WriteBip39VchSeed(seed, false));
+        }
+        bitdb.Flush(false);
+
+        std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
+        CWallet wallet(std::move(dbw));
+        bool firstRun = false;
+        const DBErrors loadResult = wallet.LoadWallet(firstRun);
+        if (fault == 0) {
+            BOOST_REQUIRE_EQUAL(loadResult, DB_LOAD_OK);
+            const std::vector<unsigned char> expectedBytes = ParseHex(
+                "023765b56ecb006a47d775beee38c45a9fe5dbe11d100b2e2ea3c99196dc915a2d");
+            const CPubKey expectedFirstExternal(expectedBytes.begin(), expectedBytes.end());
+            BOOST_REQUIRE(expectedFirstExternal.IsValid());
+            BOOST_REQUIRE(wallet.TopUpKeyPool(1));
+            CPubKey firstExternal;
+            BOOST_REQUIRE(wallet.GetKeyFromPool(firstExternal, false));
+            BOOST_CHECK(firstExternal == expectedFirstExternal);
+        } else {
+            BOOST_CHECK_EQUAL(loadResult, DB_CORRUPT);
+            BOOST_CHECK(!wallet.HasValidBip39Seed());
+            BOOST_CHECK_EQUAL(wallet.GetHDChain().nExternalChainCounter, 0U);
+            BOOST_CHECK_EQUAL(wallet.GetHDChain().nInternalChainCounter, 0U);
+            BOOST_CHECK(wallet.GetKeys().empty());
+        }
+        bitdb.Flush(false);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(bip44_derivation_refuses_missing_seed_without_advancing_counter)
 {
     const std::string filename = "bip44-missing-seed-derivation-wallet.dat";
