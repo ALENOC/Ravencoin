@@ -1605,6 +1605,10 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
                     pSnapshotRequestDb = new CSnapshotRequestDB(nBlockTreeDBCache, false, false);
                     pAssetSnapshotDb = new CAssetSnapshotDB(nBlockTreeDBCache, false, false);
                     pDistributeSnapshotDb = new CDistributeSnapshotRequestDB(nBlockTreeDBCache, false, false);
+#ifdef ENABLE_WALLET
+                    pDistributeSnapshotDb->LoadAllDistributeSnapshot(mapRewardSnapshots,
+                                                                      mapRewardWalletBindings);
+#endif
 
                     // Read for fAssetIndex to make sure that we only load asset address balances if it if true
                     pblocktree->ReadFlag("assetindex", fAssetIndex);

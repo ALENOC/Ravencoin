@@ -6,6 +6,7 @@
 #define RAVENCOIN_REWARDS_H
 
 #include "amount.h"
+#include "pubkey.h"
 #include "tinyformat.h"
 #include "assettypes.h"
 
@@ -90,7 +91,8 @@ public:
         STUCK_TX = 6,
         NETWORK_ERROR = 7,
         FAILED_CREATE_TRANSACTION = 8,
-        FAILED_COMMIT_TRANSACTION = 9
+        FAILED_COMMIT_TRANSACTION = 9,
+        INVALIDATED_SNAPSHOT = 10
     };
 
     std::string strOwnershipAsset;
@@ -141,6 +143,37 @@ public:
     }
 };
 
+// Persist separately from CRewardSnapshot so legacy requests remain readable
+// but cannot be retried without an explicit wallet binding.
+class CRewardWalletBinding {
+public:
+    static const uint32_t CURRENT_VERSION = 1;
+
+    uint32_t nVersion{CURRENT_VERSION};
+    std::string walletName;
+    CKeyID walletKeyId;
+    uint256 genesisHash;
+    uint256 snapshotBlockHash;
+    uint256 snapshotContentHash;
+
+    ADD_SERIALIZE_METHODS;
+
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream& s, Operation ser_action)
+    {
+        READWRITE(nVersion);
+        READWRITE(walletName);
+        READWRITE(walletKeyId);
+        READWRITE(genesisHash);
+        READWRITE(snapshotBlockHash);
+        READWRITE(snapshotContentHash);
+    }
+};
+
+#ifdef ENABLE_WALLET
+extern std::map<uint256, CRewardWalletBinding> mapRewardWalletBindings;
+#endif
+
 enum {
     FAILED_GETTING_DISTRIBUTION_LIST = 1,
     FAILED_
@@ -157,6 +190,7 @@ void DistributeRewardSnapshot(CWallet * p_wallet, const CRewardSnapshot& p_rewar
 bool BuildTransaction(
         CWallet * const p_walletPtr, const CRewardSnapshot& p_rewardSnapshot,
         const std::vector<OwnerAndAmount> & p_pendingPayments, const int& start,
+        const int& batchNumber,
         std::string& change_address, uint256& retTxid);
 
 void CheckRewardDistributions();

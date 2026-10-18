@@ -104,6 +104,7 @@ BASE_SCRIPTS= [
     'wallet_create_tx.py',
     # vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv Tests less than 30s vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
     'feature_rewards.py',
+    'feature_rewards_restart.py',
     'wallet_basic.py',
     'mempool_limit.py',
     'feature_assets.py',
