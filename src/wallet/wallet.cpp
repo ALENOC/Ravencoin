@@ -38,6 +38,7 @@
 #include "wallet/pqderivation.h"
 
 #include <assert.h>
+#include <cstdio>
 
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/thread.hpp>
@@ -78,6 +79,114 @@ public:
     explicit ScopedSecureStringCleanser(SecureString& valueIn) : value(valueIn) {}
     ~ScopedSecureStringCleanser() { ClearSecureString(value); }
 };
+
+static CKeyID Bip39SeedId(const SecureVector& seed)
+{
+    // Include the trailing zero to make this domain unambiguous. The raw
+    // BIP39 seed remains the input to BIP32 derivation; this is metadata only.
+    static const char domain[] = "Ravencoin BIP39 HD seed ID v1";
+    uint160 hash;
+    CHash160()
+        .Write(reinterpret_cast<const unsigned char*>(domain), sizeof(domain))
+        .Write(seed.data(), seed.size())
+        .Finalize(hash.begin());
+    return CKeyID(hash);
+}
+
+static CKeyID LegacyBip39SeedId()
+{
+    uint160 hash;
+    CHash160().Finalize(hash.begin());
+    return CKeyID(hash);
+}
+
+static bool MatchesBip44Keypath(const SecureVector& seed,
+                                const std::string& path, const CPubKey& pubkey)
+{
+    unsigned int coin = 0;
+    unsigned int account = 0;
+    unsigned int change = 0;
+    unsigned int index = 0;
+    int consumed = 0;
+    if (std::sscanf(path.c_str(), "m/44'/%u'/%u'/%u/%u%n",
+                    &coin, &account, &change, &index, &consumed) != 4 ||
+        consumed != static_cast<int>(path.size()) ||
+        coin >= BIP32_HARDENED_KEY_LIMIT ||
+        account >= BIP32_HARDENED_KEY_LIMIT ||
+        change > 1 || index >= BIP32_HARDENED_KEY_LIMIT ||
+        path != strprintf("m/44'/%u'/%u'/%u/%u",
+                          coin, account, change, index))
+        return false;
+
+    CExtKey root, purposeKey, coinKey, accountKey, chainKey, childKey;
+    root.SetSeed(seed.data(), seed.size());
+    return root.Derive(purposeKey, 44 | BIP32_HARDENED_KEY_LIMIT) &&
+           purposeKey.Derive(coinKey, coin | BIP32_HARDENED_KEY_LIMIT) &&
+           coinKey.Derive(accountKey, account | BIP32_HARDENED_KEY_LIMIT) &&
+           accountKey.Derive(chainKey, change) &&
+           chainKey.Derive(childKey, index) &&
+           childKey.key.GetPubKey() == pubkey;
+}
+
+static bool MigrateLegacyBip39SeedId(CWallet& wallet)
+{
+    AssertLockHeld(wallet.cs_wallet);
+    if (!wallet.IsBip44Enabled() || wallet.IsLocked())
+        return true;
+
+    SecureVector seed;
+    if (!wallet.GetBip39Seed(seed))
+        return false;
+    const CKeyID oldId = LegacyBip39SeedId();
+    const CKeyID newId = Bip39SeedId(seed);
+    if (wallet.GetHDChain().seed_id != oldId)
+        return true;
+    if (newId.IsNull() || newId == oldId)
+        return false;
+
+    // The old constant ID could also label keys from a prior BIP44 seed.
+    // Update only keys provably derived from the currently stored seed.
+    // Replace those references and the current chain together so a failed
+    // write leaves the legacy state intact.
+    std::vector<std::pair<CTxDestination, CPubKey>> metadataUpdates;
+    for (const auto& entry : wallet.mapKeyMetadata) {
+        if (entry.second.hd_seed_id != oldId)
+            continue;
+        const CKeyID* keyId = boost::get<CKeyID>(&entry.first);
+        CPubKey pubkey;
+        if (keyId && wallet.GetPubKey(*keyId, pubkey) &&
+            pubkey.IsValid() && pubkey.GetID() == *keyId &&
+            MatchesBip44Keypath(seed, entry.second.hdKeypath, pubkey))
+            metadataUpdates.emplace_back(entry.first, pubkey);
+    }
+
+    CHDChain migrated = wallet.GetHDChain();
+    migrated.seed_id = newId;
+    // The synchronous transaction commit supplies durability; skip the
+    // separate checkpoint so transaction-begin failure leaves no side effect.
+    CWalletDB walletdb(wallet.GetDBHandle(), "r+", false);
+    if (!walletdb.TxnBegin(DB_TXN_SYNC))
+        return false;
+    for (const auto& update : metadataUpdates) {
+        CKeyMetadata metadata = wallet.mapKeyMetadata.at(update.first);
+        metadata.hd_seed_id = newId;
+        if (!walletdb.WriteKeyMetadata(update.second, metadata)) {
+            walletdb.TxnAbort();
+            return false;
+        }
+    }
+    if (!walletdb.WriteHDChain(migrated)) {
+        walletdb.TxnAbort();
+        return false;
+    }
+    if (!walletdb.TxnCommit(DB_TXN_SYNC))
+        return false;
+
+    wallet.SetHDChain(migrated, true);
+    for (const auto& update : metadataUpdates)
+        wallet.mapKeyMetadata.at(update.first).hd_seed_id = newId;
+    return true;
+}
 
 void SetPendingMnemonicInput(SecureString words, SecureString passphrase)
 {
@@ -839,6 +948,10 @@ bool CWallet::Unlock(const SecureString& strWalletPassphrase)
             if (!crypter.Decrypt(pMasterKey.second.vchCryptedKey, _vMasterKey))
                 continue; // try another master key
             if (CCryptoKeyStore::Unlock(_vMasterKey)) {
+                if (!MigrateLegacyBip39SeedId(*this)) {
+                    Lock();
+                    return false;
+                }
                 return true;
             }
         }
@@ -2217,12 +2330,13 @@ CPubKey CWallet::GenerateNewSeed(CWalletDB* pwalletdb)
 	if (!AddVchSeed(vchSeed))
 		throw std::runtime_error(std::string(__func__) + ": storing BIP39 seed failed");
 
-	CPubKey seed(vchSeed.begin(), vchSeed.end());
-	newHdChain.seed_id = seed.GetID();
+	newHdChain.seed_id = Bip39SeedId(vchSeed);
 
 	SetHDChain(newHdChain, false, pwalletdb);
 
-	return seed;
+	// BIP39 uses a 64-byte seed, which is not a public key. The BIP44 caller
+	// uses the persisted chain ID and ignores this legacy return value.
+	return CPubKey();
 
 }
 
@@ -4907,6 +5021,9 @@ DBErrors CWallet::LoadWallet(bool& fFirstRunRet, bool notifyLoad)
 
     if (nLoadWalletRet != DB_LOAD_OK)
         return nLoadWalletRet;
+
+    if (!MigrateLegacyBip39SeedId(*this))
+        return DB_LOAD_FAIL;
 
     if (notifyLoad)
         uiInterface.LoadWallet(this);
