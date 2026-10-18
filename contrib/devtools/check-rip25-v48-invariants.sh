@@ -100,6 +100,9 @@ require_fixed 'wallet_pq_recovery.py' .github/workflows/build-raven.yml 'release
 require_fixed "'wallet_restricted_multiwallet.py'" test/functional/test_runner.py 'restricted multiwallet regression is not registered'
 require_fixed 'wallet_restricted_multiwallet.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits restricted multiwallet regression'
 require_fixed 'wallet_restricted_multiwallet.py' .github/workflows/build-raven.yml 'release workflow omits restricted multiwallet regression'
+require_fixed "'feature_pq_activation_reorg_sigops.py'" test/functional/test_runner.py 'PQ activation reorg and sigop regression is not registered'
+require_fixed 'feature_pq_activation_reorg_sigops.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits PQ activation reorg and sigop regression'
+require_fixed 'feature_pq_activation_reorg_sigops.py' .github/workflows/build-raven.yml 'release workflow omits PQ activation reorg and sigop regression'
 
 # GLM-003: contextual 8 -> 12 -> 16 MWU and UTXO-bound 8x discount.
 require_fixed 'VersionBitsStateSinceHeight' src/validation.cpp 'deterministic RIP-25 phase boundary missing'
@@ -827,6 +830,6 @@ echo "$fuzz_smoke_output"
 python3 contrib/devtools/test-required-functional-gate.py
 PYTHONPATH=test/functional python3 -m unittest test_framework.test_cache_peers
 python3 test/functional/test_runner.py --require-tests --jobs=2 \
-  wallet_encryption_rewrite.py feature_rewards_restart.py wallet_pq_recovery.py wallet_restricted_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py feature_pq_asset_anchor.py feature_pq_asset_authority_selection.py feature_pq_asset_source_rpc.py feature_pq_asset_wallet_ownership.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py
+  wallet_encryption_rewrite.py feature_rewards_restart.py wallet_pq_recovery.py wallet_restricted_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py feature_pq_activation_reorg_sigops.py feature_pq_asset_anchor.py feature_pq_asset_authority_selection.py feature_pq_asset_source_rpc.py feature_pq_asset_wallet_ownership.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py
 
 echo 'RIP-25/v4.8 structural + behavioral invariants: OK'

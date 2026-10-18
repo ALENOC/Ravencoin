@@ -77,6 +77,10 @@ void CChainParams::UpdateVersionBitsParameters(Consensus::DeploymentPos d, int64
 {
     consensus.vDeployments[d].nStartTime = nStartTime;
     consensus.vDeployments[d].nTimeout = nTimeout;
+    // A regtest bit-12 override exercises the actual versionbits boundary.
+    // The default regtest mode keeps PQ rules immediately available.
+    if (strNetworkID == "regtest" && d == Consensus::DEPLOYMENT_PQ_HYBRID)
+        consensus.nPQHybridEnabled = false;
 }
 
 void CChainParams::TurnOffSegwit() {

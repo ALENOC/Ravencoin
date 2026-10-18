@@ -114,6 +114,7 @@ BASE_SCRIPTS= [
     'feature_messaging.py',
     'feature_assets_reorg.py',
     'feature_asset_activation_reorg.py',
+    'feature_pq_activation_reorg_sigops.py',
     'feature_transfer_script_reorg.py',
     'feature_rip5_activation_reorg.py',
     'feature_enforced_coinbase_activation.py',
