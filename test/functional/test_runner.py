@@ -106,6 +106,7 @@ BASE_SCRIPTS= [
     'feature_rewards.py',
     'feature_rewards_restart.py',
     'wallet_pq_recovery.py',
+    'wallet_restricted_multiwallet.py',
     'wallet_basic.py',
     'mempool_limit.py',
     'feature_assets.py',

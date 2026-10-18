@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #include "validation.h"
+#include "assets.h"
 #include "myassetsdb.h"
 #include "messages.h"
 #include <boost/thread.hpp>
@@ -15,6 +16,12 @@ static const char DB_FLAG = 'D'; // Database Flags
 
 static const char MY_TAGGED_ADDRESSES = 'T'; // Addresses that have been tagged
 static const char MY_RESTRICTED_ADDRESSES = 'R'; // Addresses that have been restricted
+static const char MY_RESTRICTED_UNDO = 'U';
+
+using RestrictedEventKey = std::pair<char, std::pair<std::string, std::string>>;
+using RestrictedEventValue = std::pair<int, uint32_t>;
+using RestrictedBlockUndo = std::vector<std::pair<RestrictedEventKey,
+                                                   std::pair<bool, RestrictedEventValue>>>;
 
 CMessageDB::CMessageDB(size_t nCacheSize, bool fMemory, bool fWipe) : CDBWrapper(GetDataDir() / "messages" / "messages", nCacheSize, fMemory, fWipe) {
 }
@@ -326,6 +333,141 @@ bool CMyRestrictedDB::LoadMyRestrictedAddresses(std::vector<std::tuple<std::stri
     }
 
     return true;
+}
+
+bool CMyRestrictedDB::EraseAllRestrictedEvents()
+{
+    for (char prefix : {MY_TAGGED_ADDRESSES, MY_RESTRICTED_ADDRESSES}) {
+        std::unique_ptr<CDBIterator> cursor(NewIterator());
+        cursor->Seek(std::make_pair(prefix, std::make_pair(std::string(), std::string())));
+        while (cursor->Valid()) {
+            CDBBatch batch(*this);
+            size_t count = 0;
+            while (cursor->Valid() && count < 1024) {
+                std::pair<char, std::pair<std::string, std::string>> key;
+                if (!cursor->GetKey(key) || key.first != prefix)
+                    break;
+                batch.Erase(key);
+                cursor->Next();
+                ++count;
+            }
+            if (!count)
+                break;
+            if (!WriteBatch(batch))
+                return false;
+            boost::this_thread::interruption_point();
+        }
+    }
+    std::unique_ptr<CDBIterator> cursor(NewIterator());
+    cursor->Seek(std::make_pair(MY_RESTRICTED_UNDO, uint256()));
+    while (cursor->Valid()) {
+        CDBBatch batch(*this);
+        size_t count = 0;
+        while (cursor->Valid() && count < 1024) {
+            std::pair<char, uint256> key;
+            if (!cursor->GetKey(key) || key.first != MY_RESTRICTED_UNDO)
+                break;
+            batch.Erase(key);
+            cursor->Next();
+            ++count;
+        }
+        if (!count)
+            break;
+        if (!WriteBatch(batch))
+            return false;
+        boost::this_thread::interruption_point();
+    }
+    return true;
+}
+
+bool CMyRestrictedDB::WriteRestrictedBlock(
+    const std::vector<std::pair<std::string, CNullAssetTxData>>& events,
+    uint32_t blockTime, const uint256& hash)
+{
+    CDBBatch batch(*this);
+    std::set<RestrictedEventKey> seen;
+    RestrictedBlockUndo undo;
+    for (const auto& event : events) {
+        char prefix = 0;
+        if (IsAssetNameAQualifier(event.second.asset_name)) {
+            prefix = MY_TAGGED_ADDRESSES;
+        } else if (IsAssetNameAnRestricted(event.second.asset_name)) {
+            prefix = MY_RESTRICTED_ADDRESSES;
+        }
+        if (!prefix)
+            continue;
+        const RestrictedEventKey key(prefix, std::make_pair(event.first, event.second.asset_name));
+        if (seen.insert(key).second) {
+            RestrictedEventValue prior(0, 0);
+            const bool existed = Read(key, prior);
+            undo.emplace_back(key, std::make_pair(existed, prior));
+        }
+        batch.Write(key, RestrictedEventValue(event.second.flag ? 1 : 0, blockTime));
+    }
+    if (!undo.empty())
+        batch.Write(std::make_pair(MY_RESTRICTED_UNDO, hash), undo);
+    batch.Write(std::make_pair(DB_FLAG, std::string("restricted_global_index_tip_v1")), hash);
+    return WriteBatch(batch);
+}
+
+bool CMyRestrictedDB::UndoRestrictedBlock(
+    const std::vector<std::pair<std::string, CNullAssetTxData>>& events,
+    const uint256& hash, const uint256& previousHash,
+    std::vector<std::tuple<std::string, std::string, int, uint32_t>>& restored)
+{
+    restored.clear();
+    std::set<RestrictedEventKey> expected;
+    for (const auto& event : events) {
+        char prefix = 0;
+        if (IsAssetNameAQualifier(event.second.asset_name))
+            prefix = MY_TAGGED_ADDRESSES;
+        else if (IsAssetNameAnRestricted(event.second.asset_name))
+            prefix = MY_RESTRICTED_ADDRESSES;
+        if (prefix)
+            expected.emplace(prefix, std::make_pair(event.first, event.second.asset_name));
+    }
+
+    CDBBatch batch(*this);
+    if (!expected.empty()) {
+        RestrictedBlockUndo undo;
+        const auto undoKey = std::make_pair(MY_RESTRICTED_UNDO, hash);
+        if (!Read(undoKey, undo) || undo.size() != expected.size())
+            return false;
+        for (const auto& item : undo) {
+            if (!expected.erase(item.first))
+                return false;
+            if (item.second.first)
+                batch.Write(item.first, item.second.second);
+            else
+                batch.Erase(item.first);
+            restored.emplace_back(item.first.second.first, item.first.second.second,
+                                  item.second.first ? item.second.second.first : -1,
+                                  item.second.first ? item.second.second.second : 0);
+        }
+        batch.Erase(undoKey);
+    }
+    batch.Write(std::make_pair(DB_FLAG, std::string("restricted_global_index_tip_v1")), previousHash);
+    return WriteBatch(batch);
+}
+
+bool CMyRestrictedDB::WriteRestrictedIndexTip(const uint256& hash)
+{
+    return Write(std::make_pair(DB_FLAG, std::string("restricted_global_index_tip_v1")), hash);
+}
+
+bool CMyRestrictedDB::ReadRestrictedIndexTip(uint256& hash)
+{
+    return Read(std::make_pair(DB_FLAG, std::string("restricted_global_index_tip_v1")), hash);
+}
+
+bool CMyRestrictedDB::WriteRestrictedIndexState(char state)
+{
+    return Write(std::make_pair(DB_FLAG, std::string("restricted_global_index_state_v1")), state);
+}
+
+bool CMyRestrictedDB::ReadRestrictedIndexState(char& state)
+{
+    return Read(std::make_pair(DB_FLAG, std::string("restricted_global_index_state_v1")), state);
 }
 
 

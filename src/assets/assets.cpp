@@ -5722,13 +5722,8 @@ bool ContextualCheckNullAssetTxOut(const CTxOut& txout, CAssetsCache* assetCache
         }
     }
 
-#ifdef ENABLE_WALLET
-    if (myNullAssetData && vpwallets.size()) {
-        if (GetRestrictedAddressOwnership(*vpwallets[0], address) & ISMINE_ALL) {
-            myNullAssetData->emplace_back(std::make_pair(address, data));
-        }
-    }
-#endif
+    if (myNullAssetData)
+        myNullAssetData->emplace_back(address, data);
     return true;
 }
 

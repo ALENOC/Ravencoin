@@ -561,6 +561,9 @@ std::string EncodeIPFS(std::string decoded);
 
 #ifdef ENABLE_WALLET
 
+/** Ask wallet restricted asset views to reload after index recovery. */
+static constexpr int RESTRICTED_ASSET_VIEW_RELOAD = -2;
+
 /** Include wallet-owned PQ-only asset identifiers in tag and freeze history. */
 isminetype GetRestrictedAddressOwnership(const CWallet& wallet, const std::string& address);
 

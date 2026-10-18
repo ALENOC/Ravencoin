@@ -9,6 +9,8 @@
 
 class CMessage;
 class COutPoint;
+class CNullAssetTxData;
+class uint256;
 
 class CMessageDB  : public CDBWrapper {
 
@@ -72,6 +74,17 @@ public:
     bool ReadRestrictedAddress(const std::string& address, const std::string& tag_name, bool& fAdd, uint32_t& nHeight);
     bool EraseRestrictedAddress(const std::string& address, const std::string& tag_name);
     bool LoadMyRestrictedAddresses(std::vector<std::tuple<std::string, std::string, bool, uint32_t> >& vecRestrictedAddresses);
+
+    bool EraseAllRestrictedEvents();
+    bool WriteRestrictedBlock(const std::vector<std::pair<std::string, CNullAssetTxData>>& events,
+                              uint32_t blockTime, const uint256& hash);
+    bool UndoRestrictedBlock(const std::vector<std::pair<std::string, CNullAssetTxData>>& events,
+                             const uint256& hash, const uint256& previousHash,
+                             std::vector<std::tuple<std::string, std::string, int, uint32_t>>& restored);
+    bool WriteRestrictedIndexTip(const uint256& hash);
+    bool ReadRestrictedIndexTip(uint256& hash);
+    bool WriteRestrictedIndexState(char state);
+    bool ReadRestrictedIndexState(char& state);
 
     // Write / Read Database flags
     bool WriteFlag(const std::string &name, bool fValue);

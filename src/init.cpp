@@ -1655,6 +1655,13 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
                     strLoadError = _("Error loading block database");
                     break;
                 }
+#ifdef ENABLE_WALLET
+                if ((fReset || fReindexChainState || fReindex) &&
+                    !pmyrestricteddb->WriteRestrictedIndexState('N')) {
+                    strLoadError = _("Unable to reset restricted address history for reindex");
+                    break;
+                }
+#endif
 
                 // If the loaded chain has a wrong genesis, bail out immediately
                 // (we're likely using a testnet datadir, or the other way around).
@@ -1928,6 +1935,8 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
 
     // ********************************************************* Step 8: load wallet
 #ifdef ENABLE_WALLET
+    if (!BackfillMyRestrictedIndex(chainparams))
+        return InitError(_("Unable to rebuild restricted address history"));
     if (!OpenWallets())
         return false;
 #else

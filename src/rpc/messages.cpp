@@ -6,6 +6,7 @@
 #include "assets/assetdb.h"
 #include "assets/messages.h"
 #include "assets/myassetsdb.h"
+#include "chainparams.h"
 #include <map>
 #include "tinyformat.h"
 
@@ -417,13 +418,26 @@ UniValue viewmytaggedaddresses(const JSONRPCRequest& request) {
 
     std::vector<std::tuple<std::string, std::string, bool, uint32_t> > myTaggedAddresses;
 
+    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
+        return NullUniValue;
+
+    LOCK(cs_main);
     if (!pmyrestricteddb)
         throw JSONRPCError(RPC_DATABASE_ERROR, "My restricted database is not available");
+    if (!BackfillMyRestrictedIndex(GetParams()))
+        throw JSONRPCError(RPC_DATABASE_ERROR, "Unable to rebuild restricted address history");
+    char indexState = 0;
+    if (!pmyrestricteddb->ReadRestrictedIndexState(indexState) || indexState != 'C')
+        throw JSONRPCError(RPC_DATABASE_ERROR, "Restricted address history is incomplete; restore pruned block data and reindex");
 
+    LOCK(pwallet->cs_wallet);
     pmyrestricteddb->LoadMyTaggedAddresses(myTaggedAddresses);
     UniValue myTags(UniValue::VARR);
 
     for (auto item : myTaggedAddresses) {
+        if (!(GetRestrictedAddressOwnership(*pwallet, std::get<0>(item)) & ISMINE_ALL))
+            continue;
         UniValue obj(UniValue::VOBJ);
 
         obj.push_back(Pair("Address", std::get<0>(item)));
@@ -461,13 +475,26 @@ UniValue viewmyrestrictedaddresses(const JSONRPCRequest& request) {
 
     std::vector<std::tuple<std::string, std::string, bool, uint32_t> > myRestrictedAddresses;
 
+    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
+        return NullUniValue;
+
+    LOCK(cs_main);
     if (!pmyrestricteddb)
         throw JSONRPCError(RPC_DATABASE_ERROR, "My restricted database is not available");
+    if (!BackfillMyRestrictedIndex(GetParams()))
+        throw JSONRPCError(RPC_DATABASE_ERROR, "Unable to rebuild restricted address history");
+    char indexState = 0;
+    if (!pmyrestricteddb->ReadRestrictedIndexState(indexState) || indexState != 'C')
+        throw JSONRPCError(RPC_DATABASE_ERROR, "Restricted address history is incomplete; restore pruned block data and reindex");
 
+    LOCK(pwallet->cs_wallet);
     pmyrestricteddb->LoadMyRestrictedAddresses(myRestrictedAddresses);
     UniValue myRestricted(UniValue::VARR);
 
     for (auto item : myRestrictedAddresses) {
+        if (!(GetRestrictedAddressOwnership(*pwallet, std::get<0>(item)) & ISMINE_ALL))
+            continue;
         UniValue obj(UniValue::VOBJ);
 
         obj.push_back(Pair("Address", std::get<0>(item)));

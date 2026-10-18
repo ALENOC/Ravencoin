@@ -538,6 +538,10 @@ extern CMessageChannelDB *pmessagechanneldb;
 /** Global variable that points to my wallets restricted database (protected by cs_main) */
 extern CMyRestrictedDB *pmyrestricteddb;
 
+#ifdef ENABLE_WALLET
+bool BackfillMyRestrictedIndex(const CChainParams& chainparams);
+#endif
+
 /** Global variable that points to the active restricted asset database (protected by cs_main) */
 extern CRestrictedDB *prestricteddb;
 
