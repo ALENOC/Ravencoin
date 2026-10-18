@@ -91,6 +91,12 @@ require_fixed 'feature_pq_asset_source_rpc.py' .github/workflows/build-raven.yml
 require_fixed 'feature_pq_asset_wallet_ownership.py' test/functional/test_runner.py 'PQ asset wallet ownership regression is not registered'
 require_fixed 'feature_mempool_clear_reissue.py' test/functional/test_runner.py 'mempool clear reissue regression is not registered'
 require_fixed 'feature_mempool_reissue_restart.py' test/functional/test_runner.py 'mempool reissue restart regression is not registered'
+require_fixed "'feature_rewards_restart.py'" test/functional/test_runner.py 'reward restart regression is not registered'
+require_fixed 'feature_rewards_restart.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits reward restart regression'
+require_fixed 'feature_rewards_restart.py' .github/workflows/build-raven.yml 'release workflow omits reward restart regression'
+require_fixed "'wallet_pq_recovery.py'" test/functional/test_runner.py 'PQ wallet recovery regression is not registered'
+require_fixed 'wallet_pq_recovery.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits PQ wallet recovery regression'
+require_fixed 'wallet_pq_recovery.py' .github/workflows/build-raven.yml 'release workflow omits PQ wallet recovery regression'
 
 # GLM-003: contextual 8 -> 12 -> 16 MWU and UTXO-bound 8x discount.
 require_fixed 'VersionBitsStateSinceHeight' src/validation.cpp 'deterministic RIP-25 phase boundary missing'
@@ -619,12 +625,17 @@ require_fixed 'python3 contrib/devtools/test-required-functional-gate.py' "$fina
 require_fixed 'python3 test/functional/test_runner.py --require-tests' "$final_gate" 'functional gate permits absent or skipped security tests'
 require_fixed 'feature_mempool_clear_reissue.py' "$final_gate" 'final gate omits inherited mempool clear regression'
 require_fixed 'feature_mempool_reissue_restart.py' "$final_gate" 'final gate omits inherited reissue restart regression'
-require_fixed 'wallet_encryption_rewrite.py wallet_asset_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py' "$final_gate" 'required wallet, multiwallet asset, asset-scope, and chainstate-ahead functional tests are missing'
+require_fixed 'wallet_encryption_rewrite.py wallet_asset_multiwallet.py feature_rewards_restart.py wallet_pq_recovery.py rpc_assettransfer.py feature_chainstate_ahead.py' "$final_gate" 'required wallet, rewards, PQ recovery, multiwallet asset, asset-scope, and chainstate-ahead functional tests are missing'
 require_fixed 'wallet_asset_multiwallet.py' .github/workflows/build-raven.yml 'release security job omits the multiwallet asset regression'
 require_fixed "'wallet_asset_multiwallet.py'" test/functional/test_runner.py 'multiwallet asset regression is not in the functional suite'
 require_fixed 'id: posttest_integrity' "$final_gate" 'final gate does not recheck source after security tests'
 final_security_job="$(sed -n '/^  security-tests:/,/^  build:/p' "$final_gate")"
 require_text "$final_security_job" 'test/test_raven_fuzzy --pq-smoke' 'final security job does not run the PQ verifier fuzz smoke test'
+mapfile -t final_security_sha_lines < <(grep -nFx '          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' <<<"$final_security_job" | cut -d: -f1)
+(( ${#final_security_sha_lines[@]} == 2 )) || fail 'final security job must execute exact-SHA checks before and after tests'
+final_make_check_line="$(grep -nFx '        run: make check' <<<"$final_security_job" | cut -d: -f1 || true)"
+[[ "$final_make_check_line" =~ ^[0-9]+$ ]] || fail 'final security job does not execute make check'
+(( final_security_sha_lines[0] < final_make_check_line && final_make_check_line < final_security_sha_lines[1] )) || fail 'final security job does not bracket make check with exact-SHA checks'
 require_fixed 'id: postbuild_integrity' "$final_gate" 'final gate does not recheck source after cross-builds'
 final_build_matrix="$(sed -n '/^      matrix:/,/^    steps:/p' "$final_gate")"
 require_text "$final_build_matrix" $'          - name: aarch64-disable-wallet\n            host: aarch64-linux-gnu\n            packages: g++-aarch64-linux-gnu\n            configure_flags: --without-gui --disable-wallet --disable-bench\n            run_tests: false' 'final gate lacks the aarch64 no-wallet cross-build'
@@ -667,7 +678,12 @@ require_text "$release_security_job" 'feature_mempool_clear_reissue.py' 'release
 require_text "$release_security_job" 'feature_mempool_reissue_restart.py' 'release artifact workflow omits inherited reissue restart regression'
 require_text "$release_security_job" 'feature_chainstate_ahead.py' 'release artifact workflow does not test chainstate-ahead recovery'
 require_text "$release_security_job" 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' 'release security job does not bind tests to the artifact SHA'
-require_text "$release_build_job" '    needs: security-tests' 'release artifact matrix can package without passing security tests'
+grep -Fxq '    needs: security-tests' <<<"$release_build_job" || fail 'release artifact matrix can package without passing security tests'
+mapfile -t release_security_sha_lines < <(grep -nFx '          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' <<<"$release_security_job" | cut -d: -f1)
+(( ${#release_security_sha_lines[@]} == 2 )) || fail 'release security job must execute exact-SHA checks before and after tests'
+release_make_check_line="$(grep -nFx '          if ! make check; then' <<<"$release_security_job" | cut -d: -f1 || true)"
+[[ "$release_make_check_line" =~ ^[0-9]+$ ]] || fail 'release security job does not execute make check'
+(( release_security_sha_lines[0] < release_make_check_line && release_make_check_line < release_security_sha_lines[1] )) || fail 'release security job does not bracket make check with exact-SHA checks'
 release_matrix="$(sed -n '/^      matrix:/,/^    steps:/p' "$release_workflow")"
 release_axes="$(grep -E '^        [A-Za-z_][A-Za-z_0-9]*:' <<<"$release_matrix" || true)"
 [[ "$release_axes" == '        include:' ]] || fail 'release workflow has unexpected matrix axes'
@@ -722,6 +738,8 @@ if [[ "$mode" == '--structural-only' ]]; then
   echo 'RIP-25/v4.8 structural lint: OK (behavior not certified)'
   exit 0
 fi
+
+python3 contrib/devtools/test-rip25-invariant-gate-negative-controls.py
 
 test_binary=src/test/test_raven
 [[ -x "$test_binary" ]] || fail "behavioral test binary is missing or not executable: $test_binary"
@@ -806,6 +824,6 @@ echo "$fuzz_smoke_output"
 python3 contrib/devtools/test-required-functional-gate.py
 PYTHONPATH=test/functional python3 -m unittest test_framework.test_cache_peers
 python3 test/functional/test_runner.py --require-tests --jobs=2 \
-  wallet_encryption_rewrite.py rpc_assettransfer.py feature_chainstate_ahead.py feature_pq_asset_anchor.py feature_pq_asset_authority_selection.py feature_pq_asset_source_rpc.py feature_pq_asset_wallet_ownership.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py
+  wallet_encryption_rewrite.py feature_rewards_restart.py wallet_pq_recovery.py rpc_assettransfer.py feature_chainstate_ahead.py feature_pq_asset_anchor.py feature_pq_asset_authority_selection.py feature_pq_asset_source_rpc.py feature_pq_asset_wallet_ownership.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py
 
 echo 'RIP-25/v4.8 structural + behavioral invariants: OK'
