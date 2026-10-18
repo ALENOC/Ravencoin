@@ -1213,6 +1213,70 @@ BOOST_AUTO_TEST_CASE(encrypted_deterministic_pq_generation_is_ciphertext_only)
     }
 }
 
+BOOST_AUTO_TEST_CASE(encrypted_pq_index_recovery_is_idempotent_and_ciphertext_only)
+{
+    const std::string filename = "pq-hd-encrypted-index-recovery-wallet.dat";
+    const SecureString passphrase("pq-hd-index-recovery-passphrase");
+    SecureVector seed;
+    const std::vector<unsigned char> bip39Seed = Bip39TestSeed();
+    BOOST_REQUIRE(pqderivation::DeriveSeed(
+        bip39Seed.data(), bip39Seed.size(), 1, 2, seed));
+    CPQKey expected;
+    BOOST_REQUIRE(expected.SetSeed(seed.data()));
+    const uint256 recoveredProgram = expected.GetPubKey().GetWitnessProgram();
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_REQUIRE(InitializeBip39Wallet(*wallet));
+        CKey classicalKey;
+        classicalKey.MakeNewKey(true);
+        {
+            LOCK(wallet->cs_wallet);
+            BOOST_REQUIRE(wallet->AddKeyPubKey(
+                classicalKey, classicalKey.GetPubKey()));
+        }
+        BOOST_REQUIRE(wallet->EncryptWallet(passphrase));
+
+        bool added = true;
+        BOOST_CHECK(!wallet->RecoverPQKey(2, added));
+        BOOST_CHECK(!added);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 0U);
+
+        BOOST_REQUIRE(wallet->Unlock(passphrase));
+        BOOST_REQUIRE(wallet->RecoverPQKey(2, added));
+        BOOST_CHECK(added);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 3U);
+        BOOST_CHECK(wallet->HavePQKey(recoveredProgram));
+
+        BOOST_REQUIRE(wallet->RecoverPQKey(2, added));
+        BOOST_CHECK(!added);
+        BOOST_REQUIRE(wallet->RecoverPQKey(0, added));
+        BOOST_CHECK(added);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 3U);
+
+        CWalletDBWrapper rawDbw(&bitdb, filename);
+        CDB rawDb(rawDbw, "r");
+        BOOST_CHECK(rawDb.Exists(
+            std::make_pair(std::string("cpqkey"), recoveredProgram)));
+        BOOST_CHECK(!rawDb.Exists(
+            std::make_pair(std::string("pqkey"), recoveredProgram)));
+    }
+    bitdb.Flush(false);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 3U);
+        BOOST_REQUIRE(wallet->Unlock(passphrase));
+        CPQKey loaded;
+        BOOST_REQUIRE(wallet->GetPQKey(recoveredProgram, loaded));
+        BOOST_CHECK(loaded.MatchesPubKey(expected.GetPubKey()));
+        CPQPubKey next;
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(next, &index));
+        BOOST_CHECK_EQUAL(index, 3U);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(encrypted_legacy_hd_pq_derivation_recovers_and_advances)
 {
     const std::string filename = "pq-hd-encrypted-legacy-wallet.dat";

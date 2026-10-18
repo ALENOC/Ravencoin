@@ -703,6 +703,112 @@ bool CWallet::GenerateNewPQKey(CPQPubKey& pubkeyOut, uint32_t* indexOut)
     return true;
 }
 
+bool CWallet::RecoverPQKey(uint32_t index, bool& addedOut)
+{
+    LOCK(cs_wallet);
+    addedOut = false;
+    if (index >= pqderivation::HARDENED_LIMIT || !IsHDEnabled() ||
+        IsLocked() || !pqHDChain.IsValid()) {
+        return false;
+    }
+
+    SecureVector walletSeed;
+    const uint8_t seedSource = hdChain.IsBip44()
+        ? pqderivation::SEED_SOURCE_BIP39
+        : pqderivation::SEED_SOURCE_LEGACY_HD;
+    if (hdChain.IsBip44()) {
+        if (!GetBip39Seed(walletSeed))
+            return false;
+    } else {
+        CKey seed;
+        if (!GetKey(hdChain.seed_id, seed) ||
+            seed.size() != pqderivation::LEGACY_SEED_BYTES) {
+            return false;
+        }
+        walletSeed.assign(seed.begin(), seed.end());
+    }
+
+    const uint32_t coinType = GetParams().ExtCoinType();
+    uint256 lineageId;
+    if (!pqderivation::GetLineageId(walletSeed.data(), walletSeed.size(),
+                                    seedSource, coinType, lineageId)) {
+        return false;
+    }
+
+    CPQHDChain allocationChain = pqHDChain;
+    if (!allocationChain.IsInitialized() ||
+        allocationChain.nSeedSource != seedSource ||
+        allocationChain.nCoinType != coinType ||
+        allocationChain.lineage_id != lineageId) {
+        allocationChain.SetLineage(seedSource, coinType, lineageId);
+    }
+    if (!allocationChain.IsInitialized())
+        return false;
+
+    SecureVector pqSeed;
+    if (!pqderivation::DeriveSeed(walletSeed.data(), walletSeed.size(),
+                                  coinType, index, pqSeed)) {
+        return false;
+    }
+    SecureVector().swap(walletSeed);
+    CPQKey candidateKey;
+    const bool generated = candidateKey.SetSeed(pqSeed.data());
+    SecureVector().swap(pqSeed);
+    if (!generated)
+        return false;
+    const CPQPubKey candidatePubKey = candidateKey.GetPubKey();
+    const bool keyExists = HavePQKey(candidatePubKey.GetWitnessProgram());
+
+    CPQHDChain updatedChain = allocationChain;
+    updatedChain.nExternalChainCounter = std::max(
+        allocationChain.nExternalChainCounter, index + 1);
+    const bool chainChanged = !pqHDChain.IsInitialized() ||
+        pqHDChain.nSeedSource != updatedChain.nSeedSource ||
+        pqHDChain.nCoinType != updatedChain.nCoinType ||
+        pqHDChain.lineage_id != updatedChain.lineage_id ||
+        pqHDChain.nExternalChainCounter != updatedChain.nExternalChainCounter;
+    if (keyExists && !chainChanged)
+        return true;
+
+    CWalletDB walletdb(*dbw);
+    if (!walletdb.TxnBegin(DB_TXN_SYNC))
+        return false;
+
+    bool addedToMemory = false;
+    bool transactionActive = true;
+    auto abortRecovery = [&]() {
+        if (transactionActive && !walletdb.TxnAbort())
+            LogPrintf("RecoverPQKey: failed to abort wallet transaction\n");
+        transactionActive = false;
+        if (addedToMemory)
+            ErasePQKeyFromMemory(candidatePubKey.GetWitnessProgram());
+        return false;
+    };
+
+    try {
+        if (!keyExists) {
+            if (!AddPQKeyPubKeyWithDB(walletdb, candidateKey, candidatePubKey))
+                return abortRecovery();
+            addedToMemory = true;
+        }
+        if (chainChanged && !walletdb.WritePQHDChain(updatedChain))
+            return abortRecovery();
+        if (!walletdb.TxnCommit(DB_TXN_SYNC)) {
+            transactionActive = false;
+            if (addedToMemory)
+                ErasePQKeyFromMemory(candidatePubKey.GetWitnessProgram());
+            return false;
+        }
+        transactionActive = false;
+    } catch (...) {
+        return abortRecovery();
+    }
+
+    pqHDChain = updatedChain;
+    addedOut = !keyExists;
+    return true;
+}
+
 bool CWallet::AddCryptedKey(const CPubKey &vchPubKey,
                             const std::vector<unsigned char> &vchCryptedSecret)
 {

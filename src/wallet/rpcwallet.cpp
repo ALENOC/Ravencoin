@@ -261,6 +261,95 @@ UniValue getnewpqaddress(const JSONRPCRequest& request)
     return EncodeDestination(dest);
 }
 
+UniValue recoverpqkeys(const JSONRPCRequest& request)
+{
+    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) return NullUniValue;
+    if (request.fHelp || request.params.size() != 4) {
+        throw std::runtime_error(
+            "recoverpqkeys start_index end_index start_height stop_height\n"
+            "Restore deterministic PQ keys in an inclusive index range and rescan an inclusive block range.\n"
+            "At most 100 keys and 100000 blocks may be processed per call. Split larger recovery into multiple calls.\n"
+            "All keys and the next allocation index are persisted before the rescan. If the rescan fails or is aborted, retry the same call.\n"
+            "The next allocation index advances past end_index, including unused indices.\n"
+            "An encrypted wallet must be unlocked. This cannot recover older random PQ keys; those require a wallet-file backup.\n"
+            "Arguments:\n"
+            "1. start_index    (numeric, required) first hardened PQ receive index\n"
+            "2. end_index      (numeric, required) last hardened PQ receive index\n"
+            "3. start_height   (numeric, required) first block to rescan\n"
+            "4. stop_height    (numeric, required) last block to rescan\n"
+            "Result: {\"start_index\":n,\"end_index\":n,\"new_keys\":n,\"next_index\":n,\"start_height\":n,\"stop_height\":n}\n");
+    }
+
+    const int64_t startIndex = request.params[0].get_int64();
+    const int64_t endIndex = request.params[1].get_int64();
+    const int64_t startHeight = request.params[2].get_int64();
+    const int64_t stopHeight = request.params[3].get_int64();
+    if (startIndex < 0 || endIndex < startIndex ||
+        endIndex >= CPQHDChain::MAX_COUNTER || endIndex - startIndex >= 100) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           "Invalid PQ index range: use 1 to 100 indices below 2147483648");
+    }
+
+    LOCK2(cs_main, pwallet->cs_wallet);
+    if (startHeight < 0 || stopHeight < startHeight ||
+        stopHeight > chainActive.Height() || stopHeight - startHeight >= 100000) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           "Invalid block height range: use 1 to 100000 available blocks");
+    }
+    if (!pwallet->IsHDEnabled() || !pwallet->GetPQHDChain().IsValid()) {
+        throw JSONRPCError(RPC_WALLET_ERROR,
+                           "PQ recovery requires a valid HD wallet");
+    }
+    EnsureWalletIsUnlocked(pwallet);
+
+    CBlockIndex* const pindexStart = chainActive[static_cast<int>(startHeight)];
+    CBlockIndex* const pindexStop = chainActive[static_cast<int>(stopHeight)];
+    if (fPruneMode) {
+        for (CBlockIndex* block = pindexStop;
+             block && block->nHeight >= pindexStart->nHeight;
+             block = block->pprev) {
+            if (!(block->nStatus & BLOCK_HAVE_DATA)) {
+                throw JSONRPCError(RPC_MISC_ERROR,
+                                   "Requested block range contains pruned data");
+            }
+        }
+    }
+
+    int newKeys = 0;
+    for (int64_t index = startIndex; index <= endIndex; ++index) {
+        bool added = false;
+        if (!pwallet->RecoverPQKey(static_cast<uint32_t>(index), added)) {
+            throw JSONRPCError(RPC_WALLET_ERROR,
+                               strprintf("PQ recovery stopped at index %u. Persisted keys remain available; retry the same range.",
+                                         static_cast<uint32_t>(index)));
+        }
+        if (added)
+            ++newKeys;
+    }
+
+    CBlockIndex* const failedBlock = pwallet->ScanForWalletTransactions(
+        pindexStart, pindexStop, true);
+    if (pwallet->IsAbortingRescan()) {
+        throw JSONRPCError(RPC_MISC_ERROR,
+                           "PQ recovery rescan aborted. Keys remain persisted; retry the same range.");
+    }
+    if (failedBlock) {
+        throw JSONRPCError(RPC_MISC_ERROR,
+                           "PQ recovery rescan failed. Keys remain persisted; retry the same range.");
+    }
+
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("start_index", startIndex);
+    result.pushKV("end_index", endIndex);
+    result.pushKV("new_keys", newKeys);
+    result.pushKV("next_index", static_cast<int64_t>(
+        pwallet->GetPQHDChain().nExternalChainCounter));
+    result.pushKV("start_height", startHeight);
+    result.pushKV("stop_height", stopHeight);
+    return result;
+}
+
 UniValue getnewpqassetaddress(const JSONRPCRequest& request)
 {
     CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
@@ -3658,6 +3747,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "getmywords",               &getmywords,                        {} },
     { "wallet",             "getnewaddress",            &getnewaddress,            {"account"} },
     { "wallet",             "getnewpqaddress",          &getnewpqaddress,          {"account"} },
+    { "wallet",             "recoverpqkeys",            &recoverpqkeys,            {"start_index", "end_index", "start_height", "stop_height"} },
     { "wallet",             "getnewpqassetaddress",     &getnewpqassetaddress,     {"account"} },
     { "wallet",             "listpqassetaddresses",     &listpqassetaddresses,     {} },
     { "wallet",             "getrawchangeaddress",      &getrawchangeaddress,      {} },
