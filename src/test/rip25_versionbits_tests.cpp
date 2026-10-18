@@ -6,6 +6,7 @@
 #include "chainparams.h"
 #include "assets/assets.h"
 #include "base58.h"
+#include "consensus/consensus.h"
 #include "consensus/params.h"
 #include "consensus/tx_verify.h"
 #include "consensus/validation.h"
@@ -146,6 +147,66 @@ BOOST_AUTO_TEST_CASE(pq_bit12_activates_independently_from_v48_overflow_bit11)
     BOOST_CHECK_EQUAL(VersionBitsState(chain.Tip(), params, Consensus::DEPLOYMENT_PQ_HYBRID, cache), THRESHOLD_ACTIVE);
     BOOST_CHECK_EQUAL(VersionBitsStateSinceHeight(chain.Tip(), params, Consensus::DEPLOYMENT_PQ_HYBRID, cache), 12);
     BOOST_CHECK_EQUAL(VersionBitsState(chain.Tip(), params, Consensus::DEPLOYMENT_TRANSFER_OVERFLOW, cache), THRESHOLD_STARTED);
+}
+
+BOOST_AUTO_TEST_CASE(pq_bit12_resources_follow_exact_boundary_and_reorg)
+{
+    Consensus::Params params = MakeRIP25VersionBitsParams();
+    params.nPQHybridEnabled = false;
+    params.nPowTargetSpacing = 60;
+    const uint32_t pqMask = VersionBitsMask(params, Consensus::DEPLOYMENT_PQ_HYBRID);
+
+    SyntheticVersionBitsChain common;
+    common.Mine(4, VERSIONBITS_TOP_BITS);
+    SyntheticVersionBitsChain signaled(common.Tip());
+    signaled.Mine(3, VERSIONBITS_TOP_BITS | pqMask);
+    signaled.Mine(1, VERSIONBITS_TOP_BITS);
+    signaled.Mine(2, VERSIONBITS_TOP_BITS);
+    CBlockIndex* twoBefore = signaled.Tip();
+    signaled.Mine(1, VERSIONBITS_TOP_BITS);
+    CBlockIndex* oneBefore = signaled.Tip();
+    signaled.Mine(1, VERSIONBITS_TOP_BITS);
+    CBlockIndex* activationParent = signaled.Tip();
+    signaled.Mine(1, VERSIONBITS_TOP_BITS);
+    CBlockIndex* oneAfter = signaled.Tip();
+    signaled.Mine(1, VERSIONBITS_TOP_BITS);
+    CBlockIndex* twoAfter = signaled.Tip();
+
+    BOOST_REQUIRE_EQUAL(twoBefore->nHeight, 9);
+    BOOST_REQUIRE_EQUAL(oneBefore->nHeight, 10);
+    BOOST_REQUIRE_EQUAL(activationParent->nHeight, 11);
+    BOOST_REQUIRE_EQUAL(oneAfter->nHeight, 12);
+    BOOST_REQUIRE_EQUAL(twoAfter->nHeight, 13);
+
+    const CBlockIndex* parents[] = {
+        twoBefore, oneBefore, activationParent, oneAfter, twoAfter,
+    };
+    const bool expectedActive[] = {false, false, true, true, true};
+    {
+        LOCK(cs_main);
+        versionbitscache.Clear();
+        for (unsigned int i = 0; i < 5; ++i)
+            BOOST_CHECK_EQUAL(IsPQWitnessDiscountActive(parents[i], params), expectedActive[i]);
+    }
+    for (unsigned int i = 0; i < 5; ++i) {
+        const unsigned int expectedWeight = expectedActive[i] ?
+            MAX_BLOCK_WEIGHT_RIP25_PHASE1 : MAX_BLOCK_WEIGHT_RIP2;
+        BOOST_CHECK_EQUAL(GetMaxBlockWeightForPrev(parents[i], params), expectedWeight);
+        BOOST_CHECK_EQUAL(GetMaxBlockSerializedSizeForPrev(parents[i], params), expectedWeight);
+    }
+
+    SyntheticVersionBitsChain unsignaled(common.Tip());
+    unsignaled.Mine(10, VERSIONBITS_TOP_BITS);
+    {
+        LOCK(cs_main);
+        BOOST_CHECK(!IsPQWitnessDiscountActive(unsignaled.Tip(), params));
+    }
+    BOOST_CHECK_EQUAL(GetMaxBlockWeightForPrev(unsignaled.Tip(), params),
+                      MAX_BLOCK_WEIGHT_RIP2);
+    {
+        LOCK(cs_main);
+        versionbitscache.Clear();
+    }
 }
 
 BOOST_AUTO_TEST_CASE(overflow_bit11_does_not_signal_pq_bit12)
