@@ -231,9 +231,9 @@ void DistributeRewardSnapshot(CWallet * p_wallet, const CRewardSnapshot& p_rewar
         return;
     }
 
-    int nNumberOfTransactions = ((int)paymentDetails.size() / MAX_PAYMENTS_PER_TRANSACTION) + 1;
+    size_t nNumberOfTransactions = CountRewardBatches(paymentDetails.size());
     CRewardSnapshot copyRewardSnapshot = p_rewardSnapshot;
-    for (int i = 0; i < nNumberOfTransactions; i++) {
+    for (size_t i = 0; i < nNumberOfTransactions; i++) {
         uint256 txid;
         if (pDistributeSnapshotDb->GetDistributeTransaction(p_rewardSnapshot.GetHash(), i, txid)) {
             CTransactionRef txRef;

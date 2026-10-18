@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <assets/assets.h>
+#include <assets/rewards.h>
 
 #include <test/test_raven.h>
 
@@ -730,5 +731,20 @@ BOOST_FIXTURE_TEST_SUITE(asset_tests, BasicTestingSetup)
         BOOST_CHECK_MESSAGE(!txWithDoubleFee.CheckAddingTagBurnFee(1), "CheckAddingTagBurnFee: Test 3 Didn't fail with double burn fee");
     }
 
+
+    BOOST_AUTO_TEST_CASE(reward_batch_boundaries)
+    {
+        const std::pair<size_t, size_t> cases[] = {
+            {0, 0}, {1, 1}, {999, 1}, {1000, 1},
+            {1001, 2}, {1999, 2}, {2000, 2}, {2001, 3}
+        };
+        for (const auto& item : cases) {
+            const size_t batches = CountRewardBatches(item.first);
+            BOOST_CHECK_EQUAL(batches, item.second);
+            for (size_t batch = 0; batch < batches; ++batch) {
+                BOOST_CHECK(batch * MAX_PAYMENTS_PER_TRANSACTION < item.first);
+            }
+        }
+    }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -11,6 +11,7 @@
 #include "assettypes.h"
 
 #include <string>
+#include <cstddef>
 #include <set>
 #include <map>
 #include <unordered_map>
@@ -26,6 +27,12 @@ extern std::map<uint256, CRewardSnapshot> mapRewardSnapshots;
 //  Addresses are delimited by commas
 static const std::string ADDRESS_COMMA_DELIMITER = ",";
 const int MAX_PAYMENTS_PER_TRANSACTION = 1000;
+
+inline size_t CountRewardBatches(size_t recipientCount)
+{
+    return recipientCount / MAX_PAYMENTS_PER_TRANSACTION +
+           (recipientCount % MAX_PAYMENTS_PER_TRANSACTION != 0);
+}
 
 //  Individual payment record
 struct OwnerAndAmount
