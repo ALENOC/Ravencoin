@@ -112,6 +112,7 @@ BASE_SCRIPTS= [
     'feature_assets.py',
     'wallet_asset_multiwallet.py',
     'feature_messaging.py',
+    'wallet_messaging_multiwallet.py',
     'feature_assets_reorg.py',
     'feature_asset_activation_reorg.py',
     'feature_pq_activation_reorg_sigops.py',

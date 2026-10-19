@@ -29,6 +29,7 @@
 #include "timedata.h"
 #include "util.h"
 #include "utilmoneystr.h"
+#include "utilstrencodings.h"
 #include "wallet/coincontrol.h"
 #include "wallet/feebumper.h"
 #include "wallet/wallet.h"
@@ -37,6 +38,73 @@
 std::string MessageActivationWarning()
 {
     return AreMessagesDeployed() ? "" : "\nTHIS COMMAND IS NOT YET ACTIVE!\nhttps://github.com/RavenProject/rips/blob/master/rip-0005.mediawiki\n";
+}
+
+#ifdef ENABLE_WALLET
+static CWallet& GetMessageRPCWallet(const JSONRPCRequest& request)
+{
+    CWallet* wallet = GetWalletForJSONRPCRequest(request);
+    EnsureWalletIsAvailable(wallet, false);
+    if (!IsMessageWalletScanComplete(*wallet))
+        throw JSONRPCError(RPC_DATABASE_ERROR,
+                           "Historical message channel scan is incomplete for this wallet");
+    return *wallet;
+}
+#endif
+
+UniValue exportlegacymessagedata(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 1)
+        throw std::runtime_error(
+            "exportlegacymessagedata true\n"
+            "Return persisted pre-upgrade messages and subscriptions from the node-global databases.\n"
+            "These records have no trustworthy wallet owner and are never imported or deleted.\n"
+            "Call this on the node RPC endpoint, not a wallet endpoint.\n"
+            "\nArguments:\n"
+            "1. acknowledge_global_scope (boolean, required) Must be true to export unscoped records.\n"
+            "\nResult: Object with scope, messages, and channels. Message payloads are lossless hex bytes.\n"
+            + HelpExampleCli("exportlegacymessagedata", "true")
+            + HelpExampleRpc("exportlegacymessagedata", "true"));
+
+    if (request.URI.compare(0, 8, "/wallet/") == 0)
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           "Use the node RPC endpoint for legacy-global-unscoped data");
+    if (!request.params[0].isBool() || !request.params[0].get_bool())
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           "Set acknowledge_global_scope to true to export unscoped records");
+    if (!pmessagedb || !pmessagechanneldb)
+        throw JSONRPCError(RPC_DATABASE_ERROR, "Legacy message databases are unavailable");
+
+    std::set<CMessage> legacyMessages;
+    std::set<std::string> legacyChannels;
+    if (!pmessagedb->LoadMessages(legacyMessages) ||
+        !pmessagechanneldb->LoadMyMessageChannels(legacyChannels))
+        throw JSONRPCError(RPC_DATABASE_ERROR,
+                           "Legacy message database contains an unreadable row; export is incomplete");
+
+    UniValue messages(UniValue::VARR);
+    for (const CMessage& message : legacyMessages) {
+        UniValue row(UniValue::VOBJ);
+        row.push_back(Pair("txid", message.out.hash.GetHex()));
+        row.push_back(Pair("vout", static_cast<uint64_t>(message.out.n)));
+        row.push_back(Pair("asset_name", message.strName));
+        row.push_back(Pair("message_hex", HexStr(message.ipfsHash.begin(), message.ipfsHash.end())));
+        row.push_back(Pair("time", message.time));
+        row.push_back(Pair("expiration_time", message.nExpiredTime));
+        row.push_back(Pair("block_height", message.nBlockHeight));
+        row.push_back(Pair("status", static_cast<int>(IntFromMessageStatus(message.status))));
+        messages.push_back(row);
+    }
+
+    UniValue channels(UniValue::VARR);
+    for (const std::string& channel : legacyChannels)
+        channels.push_back(channel);
+
+    UniValue result(UniValue::VOBJ);
+    result.push_back(Pair("scope", "legacy-global-unscoped"));
+    result.push_back(Pair("messages", messages));
+    result.push_back(Pair("channels", channels));
+    return result;
 }
 
 UniValue viewallmessages(const JSONRPCRequest& request) {
@@ -74,27 +142,12 @@ UniValue viewallmessages(const JSONRPCRequest& request) {
     }
 
     std::set<CMessage> setMessages;
-
-    pmessagedb->LoadMessages(setMessages);
-
-    for (auto pair : mapDirtyMessagesOrphaned) {
-        CMessage message = pair.second;
-        message.status = MessageStatus::ORPHAN;
-        if (setMessages.count(message))
-            setMessages.erase(message);
-        setMessages.insert(message);
-    }
-
-    for (auto out : setDirtyMessagesRemove) {
-        CMessage message;
-        message.out = out;
-        setMessages.erase(message);
-    }
-
-    for (auto pair : mapDirtyMessagesAdd) {
-        setMessages.erase(pair.second);
-        setMessages.insert(pair.second);
-    }
+#ifdef ENABLE_WALLET
+    if (!LoadWalletMessages(GetMessageRPCWallet(request), setMessages))
+        throw JSONRPCError(RPC_DATABASE_ERROR, "Unable to load wallet messages");
+#else
+    throw JSONRPCError(RPC_WALLET_ERROR, "Wallet support is disabled");
+#endif
 
     UniValue messages(UniValue::VARR);
 
@@ -149,18 +202,12 @@ UniValue viewallmessagechannels(const JSONRPCRequest& request) {
     }
 
     std::set<std::string> setChannels;
-
-    pmessagechanneldb->LoadMyMessageChannels(setChannels);
-
-    LogPrintf("%s: Checking caches removeSize:%u, addSize:%u\n", __func__, setDirtyChannelsRemove.size(), setDirtyChannelsAdd.size());
-
-    for (auto name : setDirtyChannelsRemove) {
-        setChannels.erase(name);
-    }
-
-    for (auto name : setDirtyChannelsAdd) {
-        setChannels.insert(name);
-    }
+#ifdef ENABLE_WALLET
+    if (!LoadWalletChannels(GetMessageRPCWallet(request), setChannels))
+        throw JSONRPCError(RPC_DATABASE_ERROR, "Unable to load wallet message channels");
+#else
+    throw JSONRPCError(RPC_WALLET_ERROR, "Wallet support is disabled");
+#endif
 
     UniValue channels(UniValue::VARR);
 
@@ -215,7 +262,12 @@ UniValue subscribetochannel(const JSONRPCRequest& request) {
         throw JSONRPCError(
                 RPC_INVALID_PARAMETER, "Channel Name must be a owner asset, or a message channel asset e.g OWNER!, MSG_CHANNEL~123.");
 
-    AddChannel(channel_name);
+#ifdef ENABLE_WALLET
+    if (!SetWalletChannelSubscription(GetMessageRPCWallet(request), channel_name, true))
+        throw JSONRPCError(RPC_DATABASE_ERROR, "Unable to subscribe wallet to channel");
+#else
+    throw JSONRPCError(RPC_WALLET_ERROR, "Wallet support is disabled");
+#endif
 
     return "Subscribed to channel: " + channel_name;
 }
@@ -266,7 +318,12 @@ UniValue unsubscribefromchannel(const JSONRPCRequest& request) {
         throw JSONRPCError(
                 RPC_INVALID_PARAMETER, "Channel Name must be a owner asset, or a message channel asset e.g OWNER!, MSG_CHANNEL~123.");
 
-    RemoveChannel(channel_name);
+#ifdef ENABLE_WALLET
+    if (!SetWalletChannelSubscription(GetMessageRPCWallet(request), channel_name, false))
+        throw JSONRPCError(RPC_DATABASE_ERROR, "Unable to unsubscribe wallet from channel");
+#else
+    throw JSONRPCError(RPC_WALLET_ERROR, "Wallet support is disabled");
+#endif
 
     return "Unsubscribed from channel: " + channel_name;
 }
@@ -294,13 +351,12 @@ UniValue clearmessages(const JSONRPCRequest& request) {
     }
 
     int count = 0;
-    count += mapDirtyMessagesAdd.size();
-
-    pMessagesCache->Clear();
-    setDirtyMessagesRemove.clear();
-    mapDirtyMessagesAdd.clear();
-    mapDirtyMessagesOrphaned.clear();
-    pmessagedb->EraseAllMessages(count);
+#ifdef ENABLE_WALLET
+    if (!ClearWalletMessages(GetMessageRPCWallet(request), count))
+        throw JSONRPCError(RPC_DATABASE_ERROR, "Unable to clear wallet messages");
+#else
+    throw JSONRPCError(RPC_WALLET_ERROR, "Wallet support is disabled");
+#endif
 
     return "Erased " + std::to_string(count) + " Messages from the database and cache";
 }
@@ -516,6 +572,7 @@ static const CRPCCommand commands[] =
     {           //  category    name                          actor (function)             argNames
                 //  ----------- ------------------------      -----------------------      ----------
             { "messages",       "viewallmessages",            &viewallmessages,            {}},
+            { "messages",       "exportlegacymessagedata",     &exportlegacymessagedata,     {"acknowledge_global_scope"}},
             { "messages",       "viewallmessagechannels",     &viewallmessagechannels,     {}},
             { "messages",       "subscribetochannel",         &subscribetochannel,         {"channel_name"}},
             { "messages",       "unsubscribefromchannel",     &unsubscribefromchannel,     {"channel_name"}},

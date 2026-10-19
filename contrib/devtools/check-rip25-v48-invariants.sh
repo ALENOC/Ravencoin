@@ -100,6 +100,9 @@ require_fixed 'wallet_pq_recovery.py' .github/workflows/build-raven.yml 'release
 require_fixed "'wallet_restricted_multiwallet.py'" test/functional/test_runner.py 'restricted multiwallet regression is not registered'
 require_fixed 'wallet_restricted_multiwallet.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits restricted multiwallet regression'
 require_fixed 'wallet_restricted_multiwallet.py' .github/workflows/build-raven.yml 'release workflow omits restricted multiwallet regression'
+require_fixed "'wallet_messaging_multiwallet.py'" test/functional/test_runner.py 'messaging multiwallet regression is not registered'
+require_fixed 'wallet_messaging_multiwallet.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits messaging multiwallet regression'
+require_fixed 'wallet_messaging_multiwallet.py' .github/workflows/build-raven.yml 'release workflow omits messaging multiwallet regression'
 require_fixed "'feature_pq_activation_reorg_sigops.py'" test/functional/test_runner.py 'PQ activation reorg and sigop regression is not registered'
 require_fixed 'feature_pq_activation_reorg_sigops.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits PQ activation reorg and sigop regression'
 require_fixed 'feature_pq_activation_reorg_sigops.py' .github/workflows/build-raven.yml 'release workflow omits PQ activation reorg and sigop regression'
@@ -631,7 +634,7 @@ require_fixed 'python3 contrib/devtools/test-required-functional-gate.py' "$fina
 require_fixed 'python3 test/functional/test_runner.py --require-tests' "$final_gate" 'functional gate permits absent or skipped security tests'
 require_fixed 'feature_mempool_clear_reissue.py' "$final_gate" 'final gate omits inherited mempool clear regression'
 require_fixed 'feature_mempool_reissue_restart.py' "$final_gate" 'final gate omits inherited reissue restart regression'
-require_fixed 'wallet_encryption_rewrite.py wallet_asset_multiwallet.py feature_rewards_restart.py wallet_pq_recovery.py wallet_restricted_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py' "$final_gate" 'required wallet, rewards, PQ recovery, restricted multiwallet, asset-scope, and chainstate-ahead functional tests are missing'
+require_fixed 'wallet_encryption_rewrite.py wallet_asset_multiwallet.py feature_rewards_restart.py wallet_pq_recovery.py wallet_restricted_multiwallet.py wallet_messaging_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py' "$final_gate" 'required wallet, rewards, PQ recovery, restricted multiwallet, messaging multiwallet, asset-scope, and chainstate-ahead functional tests are missing'
 require_fixed 'wallet_asset_multiwallet.py' .github/workflows/build-raven.yml 'release security job omits the multiwallet asset regression'
 require_fixed "'wallet_asset_multiwallet.py'" test/functional/test_runner.py 'multiwallet asset regression is not in the functional suite'
 require_fixed 'id: posttest_integrity' "$final_gate" 'final gate does not recheck source after security tests'
@@ -830,6 +833,6 @@ echo "$fuzz_smoke_output"
 python3 contrib/devtools/test-required-functional-gate.py
 PYTHONPATH=test/functional python3 -m unittest test_framework.test_cache_peers
 python3 test/functional/test_runner.py --require-tests --jobs=2 \
-  wallet_encryption_rewrite.py feature_rewards_restart.py wallet_pq_recovery.py wallet_restricted_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py feature_pq_activation_reorg_sigops.py feature_pq_asset_anchor.py feature_pq_asset_authority_selection.py feature_pq_asset_source_rpc.py feature_pq_asset_wallet_ownership.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py
+  wallet_encryption_rewrite.py feature_rewards_restart.py wallet_pq_recovery.py wallet_restricted_multiwallet.py wallet_messaging_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py feature_pq_activation_reorg_sigops.py feature_pq_asset_anchor.py feature_pq_asset_authority_selection.py feature_pq_asset_source_rpc.py feature_pq_asset_wallet_ownership.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py
 
 echo 'RIP-25/v4.8 structural + behavioral invariants: OK'

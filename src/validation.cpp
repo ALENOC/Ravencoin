@@ -1909,6 +1909,26 @@ static DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* 
         error("DisconnectBlock(): block asset undo data inconsistent");
         return DISCONNECT_FAILED;
     }
+
+#ifdef ENABLE_WALLET
+    if (databaseMessaging && fMessaging) {
+        bool hasAssetOutput = false;
+        for (const auto& tx : block.vtx) {
+            for (const auto& output : tx->vout) {
+                if (output.scriptPubKey.IsAssetScript()) {
+                    hasAssetOutput = true;
+                    break;
+                }
+            }
+            if (hasAssetOutput)
+                break;
+        }
+        if (hasAssetOutput && !InvalidateMessageWalletScans()) {
+            error("DisconnectBlock(): failed to invalidate wallet message scans");
+            return DISCONNECT_FAILED;
+        }
+    }
+#endif
     
     std::vector<std::pair<CAddressIndexKey, CAmount> > addressIndex;
     std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > addressUnspentIndex;
@@ -2170,9 +2190,7 @@ static DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* 
                         (IsAssetNameAnOwner(transfer.strName) || IsAssetNameAnMsgChannel(transfer.strName))) {
 
                         LOCK(cs_messaging);
-                        if (IsChannelSubscribed(transfer.strName)) {
-                            OrphanMessage(COutPoint(hash, index));
-                        }
+                        OrphanMessage(COutPoint(hash, index));
                     }
                 }
 
@@ -2490,6 +2508,78 @@ static TxAssetDeploymentContext GetTxAssetDeploymentContextLocked(const CBlockIn
         rip5State == THRESHOLD_ACTIVE,
         rip5State == THRESHOLD_ACTIVE,
     };
+}
+
+bool CollectConfirmedAssetMessages(const CBlock& block, const CBlockIndex* pindex,
+                                   std::set<CMessage>& messages)
+{
+    AssertLockHeld(cs_main);
+    if (!pindex || !pindex->pprev)
+        return false;
+    const TxAssetDeploymentContext context = GetTxAssetDeploymentContextLocked(
+        pindex->pprev, GetParams().GetConsensus());
+    if (!context.fMessagesDeployed)
+        return true;
+
+    bool hasCandidate = false;
+    for (const auto& tx : block.vtx) {
+        for (const CTxOut& output : tx->vout) {
+            CAssetOutputEntry data;
+            if (GetAssetData(output.scriptPubKey, data, &context) &&
+                data.type == TX_TRANSFER_ASSET && !data.message.empty() &&
+                (IsAssetNameAnOwner(data.assetName) ||
+                 IsAssetNameAnMsgChannel(data.assetName))) {
+                hasCandidate = true;
+                break;
+            }
+        }
+        if (hasCandidate)
+            break;
+    }
+    if (!hasCandidate)
+        return true;
+
+    CBlockUndo undo;
+    if (pindex->GetUndoPos().IsNull() ||
+        !UndoReadFromDisk(undo, pindex->GetUndoPos(), pindex->pprev->GetBlockHash()) ||
+        undo.vtxundo.size() + 1 != block.vtx.size())
+        return false;
+
+    for (size_t txIndex = 1; txIndex < block.vtx.size(); ++txIndex) {
+        const CTransaction& tx = *block.vtx[txIndex];
+        const CTxUndo& txUndo = undo.vtxundo[txIndex - 1];
+        if (txUndo.vprevout.size() != tx.vin.size())
+            return false;
+        std::map<std::string, std::string> inputAddresses;
+        for (const Coin& input : txUndo.vprevout) {
+            if (!input.IsAsset())
+                continue;
+            CAssetOutputEntry data;
+            if (!GetAssetData(input.out.scriptPubKey, data, &context))
+                return false;
+            inputAddresses.emplace(data.assetName, EncodeDestination(data.destination));
+        }
+        for (size_t outputIndex = 0; outputIndex < tx.vout.size(); ++outputIndex) {
+            CAssetOutputEntry data;
+            if (!GetAssetData(tx.vout[outputIndex].scriptPubKey, data, &context) ||
+                data.type != TX_TRANSFER_ASSET || data.message.empty() ||
+                (!IsAssetNameAnOwner(data.assetName) &&
+                 !IsAssetNameAnMsgChannel(data.assetName)) ||
+                (data.expireTime != 0 && data.expireTime <= block.nTime))
+                continue;
+            const auto sender = inputAddresses.find(data.assetName);
+            if (sender == inputAddresses.end() ||
+                sender->second != EncodeDestination(data.destination))
+                continue;
+            CMessage message(COutPoint(tx.GetHash(), outputIndex), data.assetName,
+                             data.message, data.expireTime, block.nTime);
+            message.nBlockHeight = pindex->nHeight;
+            if (data.expireTime != 0 && data.expireTime <= GetTime())
+                message.status = MessageStatus::EXPIRED;
+            messages.insert(message);
+        }
+    }
+    return true;
 }
 
 unsigned int GetMaxBlockWeightForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params)

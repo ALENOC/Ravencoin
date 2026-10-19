@@ -53,6 +53,7 @@ class CBlockPolicyEstimator;
 class CTxMemPool;
 class CValidationState;
 class CTxUndo;
+class CBlock;
 struct ChainTxData;
 
 class CAssetsDB;
@@ -61,6 +62,9 @@ class CSnapshotRequestDB;
 
 struct PrecomputedTransactionData;
 struct LockPoints;
+
+bool CollectConfirmedAssetMessages(const CBlock& block, const CBlockIndex* pindex,
+                                   std::set<CMessage>& messages);
 
 /** Default for -whitelistrelay. */
 static const bool DEFAULT_WHITELISTRELAY = true;
