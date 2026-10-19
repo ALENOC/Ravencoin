@@ -16,6 +16,8 @@ from test_framework.util import assert_equal
 
 
 PQ_VERSION = 0x30001040
+PQ_REGTEST_SEED0_ADDRESS = (
+    'rcrt1z4hyhd28n75tkqt6tf6j3jdtalvnuaxd74nepjk5nn7lmz8jh9vasg4ztx8')
 PQ_BIP9_ARGS = [
     '-blockversion={}'.format(PQ_VERSION),
     '-vbparams=pq_hybrid:0:999999999999',
@@ -27,19 +29,24 @@ class PQActivationReorgSigopsTest(RavenTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 1
+        self.extra_args = [[
+            '-mnemonic=abandon abandon abandon abandon abandon abandon '
+            'abandon abandon abandon abandon abandon about',
+            '-mnemonicpassphrase=TREZOR',
+        ]]
 
     @staticmethod
     def status(node):
         return node.getblockchaininfo()['bip9_softforks']['pq_hybrid']['status']
 
     @staticmethod
-    def candidate(node, parent, height, tx=None, sigop_edge=False):
+    def candidate(node, parent, height, tx=None, legacy_sigops=0):
         coinbase = create_coinbase(height)
-        if sigop_edge:
-            # 999 bare CHECKMULTISIGs plus 20 CHECKSIGs cost exactly
-            # 20,000 * 4 = 80,000. An active PQ input adds one.
-            script = CScript([OP_CHECKMULTISIG] * 999 + [OP_CHECKSIG] * 20)
-            assert_equal(script.get_sig_op_count(False) * 4, 80_000)
+        if legacy_sigops:
+            multi_count, single_count = divmod(legacy_sigops, 20)
+            script = CScript([OP_CHECKMULTISIG] * multi_count +
+                             [OP_CHECKSIG] * single_count)
+            assert_equal(script.get_sig_op_count(False), legacy_sigops)
             coinbase.vout.append(CTxOut(0, script))
             coinbase.rehash()
         block = create_block(int(parent, 16), coinbase,
@@ -58,10 +65,11 @@ class PQActivationReorgSigopsTest(RavenTestFramework):
         return node.submitblock(block.serialize(True).hex())
 
     @staticmethod
-    def spend(txid, vout):
+    def spend(txid, *vouts):
         tx = CTransaction()
-        tx.vin = [CTxIn(COutPoint(int(txid, 16), vout), b'', 0xffffffff)]
-        tx.vout = [CTxOut(90_000_000, CScript([OP_TRUE]))]
+        tx.vin = [CTxIn(COutPoint(int(txid, 16), vout), b'', 0xffffffff)
+                  for vout in vouts]
+        tx.vout = [CTxOut(90_000_000 * len(vouts), CScript([OP_TRUE]))]
         return tx
 
     def run_test(self):
@@ -75,6 +83,7 @@ class PQActivationReorgSigopsTest(RavenTestFramework):
         # Obtain the wallet key before switching regtest from its usual
         # immediate PQ mode to real bit-12 versionbits activation.
         pq_address = node.getnewpqaddress()
+        assert_equal(pq_address, PQ_REGTEST_SEED0_ADDRESS)
         pq_script = bytes.fromhex(node.validateaddress(pq_address)['scriptPubKey'])
         self.restart_node(0, PQ_BIP9_ARGS)
         node = self.nodes[0]
@@ -83,9 +92,9 @@ class PQActivationReorgSigopsTest(RavenTestFramework):
         node.generate(99)
         parent = node.getbestblockhash()
         coinbase = create_coinbase(100)
-        coinbase.vout[0].nValue -= 200_000_000
-        coinbase.vout.extend([CTxOut(100_000_000, pq_script),
-                             CTxOut(100_000_000, pq_script)])
+        coinbase.vout[0].nValue -= 400_000_000
+        coinbase.vout.extend(CTxOut(100_000_000, pq_script)
+                             for _ in range(4))
         coinbase.rehash()
         funding = create_block(int(parent, 16), coinbase,
                                node.getblockheader(parent)['time'] + 1)
@@ -140,22 +149,34 @@ class PQActivationReorgSigopsTest(RavenTestFramework):
         node.reconsiderblock(active_parent)
         assert_equal(node.getbestblockhash(), active_tip)
 
-        # CheckBlock sees precisely 80,000 legacy sigops. ConnectBlock
-        # must add one for the native PQ input and reject 80,001.
+        # CheckBlock sees 79,996 legacy sigops. Three active PQ inputs
+        # add six and cross the 80,000 limit. The prior one-unit rule
+        # admits this block with 79,999 and is the red control.
         sigop_parent = node.getbestblockhash()
-        signed_second = node.signrawtransaction(
-            to_hex(self.spend(funding_txid, 2)))
-        assert_equal(signed_second['complete'], True)
+        signed_three = node.signrawtransaction(
+            to_hex(self.spend(funding_txid, 2, 3, 4)))
+        assert_equal(signed_three['complete'], True)
         excess = self.candidate(node, sigop_parent, 434,
-                                from_hex(CTransaction(), signed_second['hex']),
-                                sigop_edge=True)
+                                from_hex(CTransaction(), signed_three['hex']),
+                                legacy_sigops=19_999)
         assert_equal(self.submit(node, excess), 'bad-blk-sigops')
         assert_equal(node.getbestblockhash(), sigop_parent)
-        self.log.info('80,001 sigops rejected with PQ input')
-        at_limit = self.candidate(node, sigop_parent, 434, sigop_edge=True)
+        self.log.info('80,002 sigops rejected with three PQ inputs')
+
+        signed_two = node.signrawtransaction(
+            to_hex(self.spend(funding_txid, 2, 3)))
+        assert_equal(signed_two['complete'], True)
+        at_limit = self.candidate(node, sigop_parent, 434,
+                                  from_hex(CTransaction(), signed_two['hex']),
+                                  legacy_sigops=19_999)
         assert_equal(self.submit(node, at_limit), None)
         assert_equal(node.getbestblockhash(), at_limit.hash)
-        self.log.info('80,000 legacy sigops accepted')
+        self.log.info('80,000 sigops accepted with two PQ inputs')
+
+        legacy_control = self.candidate(node, at_limit.hash, 435,
+                                        legacy_sigops=20_000)
+        assert_equal(self.submit(node, legacy_control), None)
+        self.log.info('80,000 legacy sigops accepted without PQ inputs')
 
 
 if __name__ == '__main__':

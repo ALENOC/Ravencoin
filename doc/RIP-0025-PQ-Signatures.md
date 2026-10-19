@@ -347,6 +347,24 @@ spend weighed 8,000,697 WU under the old calculation and about
 `bad-blk-weight`, while the candidate accepted it. The discount alone
 also crosses the old validation boundary.
 
+#### 4.2.1 PQ Signature Operation Cost
+
+Starting at bit-12 ACTIVE, each native or P2SH-wrapped witness-v2 ML-DSA
+input contributes two units to the block signature-operation cost. Before
+activation it contributes zero under this rule. The block limit remains
+80,000 cost units, and the miner uses the same contextual count as block
+validation. The value is a fixed consensus constant, independent of the
+CPU or liboqs backend used by a node.
+
+Five paired portable-backend benchmark runs measured a median ML-DSA to
+ECDSA verification-time ratio of 1.748 on the audited x86_64 system. Two
+cost units cover that measured ratio; they are not a claim about every
+future platform. Tests exercise native and wrapped inputs, pre-activation
+counting, exact-limit acceptance, one-over rejection, and miner template
+selection with stale cached costs. This cost adjustment is a consensus
+change from the initial RIP-25 value of one and is included in the bit-12
+incompatible upgrade.
+
 #### 4.3 Dust Threshold
 
 For PQ outputs, the spend cost increases proportionally to the ML-DSA witness size:

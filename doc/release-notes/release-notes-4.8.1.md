@@ -32,6 +32,7 @@ follow a different chain once a newly allowed block appears.
 | Lock-in | One complete LOCKED_IN window follows a successful signaling window |
 | Activation | ACTIVE begins at the following window boundary, at height `H12` |
 | Block limit at `H12` | 12 MWU, with the contextual PQ witness discount |
+| PQ sigop cost at `H12` | 2 units per active native or P2SH-wrapped witness-v2 input; 80,000-unit block cap unchanged |
 | Later block limit | 16 MWU at `H12 + 525600` blocks, one nominal year at the 60-second target spacing |
 
 The start timestamp is not the date when the new rules take effect. BIP9
@@ -40,6 +41,12 @@ is reached before lock-in, bit 12 fails and these rules do not activate
 through this deployment. The 16 MWU phase is height-based, not tied to
 a calendar date. There is no automatic return to Core 4.8.0 validation
 rules after activation.
+
+The PQ sigop cost of two is a consensus change from the initial RIP-25
+value of one. It is fixed across platforms and begins with bit-12 ACTIVE.
+Both miner templates and block validation count native and P2SH-wrapped
+witness-v2 inputs at this cost. The change follows portable-backend
+verification measurements and exact-limit regression tests.
 
 On mainnet, upgraded 4.8.1 `getblocktemplate` mining templates
 automatically set bit 12 and signal during STARTED and LOCKED_IN.
