@@ -278,6 +278,13 @@ jobs:
           python3 contrib/devtools/test-qt-no-wallet-options.py \
           src/qt/raven-qt src/raven-cli
 
+    - name: Test pinned Qt mnemonic dialog
+      if: matrix.OS == 'linux'
+      shell: bash
+      run: |
+        make -C src -j2 qt/test/test_mnemonicdialog
+        QT_QPA_PLATFORM=minimal src/qt/test/test_mnemonicdialog
+
 # Skip the binary checks for now.
 #      name: Check Binary Security
 #      run: ${SCRIPTS}/05-binary-checks.sh ${{ MATRIX.OS }} ${{ GITHUB.WORKSPACE }}
