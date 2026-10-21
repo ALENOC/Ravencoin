@@ -172,8 +172,10 @@ shutdown checks.
 
 The available testnet active chain was replayed from genesis by a clean
 4.8.1 candidate with `-assumevalid=0`, then synchronized with public
-peers through height 2,554,504. The exact snapshots and limits are in the
-remediation register and private audit evidence.
+peers. A later unpruned candidate at `d5dbc0d07` scanned the active chain
+through height 2,562,352, covering 2,562,353 blocks and 2,782,751
+transactions with 1,285 verified checkpoints. The exact snapshots and
+limits are in the remediation register and private audit evidence.
 The scanned chain contained no native witness-v2 outputs or spends, so
 the replay checks historical compatibility rather than an on-chain PQ
 signature. It does not test unknown side branches or future bit-13
@@ -191,8 +193,8 @@ wallet recovery test failures (FINDING-112); a renewed failure blocks
 release, and `make check` remains mandatory on the final SHA.
 The wallet-disabled Qt corrections (FINDING-177 and FINDING-178)
 require passing unmodified Linux package smokes on the final SHA.
-Operator readiness, manual GUI checks on release operating systems,
-final checksums, and signatures
-still require qualification.
-The release will be tagged and published only after those checks and
-the owner's separate release approval.
+Operator readiness and manual GUI checks on release operating systems
+still require qualification. After final-SHA CI and review of all five
+packages, the owner must separately approve the exact 4.8.1 tag.
+Signing and final checksums follow tag creation. Publication requires
+another explicit owner decision.
