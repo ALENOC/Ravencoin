@@ -35,7 +35,25 @@ class PQAssetAnchorTest(RavenTestFramework):
         assert_equal(len(matches), 1)
         return matches[0]
 
+    @staticmethod
+    def is_asset_script(script):
+        if len(script) <= 31 or script[25] != ASSET_OPCODE:
+            return False
+        classical = (script[:3] == b'\x76\xa9\x14' and
+                     script[23:25] == b'\x88\xac')
+        pq_only = (script[:3] == b'\x51\x51\x14' and
+                   script[23:25] == b'\x75\x75')
+        return classical or pq_only
+
     def run_test(self):
+        colliding_anchor = b'\x52\x20' + b'\x00' * 23 + bytes([ASSET_OPCODE]) + b'\x00' * 8
+        assert_equal(len(colliding_anchor), 34)
+        assert_equal(self.is_asset_script(colliding_anchor), False)
+        legacy_asset = b'\x76\xa9\x14' + b'\x00' * 20 + b'\x88\xac\xc0' + b'\x00' * 6
+        pq_asset = b'\x51\x51\x14' + b'\x00' * 20 + b'\x75\x75\xc0' + b'\x00' * 6
+        assert_equal(self.is_asset_script(legacy_asset), True)
+        assert_equal(self.is_asset_script(pq_asset), True)
+
         node = self.nodes[0]
         asset_name = 'PQANCHORTEST'
         legacy_address = node.getnewaddress()
@@ -164,7 +182,7 @@ class PQAssetAnchorTest(RavenTestFramework):
 
         early_asset_index = self.output_index(
             early_signed['hex'],
-            lambda script: len(script) > 31 and script[25] == ASSET_OPCODE)
+            self.is_asset_script)
         early_fee_coin = next(coin for coin in node.listunspent()
                               if coin['amount'] > Decimal('2'))
         historical_spend = node.createrawtransaction(
@@ -200,8 +218,7 @@ class PQAssetAnchorTest(RavenTestFramework):
         migration_raw = node.createrawtransaction(migration_inputs, migration_outputs)
         migration_tx = from_hex(CTransaction(), migration_raw)
         migration_asset_scripts = [output.scriptPubKey for output in migration_tx.vout
-                                   if len(output.scriptPubKey) > 31 and
-                                   output.scriptPubKey[25] == ASSET_OPCODE]
+                                   if self.is_asset_script(output.scriptPubKey)]
         assert_equal(len(migration_asset_scripts), 1)
         assert_equal(migration_asset_scripts[0][:3], b'\x51\x51\x14')
         assert_equal(migration_asset_scripts[0][23:25], b'\x75\x75')
@@ -226,7 +243,7 @@ class PQAssetAnchorTest(RavenTestFramework):
 
         asset_index = self.output_index(
             migration_signed['hex'],
-            lambda script: len(script) > 31 and script[25] == ASSET_OPCODE)
+            self.is_asset_script)
         anchor_index = self.output_index(
             migration_signed['hex'], lambda script: script == pq_script)
         asset_input = {'txid': migration_txid, 'vout': asset_index}
@@ -275,7 +292,7 @@ class PQAssetAnchorTest(RavenTestFramework):
         # needs a new matching anchor; the asset remains in the wallet.
         spent_asset_index = self.output_index(
             spend_signed['hex'],
-            lambda script: len(script) > 31 and script[25] == ASSET_OPCODE)
+            self.is_asset_script)
         spent_anchor_index = self.output_index(
             spend_signed['hex'], lambda script: script == pq_script)
         exact_fee_raw = node.createrawtransaction(
