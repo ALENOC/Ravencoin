@@ -437,7 +437,7 @@ for record_write in WriteBip39Words WriteBip39VchSeed WriteBip39Passphrase; do
   record_write_count="$(grep -Fc "$record_write" <<<"$wallet_factory_function" || true)"
   (( record_write_count == 1 )) || fail "BIP44 $record_write occurs outside the single creation boundary"
 done
-factory_mnemonic_line="$(grep -nF 'uiInterface.ShowMnemonic' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_mnemonic_line="$(grep -nF 'uiInterface.ShowMnemonic(CClientUIInterface::MODAL);' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
 factory_creation_begin_line="$(grep -nF 'active(walletdb.TxnBegin(DB_TXN_SYNC))' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
 factory_creation_construct_line="$(grep -nF '} transaction(walletdb);' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
 factory_seed_line="$(grep -nF 'GenerateNewSeed(&walletdb)' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
@@ -450,7 +450,7 @@ factory_clear_line="$(grep -nF 'walletInstance->hdChain.ClearSensitiveData()' <<
 [[ -n "$factory_mnemonic_line" && -n "$factory_creation_begin_line" && -n "$factory_creation_construct_line" && -n "$factory_seed_line" && -n "$factory_words_line" && -n "$factory_seed_record_line" && -n "$factory_passphrase_line" && -n "$factory_keypool_line" && -n "$factory_creation_commit_line" && -n "$factory_clear_line" ]] || fail 'cannot locate the BIP44 atomic-creation boundaries'
 (( factory_mnemonic_line < factory_creation_begin_line && factory_creation_begin_line < factory_creation_construct_line && factory_creation_construct_line < factory_seed_line && factory_seed_line < factory_words_line && factory_words_line < factory_seed_record_line && factory_seed_record_line < factory_keypool_line && factory_keypool_line < factory_passphrase_line && factory_passphrase_line < factory_creation_commit_line && factory_creation_commit_line < factory_clear_line )) || fail 'BIP44 creation publishes lineage or keys outside its atomic boundary'
 for unique_anchor in \
-  'uiInterface.ShowMnemonic' \
+  'uiInterface.ShowMnemonic(CClientUIInterface::MODAL);' \
   'active(walletdb.TxnBegin(DB_TXN_SYNC))' \
   '} transaction(walletdb);' \
   'GenerateNewSeed(&walletdb)' \

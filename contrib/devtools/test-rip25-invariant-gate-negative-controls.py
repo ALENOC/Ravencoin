@@ -91,6 +91,45 @@ class InvariantGateNegativeControls(unittest.TestCase):
         self.check_mutation(WORKFLOWS[1], old, "          # " + old.strip())
         self.check_mutation(WORKFLOWS[1], old, "          # " + old.strip(), occurrence=2)
 
+    def test_wallet_modal_prompt_removal_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="rip25-wallet-gate-") as directory:
+            fixture = Path(directory)
+            for entry in ROOT.iterdir():
+                if entry.name == ".git":
+                    continue
+                if entry.name != "src":
+                    (fixture / entry.name).symlink_to(
+                        entry, target_is_directory=entry.is_dir())
+                    continue
+                source_dir = fixture / "src"
+                source_dir.mkdir()
+                for source_entry in entry.iterdir():
+                    if source_entry.name != "wallet":
+                        (source_dir / source_entry.name).symlink_to(
+                            source_entry, target_is_directory=source_entry.is_dir())
+                        continue
+                    wallet_dir = source_dir / "wallet"
+                    wallet_dir.mkdir()
+                    for wallet_entry in source_entry.iterdir():
+                        if wallet_entry.name != "wallet.cpp":
+                            (wallet_dir / wallet_entry.name).symlink_to(
+                                wallet_entry, target_is_directory=wallet_entry.is_dir())
+                            continue
+                        original = wallet_entry.read_text(encoding="utf-8")
+                        modal_call = "uiInterface.ShowMnemonic(CClientUIInterface::MODAL);"
+                        self.assertEqual(original.count(modal_call), 1)
+                        (wallet_dir / "wallet.cpp").write_text(
+                            original.replace(modal_call, "/* prompt omitted */", 1),
+                            encoding="utf-8",
+                        )
+            result = subprocess.run(
+                ["bash", str(GATE), "--structural-only"], cwd=fixture,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn("cannot locate the BIP44 atomic-creation boundaries",
+                          result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
