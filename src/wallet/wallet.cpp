@@ -6161,7 +6161,13 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
             if (!gArgs.IsArgSetAndNonEmpty("-mnemonic") &&
                 !gArgs.IsArgSetAndNonEmpty("-mnemonicpassphrase") &&
                 !HasPendingMnemonicInput()) {
+                const bool promptHasHandler =
+                    uiInterface.ShowMnemonic.num_slots() != 0;
                 uiInterface.ShowMnemonic(CClientUIInterface::MODAL);
+                if (promptHasHandler && !HasPendingMnemonicInput()) {
+                    InitError(_("Wallet setup was cancelled"));
+                    return nullptr;
+                }
             }
 
             // The HD chain, complete BIP39 domain, and initial keypool must

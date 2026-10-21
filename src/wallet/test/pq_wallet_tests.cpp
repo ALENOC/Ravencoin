@@ -840,6 +840,84 @@ BOOST_AUTO_TEST_CASE(cancelled_mnemonic_prompt_cleans_pending_secrets)
     mnemonicConnection.disconnect();
 }
 
+BOOST_AUTO_TEST_CASE(dismissed_mnemonic_prompt_does_not_create_wallet)
+{
+    const std::string filename = "dismissed-mnemonic-prompt-wallet.dat";
+    ScopedArgState mnemonicArg("-mnemonic");
+    ScopedArgState passphraseArg("-mnemonicpassphrase");
+    ScopedArgState bip44Arg("-bip44");
+    ScopedMnemonicInput restoreInput;
+    gArgs.ClearArg("-mnemonic");
+    gArgs.ClearArg("-mnemonicpassphrase");
+    gArgs.ForceSetArg("-bip44", "1");
+    ClearPendingMnemonicInput();
+
+    unsigned int promptCount = 0;
+    unsigned int loadNotifications = 0;
+    boost::signals2::scoped_connection mnemonicConnection(
+        uiInterface.ShowMnemonic.connect([&](int) {
+            ++promptCount;
+            // A dismissed modal dialog supplies no mnemonic.
+        }));
+    boost::signals2::scoped_connection loadConnection(
+        uiInterface.LoadWallet.connect([&](CWallet*) {
+            ++loadNotifications;
+        }));
+
+    CWallet* unexpectedWallet = nullptr;
+    BOOST_CHECK_NO_THROW(
+        unexpectedWallet = CWallet::CreateWalletFromFile(filename));
+    if (unexpectedWallet) {
+        UnregisterValidationInterface(unexpectedWallet);
+        delete unexpectedWallet;
+    }
+    BOOST_CHECK(unexpectedWallet == nullptr);
+    BOOST_CHECK_EQUAL(promptCount, 1U);
+    BOOST_CHECK_EQUAL(loadNotifications, 0U);
+    BOOST_CHECK(!HasPendingMnemonicInput());
+    BOOST_CHECK(!WalletContainsAnyRecordType(
+        filename, {"hdchain", "bip39words", "bip39passphrase", "bip39vchseed",
+                   "key", "wkey", "ckey", "keymeta", "pool"}));
+
+    {
+        std::unique_ptr<CWalletDBWrapper> probeDbw(
+            new CWalletDBWrapper(&bitdb, filename));
+        CWallet probe(std::move(probeDbw));
+        bool firstRun = false;
+        BOOST_REQUIRE_EQUAL(probe.LoadWallet(firstRun, false), DB_LOAD_OK);
+        BOOST_CHECK(firstRun);
+    }
+
+    mnemonicConnection.disconnect();
+    boost::signals2::scoped_connection recoveryConnection(
+        uiInterface.ShowMnemonic.connect([&](int) {
+            ++promptCount;
+            SetPendingMnemonicInput(
+                SecureString(BIP39_TEST_MNEMONIC.begin(),
+                             BIP39_TEST_MNEMONIC.end()),
+                SecureString(BIP39_TEST_PASSPHRASE.begin(),
+                             BIP39_TEST_PASSPHRASE.end()));
+        }));
+    CWallet* recoveredWallet = nullptr;
+    BOOST_CHECK_NO_THROW(
+        recoveredWallet = CWallet::CreateWalletFromFile(filename));
+    BOOST_REQUIRE(recoveredWallet != nullptr);
+    BOOST_CHECK_EQUAL(promptCount, 2U);
+    BOOST_CHECK_EQUAL(loadNotifications, 1U);
+    BOOST_CHECK(!HasPendingMnemonicInput());
+
+    uint256 wordHash;
+    std::vector<unsigned char> words;
+    std::vector<unsigned char> passphrase;
+    std::vector<unsigned char> seed;
+    recoveredWallet->GetBip39Data(wordHash, words, passphrase, seed);
+    BOOST_CHECK(words == Bip39TestWords());
+    BOOST_CHECK(passphrase == Bip39TestPassphrase());
+    BOOST_CHECK(seed == Bip39TestSeed());
+    UnregisterValidationInterface(recoveredWallet);
+    delete recoveredWallet;
+}
+
 BOOST_AUTO_TEST_CASE(deterministic_pq_generation_requires_hd_root)
 {
     const std::string filename = "pq-hd-root-required-wallet.dat";
