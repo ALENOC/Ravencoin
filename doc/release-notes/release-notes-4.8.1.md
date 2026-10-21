@@ -130,6 +130,35 @@ remains unspent; consensus rejects a spend without its anchor.
 asset inputs. Raw transaction callers must supply matching funded PQ
 inputs and check the final transaction before broadcast.
 
+## Reward distribution recovery after restart
+
+New reward requests bind the originating wallet and reload after a node
+restart. Keep that wallet loaded and unlocked, allow the node to synchronize,
+and check the request after the next connected block. Query the original
+asset, snapshot height, distribution asset, gross amount, and optional
+exception-address string with `getdistributestatus`. The exact exception
+string is part of the request identity. `-debug=rewards` provides startup
+and retry diagnostics.
+
+Status 6 means a payout transaction is uncertain; status 10 means the
+snapshot changed. Neither status resumes automatically. Requests created
+before wallet binding also cannot be assigned to a wallet or retried
+automatically. For any of these cases, preserve the wallet and reward
+database, compare `getblockhash` and `getsnapshot` with the original
+obligation, and reconcile every possible prior payout in the originating
+wallet with `listtransactions` and `gettransaction`. Where available,
+`getrawtransaction` can confirm a transaction in the mempool or an indexed
+chain. Absence from an unindexed node or one wallet alone is not proof of
+nonpayment. Arrange a manually reconciled payout only after establishing
+what remains owed. Do not edit or erase reward database records to force
+a retry.
+
+The numeric status alone does not prove that a reward was paid or unpaid:
+successful batches can leave the original status unchanged. Reward RPCs do
+not list distribution records or expose stored batch transaction IDs, and
+the same request parameters cannot be submitted again as a duplicate.
+Retain the originating wallet, logs, and request details for reconciliation.
+
 ## Node-only GUI
 
 The Qt GUI now starts with `-disablewallet` without accessing the
