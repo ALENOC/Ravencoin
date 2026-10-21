@@ -115,6 +115,8 @@ require_fixed 'return MAX_BLOCK_WEIGHT_RIP25_PHASE2' src/validation.cpp '16 MWU 
 require_fixed 'IsPQWitnessV2Prevout' src/validation.cpp 'PQ discount is not bound to a witness-v2 prevout'
 require_fixed 'GetContextualPQWitnessDiscount' src/validation.cpp 'UTXO-bound PQ discount calculation missing'
 require_fixed 'contextualBlockWeight -= GetContextualPQWitnessDiscount(tx, view)' src/validation.cpp 'ConnectBlock does not apply the contextual PQ discount'
+discount_guard="$(grep -A1 -F 'if (pqWitnessDiscountActive)' src/validation.cpp | sed 's/^[[:space:]]*//')"
+[[ "$discount_guard" == $'if (pqWitnessDiscountActive)\ncontextualBlockWeight -= GetContextualPQWitnessDiscount(tx, view);' ]] || fail 'ConnectBlock does not apply the contextual PQ discount'
 require_fixed 'contextualBlockWeight > activeBlockWeightLimit' src/validation.cpp 'ConnectBlock does not enforce the active contextual limit'
 require_fixed 'preliminaryWeight > activeWeightLimit' src/validation.cpp 'contextual preliminary block-weight check missing'
 require_fixed 'const size_t activeMaxWeight = GetMaxBlockWeightForPrev(pindexPrev, chainparams.GetConsensus())' src/miner.cpp 'miner does not query the active contextual limit'
@@ -645,6 +647,18 @@ mapfile -t final_security_sha_lines < <(grep -nFx '          test "$(git rev-par
 final_make_check_line="$(grep -nFx '        run: make check' <<<"$final_security_job" | cut -d: -f1 || true)"
 [[ "$final_make_check_line" =~ ^[0-9]+$ ]] || fail 'final security job does not execute make check'
 (( final_security_sha_lines[0] < final_make_check_line && final_make_check_line < final_security_sha_lines[1] )) || fail 'final security job does not bracket make check with exact-SHA checks'
+final_behavior_line="$(grep -nFx '        run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests' <<<"$final_security_job" | cut -d: -f1 || true)"
+final_functional_line="$(grep -nFx '          python3 test/functional/test_runner.py --require-tests --jobs=2 \' <<<"$final_security_job" | cut -d: -f1 || true)"
+[[ "$final_behavior_line" =~ ^[0-9]+$ && "$final_functional_line" =~ ^[0-9]+$ ]] || fail 'final security job must execute behavioral and required functional tests'
+(( final_make_check_line < final_behavior_line && final_behavior_line < final_functional_line && final_functional_line < final_security_sha_lines[1] )) || fail 'final security test steps are not in the required order'
+if grep -Eq '^        (if|continue-on-error):' <<<"$final_security_job"; then
+  fail 'final security job contains a conditional or fail-open step'
+fi
+final_required_step="$(sed -n '/^      - id: required_functional$/,/^      - id: posttest_integrity$/p' <<<"$final_security_job")"
+[[ -n "$final_required_step" ]] || fail 'final required functional step is missing'
+if grep -Fq '<<' <<<"$final_required_step"; then
+  fail 'final security job must not hide required commands in a here document'
+fi
 require_fixed 'id: postbuild_integrity' "$final_gate" 'final gate does not recheck source after cross-builds'
 final_build_matrix="$(sed -n '/^      matrix:/,/^    steps:/p' "$final_gate")"
 require_text "$final_build_matrix" $'          - name: aarch64-disable-wallet\n            host: aarch64-linux-gnu\n            packages: g++-aarch64-linux-gnu\n            configure_flags: --without-gui --disable-wallet --disable-bench\n            run_tests: false' 'final gate lacks the aarch64 no-wallet cross-build'
@@ -693,6 +707,18 @@ mapfile -t release_security_sha_lines < <(grep -nFx '          test "$(git rev-p
 release_make_check_line="$(grep -nFx '          if ! make check; then' <<<"$release_security_job" | cut -d: -f1 || true)"
 [[ "$release_make_check_line" =~ ^[0-9]+$ ]] || fail 'release security job does not execute make check'
 (( release_security_sha_lines[0] < release_make_check_line && release_make_check_line < release_security_sha_lines[1] )) || fail 'release security job does not bracket make check with exact-SHA checks'
+release_behavior_line="$(grep -nFx '        run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests' <<<"$release_security_job" | cut -d: -f1 || true)"
+release_functional_line="$(grep -nFx '          python3 test/functional/test_runner.py --require-tests --jobs=2 \' <<<"$release_security_job" | cut -d: -f1 || true)"
+[[ "$release_behavior_line" =~ ^[0-9]+$ && "$release_functional_line" =~ ^[0-9]+$ ]] || fail 'release security job must execute behavioral and required functional tests'
+(( release_make_check_line < release_behavior_line && release_behavior_line < release_functional_line && release_functional_line < release_security_sha_lines[1] )) || fail 'release security test steps are not in the required order'
+if grep -Eq '^        (if|continue-on-error):' <<<"$release_security_job"; then
+  fail 'release security job contains a conditional or fail-open step'
+fi
+release_required_step="$(sed -n '/^      - name: Run required functional security tests$/,/^      - name: Verify tested source and commit$/p' <<<"$release_security_job")"
+[[ -n "$release_required_step" ]] || fail 'release required functional step is missing'
+if grep -Fq '<<' <<<"$release_required_step"; then
+  fail 'release security job must not hide required commands in a here document'
+fi
 release_matrix="$(sed -n '/^      matrix:/,/^    steps:/p' "$release_workflow")"
 release_axes="$(grep -E '^        [A-Za-z_][A-Za-z_0-9]*:' <<<"$release_matrix" || true)"
 [[ "$release_axes" == '        include:' ]] || fail 'release workflow has unexpected matrix axes'

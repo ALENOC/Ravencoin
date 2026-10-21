@@ -91,6 +91,39 @@ class InvariantGateNegativeControls(unittest.TestCase):
         self.check_mutation(WORKFLOWS[1], old, "          # " + old.strip())
         self.check_mutation(WORKFLOWS[1], old, "          # " + old.strip(), occurrence=2)
 
+    def test_behavioral_suite_cannot_be_replaced_with_echo(self):
+        old = "        run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests"
+        new = "        run: echo '" + old.strip() + "'"
+        for workflow in WORKFLOWS:
+            with self.subTest(workflow=workflow):
+                self.check_mutation(workflow, old, new)
+
+    def test_functional_suite_cannot_be_hidden_in_here_document(self):
+        start = "          python3 test/functional/test_runner.py --require-tests --jobs=2 \\"
+        end = "feature_reissue_mempool_block_split.py feature_restricted_assets.py feature_raw_restricted_assets.py"
+        for workflow in WORKFLOWS:
+            with self.subTest(workflow=workflow):
+                source = (self.fixture / ".github/workflows" / workflow).read_text(
+                    encoding="utf-8"
+                )
+                first = source.index(start)
+                last = source.index(end, first) + len(end)
+                old = source[first:last]
+                new = "          : <<'RIP25_INERT'\n" + old + "\n          RIP25_INERT"
+                self.check_mutation(workflow, old, new)
+
+    def test_security_steps_cannot_be_conditional_or_fail_open(self):
+        steps = (
+            (WORKFLOWS[0], "      - name: Run behavioral security invariants"),
+            (WORKFLOWS[0], "      - name: Run required functional security tests"),
+            (WORKFLOWS[1], "      - id: behavioral_invariants"),
+            (WORKFLOWS[1], "      - id: required_functional"),
+        )
+        for workflow, step in steps:
+            for bypass in ("        if: false", "        continue-on-error: true"):
+                with self.subTest(workflow=workflow, step=step, bypass=bypass):
+                    self.check_mutation(workflow, step, step + "\n" + bypass)
+
     def test_wallet_modal_prompt_removal_is_rejected(self):
         with tempfile.TemporaryDirectory(prefix="rip25-wallet-gate-") as directory:
             fixture = Path(directory)
@@ -128,6 +161,74 @@ class InvariantGateNegativeControls(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0, result.stderr)
             self.assertIn("cannot locate the BIP44 atomic-creation boundaries",
+                          result.stderr)
+
+    def test_inert_contextual_discount_bait_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="rip25-weight-gate-") as directory:
+            fixture = Path(directory)
+            for entry in ROOT.iterdir():
+                if entry.name == ".git":
+                    continue
+                if entry.name != "src":
+                    (fixture / entry.name).symlink_to(
+                        entry, target_is_directory=entry.is_dir()
+                    )
+                    continue
+                source_dir = fixture / "src"
+                source_dir.mkdir()
+                for source_entry in entry.iterdir():
+                    if source_entry.name != "validation.cpp":
+                        (source_dir / source_entry.name).symlink_to(
+                            source_entry, target_is_directory=source_entry.is_dir()
+                        )
+                        continue
+                    original = source_entry.read_text(encoding="utf-8")
+                    operation = "                contextualBlockWeight -= GetContextualPQWitnessDiscount(tx, view);"
+                    self.assertEqual(original.count(operation), 1)
+                    (source_dir / "validation.cpp").write_text(
+                        original.replace(operation, "                // " + operation.strip(), 1),
+                        encoding="utf-8",
+                    )
+            result = subprocess.run(
+                ["bash", str(GATE), "--structural-only"], cwd=fixture,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn("ConnectBlock does not apply the contextual PQ discount",
+                          result.stderr)
+
+    def test_disabled_contextual_discount_bait_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="rip25-weight-disabled-") as directory:
+            fixture = Path(directory)
+            for entry in ROOT.iterdir():
+                if entry.name == ".git":
+                    continue
+                if entry.name != "src":
+                    (fixture / entry.name).symlink_to(
+                        entry, target_is_directory=entry.is_dir()
+                    )
+                    continue
+                source_dir = fixture / "src"
+                source_dir.mkdir()
+                for source_entry in entry.iterdir():
+                    if source_entry.name != "validation.cpp":
+                        (source_dir / source_entry.name).symlink_to(
+                            source_entry, target_is_directory=source_entry.is_dir()
+                        )
+                        continue
+                    original = source_entry.read_text(encoding="utf-8")
+                    operation = "                contextualBlockWeight -= GetContextualPQWitnessDiscount(tx, view);"
+                    self.assertEqual(original.count(operation), 1)
+                    (source_dir / "validation.cpp").write_text(
+                        original.replace(operation, "#if 0\n" + operation + "\n#endif", 1),
+                        encoding="utf-8",
+                    )
+            result = subprocess.run(
+                ["bash", str(GATE), "--structural-only"], cwd=fixture,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn("ConnectBlock does not apply the contextual PQ discount",
                           result.stderr)
 
 
