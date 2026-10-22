@@ -131,6 +131,30 @@ class InvariantGateNegativeControls(unittest.TestCase):
                 with self.subTest(workflow=workflow, step=step, bypass=bypass):
                     self.check_mutation(workflow, step, step + "\n" + bypass)
 
+    def test_security_jobs_cannot_be_conditional_or_fail_open(self):
+        for workflow in WORKFLOWS:
+            for bypass in ("    if: false", "    continue-on-error: true"):
+                with self.subTest(workflow=workflow, bypass=bypass):
+                    self.check_mutation(workflow, "  security-tests:",
+                                        "  security-tests:\n" + bypass)
+
+    def test_required_functional_jobs_cannot_exit_early(self):
+        blocks = (
+            (WORKFLOWS[0],
+             "      - name: Run required functional security tests\n        run: |"),
+            (WORKFLOWS[1],
+             "      - id: required_functional\n"
+             "        name: Run required functional security tests\n"
+             "        shell: bash\n        run: |"),
+        )
+        for workflow, block in blocks:
+            with self.subTest(workflow=workflow):
+                self.check_mutation(workflow, block, block + "\n          exit 0")
+
+    def test_release_build_job_cannot_fail_open(self):
+        self.check_mutation(WORKFLOWS[0], "  build:",
+                            "  build:\n    continue-on-error: true")
+
     def test_release_package_attestation_commands_are_executable(self):
         workflow = WORKFLOWS[0]
         commands = (
@@ -156,6 +180,12 @@ class InvariantGateNegativeControls(unittest.TestCase):
         self.check_mutation(workflow, command,
                             "        : <<'RIP25_INERT'\n" + command +
                             "\n        RIP25_INERT")
+
+    def test_release_package_attestation_cannot_exit_early(self):
+        workflow = WORKFLOWS[0]
+        step = ("    - name: Verify Packaged Source and Artifacts\n"
+                "      shell: bash\n      run: |")
+        self.check_mutation(workflow, step, step + "\n        exit 0")
 
     def test_release_upload_cannot_be_hidden_or_skipped(self):
         workflow = WORKFLOWS[0]
@@ -183,6 +213,13 @@ class InvariantGateNegativeControls(unittest.TestCase):
         command = "          python3 contrib/devtools/verify_build_raven_artifacts.py \\"
         self.check_mutation(workflow, command,
                             "          echo '" + command.strip() + "'")
+
+    def test_independent_artifact_verifier_cannot_exit_early(self):
+        workflow = WORKFLOWS[0]
+        run_block = "        run: |\n          python3 contrib/devtools/verify_build_raven_artifacts.py \\"
+        self.check_mutation(workflow, run_block,
+                            "        run: |\n          exit 0\n"
+                            "          python3 contrib/devtools/verify_build_raven_artifacts.py \\")
 
     def test_wallet_modal_prompt_removal_is_rejected(self):
         with tempfile.TemporaryDirectory(prefix="rip25-wallet-gate-") as directory:

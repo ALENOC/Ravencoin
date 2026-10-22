@@ -623,6 +623,12 @@ require_fixed 'observer.checkaddresstag(tagged_address, qualifier_name), False' 
 
 # GLM-001 and CI supply-chain integrity: checkout commit is the tested tree.
 final_gate=.github/workflows/rip25-v48-final-gate.yml
+if grep -Eq '^    (if|continue-on-error):' "$final_gate"; then
+  fail 'final gate contains a conditional or fail-open job'
+fi
+if grep -Eq '^[[:space:]]+(exit|return)([[:space:]]+0+([[:space:]]|$)|[[:space:]]*$)' "$final_gate"; then
+  fail 'final gate contains an early successful shell exit'
+fi
 require_min_count 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5' "$final_gate" 2 'final gate checkout is not immutably pinned in every job'
 require_fixed '  pull_request:' "$final_gate" 'final gate does not run on pull requests'
 require_min_count 'persist-credentials: false' "$final_gate" 2 'final gate checkout credentials are not disabled'
@@ -689,6 +695,12 @@ require_fixed 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
 require_fixed 'permissions:' .github/workflows/build-raven.yml 'build workflow lacks explicit permissions'
 require_fixed '  contents: read' .github/workflows/build-raven.yml 'build workflow permissions are not read-only'
 release_workflow=.github/workflows/build-raven.yml
+if grep -Eq '^    (if|continue-on-error):' "$release_workflow"; then
+  fail 'release workflow contains a conditional or fail-open job'
+fi
+if grep -Eq '^[[:space:]]+(exit|return)([[:space:]]+0+([[:space:]]|$)|[[:space:]]*$)' "$release_workflow"; then
+  fail 'release workflow contains an early successful shell exit'
+fi
 require_fixed '      - fix/rip25-v48-glm-remediation' "$release_workflow" 'release workflow does not build remediation-branch pushes'
 require_fixed '  pull_request:' "$release_workflow" 'release workflow does not build integration pull requests'
 require_fixed 'runs-on: ubuntu-22.04' "$release_workflow" 'release workflow uses an unsupported runner'
@@ -758,7 +770,8 @@ release_package_step="$(sed -n '/^    - name: Verify Packaged Source and Artifac
 [[ -n "$release_package_step" ]] || fail 'release package attestation step is missing'
 grep -Fxq '      run: |' <<<"$release_package_step" || fail 'release package attestation is not an executable shell block'
 if grep -Eq '^      (if|continue-on-error):' <<<"$release_package_step" ||
-    grep -Fq '<<' <<<"$release_package_step"; then
+    grep -Fq '<<' <<<"$release_package_step" ||
+    grep -Eq '^[[:space:]]+(exit|return)([[:space:]]|$)' <<<"$release_package_step"; then
   fail 'release package attestation can be skipped or hidden'
 fi
 for command in \
@@ -781,7 +794,8 @@ release_artifact_job="$(sed -n '/^  verify-artifacts:$/,$p' "$release_workflow")
 grep -Fxq '    needs: build' <<<"$release_artifact_job" ||
   fail 'independent release artifact verification must depend on every build target'
 if grep -Eq '^    (if|continue-on-error):|^        (if|continue-on-error):' <<<"$release_artifact_job" ||
-    grep -Fq '<<' <<<"$release_artifact_job"; then
+    grep -Fq '<<' <<<"$release_artifact_job" ||
+    grep -Eq '^[[:space:]]+(exit|return)([[:space:]]|$)' <<<"$release_artifact_job"; then
   fail 'independent release artifact verification can be skipped or hidden'
 fi
 for command in \
