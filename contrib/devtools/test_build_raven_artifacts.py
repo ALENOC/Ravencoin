@@ -65,12 +65,29 @@ def pe(machine, size=TEST_BINARY_SIZE):
     struct.pack_into("<H", header, 148, optional_size)
     struct.pack_into("<H", header, 152, 0x10B if machine == 0x14C else 0x20B)
     struct.pack_into("<I", header, 168, 0x1000)
+    if machine != 0x14C:
+        struct.pack_into("<I", header, 152 + 108, 16)
     section = 152 + optional_size
     struct.pack_into("<8sIIIIIIHHI", header, section, b".text", 0x1000,
                      0x1000, 0x10000, 0x200, 0, 0, 0, 0, 0x60000020)
     if machine == 0x14C:
         header[116900:116908] = b"Nullsoft"
     return bytes(header)
+
+
+def pe_with_debuglink(installed):
+    primary = bytearray(installed + bytes(512) + b"\x13\0\0\0.gnu_debuglink\0")
+    offset = struct.unpack_from("<I", primary, 0x3C)[0]
+    struct.pack_into("<H", primary, offset + 6, 2)
+    struct.pack_into("<I", primary, offset + 12, len(installed) + 512)
+    struct.pack_into("<H", primary, offset + 22, 0x2E)
+    struct.pack_into("<I", primary, offset + 80, 0x3000)
+    struct.pack_into("<I", primary, offset + 88, 1)
+    section = offset + 24 + 240 + 40
+    struct.pack_into("<8sIIIIIIHHI", primary, section, b"/4", 16, 0x2000,
+                     512, len(installed), 0, 0, 0, 0, 0x42000040)
+    primary[len(installed):len(installed) + 16] = b"ravend.exe.dbg\0\0"
+    return bytes(primary)
 
 
 def archive(members, commit=None):
@@ -127,6 +144,14 @@ class ArtifactVerificationTests(unittest.TestCase):
         self.root = Path(self.tempdir.name)
         source = archive([(f"{DIST}/README", b"source")], commit=SHA)
         self.files = payloads(source)
+        self.installed = {
+            "daemon/ravend.exe": pe(0x8664),
+            "daemon/raven-cli.exe": pe(0x8664),
+            "raven-qt.exe": pe(0x8664),
+            "Raven-Qt.app/Contents/MacOS/ravend": macho(),
+            "Raven-Qt.app/Contents/MacOS/raven-cli": macho(),
+            "Raven-Qt.app/Contents/MacOS/Raven-Qt": macho(),
+        }
         self.write_bundles()
 
     def tearDown(self):
@@ -166,7 +191,9 @@ class ArtifactVerificationTests(unittest.TestCase):
     def verify(self):
         # The synthetic valid fixtures exercise structural checks. The real
         # unsigned installer and DMG are tested by 7-Zip in the CI verifier.
-        with mock.patch.object(verifier, "check_container"):
+        with (mock.patch.object(verifier, "check_container"),
+              mock.patch.object(verifier, "read_container_member",
+                                side_effect=lambda path, name: self.installed[name])):
             return verifier.verify(self.root, SHA, DIST)
 
     def test_five_valid_bundles(self):
@@ -310,6 +337,48 @@ class ArtifactVerificationTests(unittest.TestCase):
         (self.bundle(target) / name).write_bytes(contents)
         self.rehash(target)
         with self.assertRaisesRegex(ValueError, "signing app differs"):
+            self.verify()
+
+    def test_windows_installer_from_other_build_fails_with_updated_manifest(self):
+        changed = bytearray(pe(0x8664))
+        changed[0x300] = 1
+        self.installed["daemon/ravend.exe"] = bytes(changed)
+        with self.assertRaisesRegex(ValueError, "installer executable differs"):
+            self.verify()
+
+    def test_windows_debuglink_removal_preserves_installed_binary(self):
+        installed = bytearray(pe(0x8664)[:0x10200])
+        struct.pack_into("<H", installed, 150, 0x22E)
+        primary = pe_with_debuglink(bytes(installed))
+        verifier.compare_installed_pe(primary, bytes(installed), "ravend.exe")
+        changed = bytearray(installed)
+        struct.pack_into("<I", changed, 168, 0x2000)
+        with self.assertRaisesRegex(ValueError, "installer executable differs"):
+            verifier.compare_installed_pe(primary, bytes(changed), "ravend.exe")
+        with self.assertRaisesRegex(ValueError, "overlay"):
+            verifier.compare_installed_pe(primary, bytes(installed) + b"replacement", "ravend.exe")
+
+    def test_windows_unsigned_payload_rejects_certificate_table(self):
+        executable = bytearray(pe(0x8664))
+        struct.pack_into("<II", executable, 152 + 144, 0x11000, 256)
+        with self.assertRaisesRegex(ValueError, "certificate table"):
+            verifier.compare_installed_pe(bytes(executable), bytes(executable),
+                                          "ravend.exe")
+
+    def test_ambiguous_installer_member_fails(self):
+        listing = ("Header\n----------\n"
+                   "Path = daemon/ravend.exe\nSize = 131072\n\n"
+                   "Path = ./daemon/ravend.exe\nSize = 131072\n")
+        completed = subprocess.CompletedProcess([], 0, listing, "")
+        with mock.patch.object(verifier.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(ValueError, "ambiguous installer member"):
+                verifier.read_container_member(Path("setup.exe"), "daemon/ravend.exe")
+
+    def test_mac_dmg_from_other_build_fails_with_updated_manifest(self):
+        changed = bytearray(macho())
+        changed[-1] = 1
+        self.installed["Raven-Qt.app/Contents/MacOS/Raven-Qt"] = bytes(changed)
+        with self.assertRaisesRegex(ValueError, "DMG app differs"):
             self.verify()
 
     def test_windows_signing_bundle_requires_certificate(self):

@@ -30,6 +30,7 @@ STATUS = "unsigned CI build; Windows and macOS outputs are not signed final rele
 MIN_BINARY_SIZE = 64 * 1024
 MIN_INSTALLER_SIZE = 1024 * 1024
 HEADER_READ_SIZE = 256 * 1024
+MAX_CONTAINER_MEMBER_SIZE = 128 * 1024 * 1024
 
 
 def digest(path, algorithm="sha256"):
@@ -127,6 +128,157 @@ def check_container(path, expected_type):
     if (result.returncode != 0 or f"Type = {expected_type}" not in result.stdout
             or "Everything is Ok" not in result.stdout):
         raise ValueError(f"{path.name}: invalid {expected_type} payload")
+
+
+def read_container_member(path, expected_name):
+    """Read exactly one regular installer entry selected by its full path."""
+    try:
+        listing = subprocess.run(
+            ["7z", "l", "-slt", "-bd", str(path)], capture_output=True,
+            text=True, timeout=180, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError(f"{path.name}: cannot list installer members: {error}") from error
+    separator = "\n----------\n"
+    if listing.returncode or separator not in listing.stdout:
+        raise ValueError(f"{path.name}: cannot list installer members")
+    requested = expected_name.casefold()
+    matches = []
+    for block in listing.stdout.rsplit(separator, 1)[1].strip().split("\n\n"):
+        fields = dict(line.split(" = ", 1) for line in block.splitlines()
+                      if " = " in line)
+        name = fields.get("Path", "")
+        normalized = posixpath.normpath(name.replace("\\", "/")).casefold()
+        if normalized == requested:
+            matches.append(fields)
+    if len(matches) != 1 or matches[0].get("Path") != expected_name:
+        raise ValueError(f"{path.name}: missing or ambiguous installer member {expected_name}")
+    member = matches[0]
+    try:
+        size = int(member["Size"])
+    except (KeyError, ValueError) as error:
+        raise ValueError(f"{path.name}: invalid installer member size {expected_name}") from error
+    if (size < MIN_BINARY_SIZE or size > MAX_CONTAINER_MEMBER_SIZE
+            or member.get("Folder") == "+" or member.get("Symbolic Link", "")):
+        raise ValueError(f"{path.name}: invalid installer member {expected_name}")
+    try:
+        result = subprocess.run(
+            ["7z", "e", "-so", "-bd", str(path), expected_name],
+            capture_output=True, timeout=180, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError(f"{path.name}: cannot extract installer member {expected_name}: {error}") from error
+    if result.returncode or len(result.stdout) != size:
+        raise ValueError(f"{path.name}: invalid extracted installer member {expected_name}")
+    return result.stdout
+
+
+def pe_sections(payload, name):
+    offset = struct.unpack_from("<I", payload, 0x3C)[0]
+    count = struct.unpack_from("<H", payload, offset + 6)[0]
+    optional_size = struct.unpack_from("<H", payload, offset + 20)[0]
+    table = offset + 24 + optional_size
+    if table + count * 40 > len(payload):
+        raise ValueError(f"windows: invalid PE section table in {name}")
+    sections = []
+    for index in range(count):
+        start = table + index * 40
+        record = payload[start:start + 40]
+        raw_size, raw_offset = struct.unpack_from("<II", record, 16)
+        if raw_size and (raw_offset == 0 or raw_offset + raw_size > len(payload)):
+            raise ValueError(f"windows: invalid PE section extent in {name}")
+        sections.append((record, payload[raw_offset:raw_offset + raw_size]))
+    return offset, table, sections
+
+
+def pe_section_name(payload, offset, record):
+    name = record[:8].split(b"\0", 1)[0]
+    if not name.startswith(b"/"):
+        return name
+    try:
+        index = int(name[1:])
+    except ValueError as error:
+        raise ValueError("windows: invalid PE long section name") from error
+    symbols = struct.unpack_from("<I", payload, offset + 12)[0]
+    count = struct.unpack_from("<I", payload, offset + 16)[0]
+    string_table = symbols + count * 18
+    if symbols == 0 or string_table + 4 > len(payload):
+        raise ValueError("windows: missing PE section string table")
+    length = struct.unpack_from("<I", payload, string_table)[0]
+    if index < 4 or index >= length or string_table + length > len(payload):
+        raise ValueError("windows: invalid PE section string table")
+    start = string_table + index
+    end = payload.find(b"\0", start, string_table + length)
+    if end < 0:
+        raise ValueError("windows: unterminated PE section name")
+    return payload[start:end]
+
+
+def pe_coff_strings(payload, offset, expected_start):
+    symbols, count = struct.unpack_from("<II", payload, offset + 12)
+    if count:
+        raise ValueError("windows: unexpected PE symbol table")
+    if symbols == 0:
+        if len(payload) != expected_start:
+            raise ValueError("windows: unexplained PE overlay")
+        return b""
+    if symbols != expected_start or symbols + 4 > len(payload):
+        raise ValueError("windows: unexpected PE string table position")
+    length = struct.unpack_from("<I", payload, symbols)[0]
+    if length < 4 or symbols + length != len(payload):
+        raise ValueError("windows: invalid PE string table extent")
+    return payload[symbols + 4:]
+
+
+def compare_installed_pe(primary, installed, name):
+    """Allow only removal of the primary ZIP's final GNU debuglink section."""
+    check_binary(installed[:HEADER_READ_SIZE], "pe", 0x8664, "windows", name,
+                 len(installed))
+    for payload in (primary, installed):
+        offset = struct.unpack_from("<I", payload, 0x3C)[0]
+        optional = offset + 24
+        if (struct.unpack_from("<H", payload, offset + 20)[0] < 152
+                or struct.unpack_from("<I", payload, optional + 108)[0] < 5
+                or struct.unpack_from("<II", payload, optional + 144) != (0, 0)):
+            raise ValueError(f"windows: unexpected PE certificate table: {name}")
+    if primary == installed:
+        return
+    source_offset, source_table, source_sections = pe_sections(primary, name)
+    target_offset, target_table, target_sections = pe_sections(installed, name)
+    if (source_offset != target_offset or source_table != target_table
+            or len(source_sections) != len(target_sections) + 1
+            or pe_section_name(primary, source_offset, source_sections[-1][0]) != b".gnu_debuglink"):
+        raise ValueError(f"windows: installer executable differs from primary: {name}")
+    debug_record, _ = source_sections[-1]
+    debug_flags = struct.unpack_from("<I", debug_record, 36)[0]
+    if debug_flags & 0x20000000 or any(a != b for a, b in zip(source_sections, target_sections)):
+        raise ValueError(f"windows: installer executable differs from primary: {name}")
+    common_end = max(struct.unpack_from("<II", record, 16)[0]
+                     + struct.unpack_from("<II", record, 16)[1]
+                     for record, _ in target_sections)
+    debug_size, debug_offset = struct.unpack_from("<II", debug_record, 16)
+    extra_start = source_table + len(target_sections) * 40
+    if (debug_size == 0 or debug_offset != common_end
+            or any(installed[extra_start:extra_start + 40])
+            or primary[extra_start + 40:common_end] != installed[extra_start + 40:common_end]):
+        raise ValueError(f"windows: installer executable differs from primary: {name}")
+    installed_strings = pe_coff_strings(installed, target_offset, common_end)
+    primary_strings = pe_coff_strings(primary, source_offset,
+                                      debug_offset + debug_size)
+    if primary_strings != installed_strings + b".gnu_debuglink\0":
+        raise ValueError(f"windows: installer executable differs from primary: {name}")
+    source_header = bytearray(primary[:source_table])
+    target_header = bytearray(installed[:target_table])
+    for header, offset in ((source_header, source_offset),
+                           (target_header, target_offset)):
+        header[offset + 6:offset + 8] = b"\0\0"  # section count
+        header[offset + 12:offset + 20] = b"\0" * 8  # COFF string table
+        flags = struct.unpack_from("<H", header, offset + 22)[0]
+        struct.pack_into("<H", header, offset + 22, flags & ~0x0200)
+        header[offset + 80:offset + 84] = b"\0" * 4  # SizeOfImage
+        header[offset + 88:offset + 92] = b"\0" * 4  # CheckSum
+    if source_header != target_header:
+        raise ValueError(f"windows: installer executable differs from primary: {name}")
 
 
 def check_binary(header, kind, machine, target, name, size, installer=False):
@@ -411,6 +563,18 @@ def verify(root, sha, dist, repository=None):
                              target, installer.name, installer.stat().st_size,
                              installer=True)
             check_container(installer, "Nsis")
+            installed_hashes = {}
+            with zipfile.ZipFile(primary) as archive:
+                for binary_name, installed_name in (
+                        ("ravend", "daemon/ravend.exe"),
+                        ("raven-cli", "daemon/raven-cli.exe"),
+                        ("raven-qt", "raven-qt.exe")):
+                    zip_name = f"{dist}/bin/{binary_name}.exe"
+                    source_binary = archive.read(zip_name)
+                    installed_binary = read_container_member(installer, installed_name)
+                    compare_installed_pe(source_binary, installed_binary, installed_name)
+                    installed_hashes[binary_name] = hashlib.sha256(installed_binary).hexdigest()
+            binary["installer_binary_sha256"] = installed_hashes
             signing = bundle / (dist + suffixes[2])
             signing_members = inspect_tar(signing)
             deploy = bundle / "windeploy"
@@ -437,6 +601,19 @@ def verify(root, sha, dist, repository=None):
                 if stream.read(4) != b"koly":
                     raise ValueError(f"{target}: invalid DMG trailer")
             check_container(dmg, "Dmg")
+            installed_hashes = {}
+            for binary_name, app_name in (("ravend", "ravend"),
+                                          ("raven-cli", "raven-cli"),
+                                          ("raven-qt", "Raven-Qt")):
+                installed_name = "Raven-Qt.app/Contents/MacOS/" + app_name
+                installed_binary = read_container_member(dmg, installed_name)
+                check_binary(installed_binary[:HEADER_READ_SIZE], "macho", 0x01000007,
+                             target, installed_name, len(installed_binary))
+                installed_hash = hashlib.sha256(installed_binary).hexdigest()
+                if installed_hash != binary["binary_sha256"][binary_name]:
+                    raise ValueError(f"osx: DMG app differs from primary: {installed_name}")
+                installed_hashes[binary_name] = installed_hash
+            binary["installer_binary_sha256"] = installed_hashes
             signing = bundle / (dist + suffixes[2])
             signing_members = inspect_tar(signing, mac_signing_bundle=True)
             app_prefix = "dist/Raven-Qt.app/Contents"
