@@ -46,7 +46,9 @@ candidate and restarts these gates.
 4. Present the recorded qualification and operator readiness evidence to
    the owner. Obtain a separate, explicit owner approval to create the
    4.8.1 tag. The rollout go/no-go decision and permission to publish are
-   separate decisions.
+   separate decisions. Native Windows and macOS GUI exercise is assigned
+   to post-publication community testing; disclose that limitation in the
+   release notes and do not describe the native GUIs as verified.
 5. Create the 4.8.1 tag on the exact qualified final SHA. Verify the tag
    resolves to that SHA before signing or publishing release material.
    Publication requires its own owner decision.

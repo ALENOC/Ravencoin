@@ -168,6 +168,16 @@ Both crashes were inherited from Core 4.8.0. The Linux release build
 runs wallet-disabled GUI startup, Options interaction, and RPC
 shutdown checks.
 
+Native Windows and macOS GUI exercise is assigned to community testers
+after publication. The cross-platform CI builds and package checks do
+not establish that either native GUI works. Community reports should
+identify the 4.8.1 version, package checksum, operating system version,
+wallet setup, steps, expected result, observed result, and relevant
+debug log. The requested checks cover first launch, wallet creation and
+recovery, asset and owner-token send and receive, and clean shutdown.
+Bit-13 asset activation behavior needs a controlled test environment
+because the public deployment has not activated.
+
 ## Release qualification still required
 
 The available testnet active chain was replayed from genesis by a clean
@@ -193,8 +203,10 @@ wallet recovery test failures (FINDING-112); a renewed failure blocks
 release, and `make check` remains mandatory on the final SHA.
 The wallet-disabled Qt corrections (FINDING-177 and FINDING-178)
 require passing unmodified Linux package smokes on the final SHA.
-Operator readiness and manual GUI checks on release operating systems
-still require qualification. After final-SHA CI and review of all five
+Operator readiness still requires qualification. The owner assigned
+native Windows and macOS GUI exercise to post-publication community
+testing, with the residual uncertainty stated above. After final-SHA
+CI and review of all five
 packages, the owner must separately approve the exact 4.8.1 tag.
 Signing and final checksums follow tag creation. Publication requires
 another explicit owner decision.
