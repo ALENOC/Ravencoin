@@ -648,9 +648,10 @@ final_make_check_line="$(grep -nFx '        run: make check' <<<"$final_security
 [[ "$final_make_check_line" =~ ^[0-9]+$ ]] || fail 'final security job does not execute make check'
 (( final_security_sha_lines[0] < final_make_check_line && final_make_check_line < final_security_sha_lines[1] )) || fail 'final security job does not bracket make check with exact-SHA checks'
 final_behavior_line="$(grep -nFx '        run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests' <<<"$final_security_job" | cut -d: -f1 || true)"
+final_mutation_line="$(grep -nFx '        run: python3 contrib/devtools/test-rip25-source-mutation-sensitivity.py --full' <<<"$final_security_job" | cut -d: -f1 || true)"
 final_functional_line="$(grep -nFx '          python3 test/functional/test_runner.py --require-tests --jobs=2 \' <<<"$final_security_job" | cut -d: -f1 || true)"
-[[ "$final_behavior_line" =~ ^[0-9]+$ && "$final_functional_line" =~ ^[0-9]+$ ]] || fail 'final security job must execute behavioral and required functional tests'
-(( final_make_check_line < final_behavior_line && final_behavior_line < final_functional_line && final_functional_line < final_security_sha_lines[1] )) || fail 'final security test steps are not in the required order'
+[[ "$final_behavior_line" =~ ^[0-9]+$ && "$final_mutation_line" =~ ^[0-9]+$ && "$final_functional_line" =~ ^[0-9]+$ ]] || fail 'final security job must execute behavioral, mutation, and required functional tests'
+(( final_make_check_line < final_behavior_line && final_behavior_line < final_mutation_line && final_mutation_line < final_functional_line && final_functional_line < final_security_sha_lines[1] )) || fail 'final security test steps are not in the required order'
 if grep -Eq '^        (if|continue-on-error):' <<<"$final_security_job"; then
   fail 'final security job contains a conditional or fail-open step'
 fi
@@ -708,9 +709,10 @@ release_make_check_line="$(grep -nFx '          if ! make check; then' <<<"$rele
 [[ "$release_make_check_line" =~ ^[0-9]+$ ]] || fail 'release security job does not execute make check'
 (( release_security_sha_lines[0] < release_make_check_line && release_make_check_line < release_security_sha_lines[1] )) || fail 'release security job does not bracket make check with exact-SHA checks'
 release_behavior_line="$(grep -nFx '        run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests' <<<"$release_security_job" | cut -d: -f1 || true)"
+release_mutation_line="$(grep -nFx '        run: python3 contrib/devtools/test-rip25-source-mutation-sensitivity.py --full' <<<"$release_security_job" | cut -d: -f1 || true)"
 release_functional_line="$(grep -nFx '          python3 test/functional/test_runner.py --require-tests --jobs=2 \' <<<"$release_security_job" | cut -d: -f1 || true)"
-[[ "$release_behavior_line" =~ ^[0-9]+$ && "$release_functional_line" =~ ^[0-9]+$ ]] || fail 'release security job must execute behavioral and required functional tests'
-(( release_make_check_line < release_behavior_line && release_behavior_line < release_functional_line && release_functional_line < release_security_sha_lines[1] )) || fail 'release security test steps are not in the required order'
+[[ "$release_behavior_line" =~ ^[0-9]+$ && "$release_mutation_line" =~ ^[0-9]+$ && "$release_functional_line" =~ ^[0-9]+$ ]] || fail 'release security job must execute behavioral, mutation, and required functional tests'
+(( release_make_check_line < release_behavior_line && release_behavior_line < release_mutation_line && release_mutation_line < release_functional_line && release_functional_line < release_security_sha_lines[1] )) || fail 'release security test steps are not in the required order'
 if grep -Eq '^        (if|continue-on-error):' <<<"$release_security_job"; then
   fail 'release security job contains a conditional or fail-open step'
 fi
@@ -752,6 +754,47 @@ require_fixed 'echo "target=${{ matrix.OS }}"' "$release_workflow" 'release prov
 require_fixed 'echo "host=${{ matrix.host }}"' "$release_workflow" 'release provenance omits the cross-build host'
 require_fixed 'name: raven-unsigned-${{ matrix.OS }}-${{ github.sha }}' "$release_workflow" 'release workflow labels unsigned artifacts as releases'
 require_fixed 'status=unsigned CI build; Windows and macOS outputs are not signed final releases' "$release_workflow" 'release provenance claims unsigned outputs are signed releases'
+release_package_step="$(sed -n '/^    - name: Verify Packaged Source and Artifacts$/,/^    - name: Upload Artifacts to Job$/p' "$release_workflow")"
+[[ -n "$release_package_step" ]] || fail 'release package attestation step is missing'
+grep -Fxq '      run: |' <<<"$release_package_step" || fail 'release package attestation is not an executable shell block'
+if grep -Eq '^      (if|continue-on-error):' <<<"$release_package_step" ||
+    grep -Fq '<<' <<<"$release_package_step"; then
+  fail 'release package attestation can be skipped or hidden'
+fi
+for command in \
+  '        git archive --format=tar --prefix="${distname}/" HEAD > "$source_tar"' \
+  '        test "$(git get-tar-commit-id < "$source_tar")" = "$GITHUB_SHA"' \
+  '          test -s "$artifact"' \
+  '        grep -Fx "commit=$GITHUB_SHA" PROVENANCE.txt' \
+  '        sha256sum -- "${artifacts[@]}" "$source_archive" PROVENANCE.txt > SHA256SUMS' \
+  '        sha256sum --check SHA256SUMS'; do
+  grep -Fxq -- "$command" <<<"$release_package_step" ||
+    fail "release package attestation does not execute: $command"
+done
+release_upload_step="$(sed -n '/^    - name: Upload Artifacts to Job$/,/^        retention-days: /p' "$release_workflow")"
+[[ -n "$release_upload_step" ]] || fail 'release artifact upload step is missing'
+if grep -Eq '^      (if|continue-on-error):' <<<"$release_upload_step"; then
+  fail 'release artifact upload can be skipped or fail open'
+fi
+release_artifact_job="$(sed -n '/^  verify-artifacts:$/,$p' "$release_workflow")"
+[[ -n "$release_artifact_job" ]] || fail 'independent release artifact verification job is missing'
+grep -Fxq '    needs: build' <<<"$release_artifact_job" ||
+  fail 'independent release artifact verification must depend on every build target'
+if grep -Eq '^    (if|continue-on-error):|^        (if|continue-on-error):' <<<"$release_artifact_job" ||
+    grep -Fq '<<' <<<"$release_artifact_job"; then
+  fail 'independent release artifact verification can be skipped or hidden'
+fi
+for command in \
+  '        run: python3 -m unittest discover -s contrib/devtools -p test_build_raven_artifacts.py -v' \
+  '        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0' \
+  '          pattern: raven-unsigned-*' \
+  '          merge-multiple: false' \
+  '          python3 contrib/devtools/verify_build_raven_artifacts.py \' \
+  '            "$RUNNER_TEMP/rip25-artifacts" "$GITHUB_SHA" \' \
+  '            --repository "$GITHUB_WORKSPACE" --package-ref "$PACKAGE_REF" \' ; do
+  grep -Fxq -- "$command" <<<"$release_artifact_job" ||
+    fail "independent release artifact verification does not execute: $command"
+done
 require_fixed 'EXTRA_OPTS=()' .github/scripts/04-configure-build.sh 'release configure helper fails under nounset without wallet flags'
 require_fixed '436df6dfc7073365d12f8ef6c1fdb060777c720602cc67c2dcf9a59d94290e38' .github/scripts/02-copy-build-dependencies.sh 'macOS SDK checksum pin changed'
 require_fixed 'sha256sum --check' .github/scripts/02-copy-build-dependencies.sh 'macOS SDK is not verified before extraction'
@@ -789,6 +832,7 @@ behavioral_tests=(
   asset_tx_tests/transfer_overflow_checks_follow_explicit_context
   asset_tx_tests/asset_destination_scope_test
   asset_tx_tests/pq_asset_envelope_is_not_witness_v2_test
+  asset_tx_tests/pq_asset_creation_height_and_anchor_rule_test
   asset_tx_tests/pq_asset_history_destination_uses_origin_height_test
   coins_tests/txundo_large_roundtrip_test
   coins_tests/txundo_deserialization_limit_test
@@ -818,6 +862,7 @@ behavioral_tests=(
   blockencodings_tests/compact_prefilled_wide_indexes_and_positions
   blockencodings_tests/compact_prefilled_offset_wrap_completes
   DoS_tests/unexpected_blocktxn_is_rejected_before_body_parse
+  DoS_tests/process_messages_releases_receive_queue_ownership
   DoS_tests/orphan_pq_shape_uses_raw_size_limit
   rpc_tests/rip25_gbt_reports_contextual_resource_limits
   mempool_tests/rip25_reorg_purges_preactivation_policy_transactions

@@ -86,6 +86,9 @@ jobs:
       - name: Run behavioral security invariants
         run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests
 
+      - name: Prove source mutation sensitivity
+        run: python3 contrib/devtools/test-rip25-source-mutation-sensitivity.py --full
+
       - name: Run required functional security tests
         run: |
           python3 contrib/devtools/test-required-functional-gate.py
@@ -351,3 +354,42 @@ jobs:
         path: ${{ github.workspace }}/release
         if-no-files-found: error
         retention-days: 14
+
+  verify-artifacts:
+    name: Verify all five downloaded release bundles
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify checkout
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+
+      - name: Prove the artifact verifier fails closed
+        run: python3 -m unittest discover -s contrib/devtools -p test_build_raven_artifacts.py -v
+
+      - name: Download all Build Raven bundles
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: raven-unsigned-*
+          path: ${{ runner.temp }}/rip25-artifacts
+          merge-multiple: false
+
+      - name: Verify package provenance and binary targets
+        env:
+          PACKAGE_REF: ${{ github.base_ref || github.ref_name }}
+        shell: bash
+        run: |
+          python3 contrib/devtools/verify_build_raven_artifacts.py \
+            "$RUNNER_TEMP/rip25-artifacts" "$GITHUB_SHA" \
+            --repository "$GITHUB_WORKSPACE" --package-ref "$PACKAGE_REF" \
+            --output "$RUNNER_TEMP/rip25-artifact-verification.json"

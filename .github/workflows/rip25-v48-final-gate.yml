@@ -98,6 +98,11 @@ jobs:
         shell: bash
         run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests
 
+      - id: source_mutation_sensitivity
+        name: Prove source mutation sensitivity
+        shell: bash
+        run: python3 contrib/devtools/test-rip25-source-mutation-sensitivity.py --full
+
       - id: required_functional
         name: Run required functional security tests
         shell: bash

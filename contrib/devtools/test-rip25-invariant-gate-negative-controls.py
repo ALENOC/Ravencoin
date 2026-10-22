@@ -98,6 +98,13 @@ class InvariantGateNegativeControls(unittest.TestCase):
             with self.subTest(workflow=workflow):
                 self.check_mutation(workflow, old, new)
 
+    def test_source_mutation_matrix_cannot_be_replaced_with_echo(self):
+        old = "        run: python3 contrib/devtools/test-rip25-source-mutation-sensitivity.py --full"
+        new = "        run: echo '" + old.strip() + "'"
+        for workflow in WORKFLOWS:
+            with self.subTest(workflow=workflow):
+                self.check_mutation(workflow, old, new)
+
     def test_functional_suite_cannot_be_hidden_in_here_document(self):
         start = "          python3 test/functional/test_runner.py --require-tests --jobs=2 \\"
         end = "feature_reissue_mempool_block_split.py feature_restricted_assets.py feature_raw_restricted_assets.py"
@@ -123,6 +130,59 @@ class InvariantGateNegativeControls(unittest.TestCase):
             for bypass in ("        if: false", "        continue-on-error: true"):
                 with self.subTest(workflow=workflow, step=step, bypass=bypass):
                     self.check_mutation(workflow, step, step + "\n" + bypass)
+
+    def test_release_package_attestation_commands_are_executable(self):
+        workflow = WORKFLOWS[0]
+        commands = (
+            '        git archive --format=tar --prefix="${distname}/" HEAD > "$source_tar"',
+            '        test "$(git get-tar-commit-id < "$source_tar")" = "$GITHUB_SHA"',
+            '          test -s "$artifact"',
+            '        grep -Fx "commit=$GITHUB_SHA" PROVENANCE.txt',
+            '        sha256sum -- "${artifacts[@]}" "$source_archive" PROVENANCE.txt > SHA256SUMS',
+            '        sha256sum --check SHA256SUMS',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.check_mutation(workflow, command,
+                                    "        echo '" + command.strip() + "'")
+
+    def test_release_package_attestation_cannot_be_hidden_or_skipped(self):
+        workflow = WORKFLOWS[0]
+        step = "    - name: Verify Packaged Source and Artifacts"
+        for bypass in ("      if: false", "      continue-on-error: true"):
+            with self.subTest(bypass=bypass):
+                self.check_mutation(workflow, step, step + "\n" + bypass)
+        command = "        sha256sum --check SHA256SUMS"
+        self.check_mutation(workflow, command,
+                            "        : <<'RIP25_INERT'\n" + command +
+                            "\n        RIP25_INERT")
+
+    def test_release_upload_cannot_be_hidden_or_skipped(self):
+        workflow = WORKFLOWS[0]
+        step = "    - name: Upload Artifacts to Job"
+        for bypass in ("      if: false", "      continue-on-error: true"):
+            with self.subTest(bypass=bypass):
+                self.check_mutation(workflow, step, step + "\n" + bypass)
+
+    def test_independent_artifact_verification_is_required(self):
+        workflow = WORKFLOWS[0]
+        dependency = "    needs: build"
+        self.check_mutation(workflow, dependency,
+                            "    # needs: build")
+        job = "  verify-artifacts:"
+        for bypass in ("    if: false", "    continue-on-error: true"):
+            with self.subTest(bypass=bypass):
+                self.check_mutation(workflow, job, job + "\n" + bypass)
+
+    def test_independent_artifact_verifier_must_execute(self):
+        workflow = WORKFLOWS[0]
+        step = "      - name: Verify package provenance and binary targets"
+        for bypass in ("        if: false", "        continue-on-error: true"):
+            with self.subTest(bypass=bypass):
+                self.check_mutation(workflow, step, step + "\n" + bypass)
+        command = "          python3 contrib/devtools/verify_build_raven_artifacts.py \\"
+        self.check_mutation(workflow, command,
+                            "          echo '" + command.strip() + "'")
 
     def test_wallet_modal_prompt_removal_is_rejected(self):
         with tempfile.TemporaryDirectory(prefix="rip25-wallet-gate-") as directory:
