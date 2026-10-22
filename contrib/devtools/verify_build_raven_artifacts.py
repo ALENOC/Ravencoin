@@ -27,6 +27,9 @@ TARGETS = {
     "aarch64": ("aarch64-linux-gnu", ("-aarch64-linux-gnu.tar.gz",), 0xB7, "elf"),
 }
 STATUS = "unsigned CI build; Windows and macOS outputs are not signed final releases"
+MIN_BINARY_SIZE = 64 * 1024
+MIN_INSTALLER_SIZE = 1024 * 1024
+HEADER_READ_SIZE = 256 * 1024
 
 
 def digest(path, algorithm="sha256"):
@@ -106,23 +109,123 @@ def inspect_zip(path, prefix):
     return members
 
 
-def check_binary(header, kind, machine, target, name):
+def digest_stream(stream, first=b""):
+    hasher = hashlib.sha256(first)
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def check_container(path, expected_type):
+    try:
+        result = subprocess.run(
+            ["7z", "t", "-bd", str(path)], capture_output=True,
+            text=True, timeout=180, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError(f"{path.name}: cannot test {expected_type} payload: {error}") from error
+    if (result.returncode != 0 or f"Type = {expected_type}" not in result.stdout
+            or "Everything is Ok" not in result.stdout):
+        raise ValueError(f"{path.name}: invalid {expected_type} payload")
+
+
+def check_binary(header, kind, machine, target, name, size, installer=False):
+    minimum = MIN_INSTALLER_SIZE if installer else MIN_BINARY_SIZE
+    if size < minimum:
+        raise ValueError(f"{target}: small executable {name}: {size} bytes")
     if kind == "elf":
         expected_class = 1 if target == "arm32v7" else 2
         if len(header) < 20 or header[:4] != b"\x7fELF" or header[4:6] != bytes((expected_class, 1)):
             raise ValueError(f"{target}: invalid ELF header for {name}")
         actual = struct.unpack_from("<H", header, 18)[0]
+        if (header[6] != 1 or struct.unpack_from("<H", header, 16)[0] not in (2, 3)
+                or struct.unpack_from("<I", header, 20)[0] != 1):
+            raise ValueError(f"{target}: invalid ELF executable header for {name}")
+        is_64 = expected_class == 2
+        entry = struct.unpack_from("<Q" if is_64 else "<I", header, 24)[0]
+        phoff = struct.unpack_from("<Q" if is_64 else "<I", header,
+                                   32 if is_64 else 28)[0]
+        phentsize, phnum = struct.unpack_from("<HH", header, 54 if is_64 else 42)
+        expected_phentsize = 56 if is_64 else 32
+        if (entry == 0 or phoff == 0 or phnum == 0 or phnum > 256
+                or phentsize < expected_phentsize
+                or phoff + phentsize * phnum > min(size, len(header))):
+            raise ValueError(f"{target}: invalid ELF program header table for {name}")
+        executable_load = False
+        for index in range(phnum):
+            offset = phoff + index * phentsize
+            program_type = struct.unpack_from("<I", header, offset)[0]
+            if is_64:
+                flags = struct.unpack_from("<I", header, offset + 4)[0]
+                file_offset, file_size = struct.unpack_from("<QQ", header, offset + 8)[0], struct.unpack_from("<Q", header, offset + 32)[0]
+            else:
+                file_offset, file_size = struct.unpack_from("<II", header, offset + 4)[0], struct.unpack_from("<I", header, offset + 16)[0]
+                flags = struct.unpack_from("<I", header, offset + 24)[0]
+            if program_type == 1 and flags & 1 and file_size > 0 and file_offset + file_size <= size:
+                executable_load = True
+        if not executable_load:
+            raise ValueError(f"{target}: no executable ELF program header for {name}")
     elif kind == "macho":
-        if len(header) < 8 or header[:4] != b"\xcf\xfa\xed\xfe":
+        if len(header) < 32 or header[:4] != b"\xcf\xfa\xed\xfe":
             raise ValueError(f"{target}: invalid Mach-O header for {name}")
         actual = struct.unpack_from("<I", header, 4)[0]
+        filetype, command_count, command_bytes = struct.unpack_from("<III", header, 12)
+        if (filetype != 2 or command_count == 0 or command_count > 256
+                or command_bytes == 0 or 32 + command_bytes > min(size, len(header))):
+            raise ValueError(f"{target}: invalid Mach-O load command table for {name}")
+        offset = 32
+        text_segment = False
+        entry_command = False
+        end = 32 + command_bytes
+        for _ in range(command_count):
+            if offset + 8 > end:
+                raise ValueError(f"{target}: invalid Mach-O load command for {name}")
+            command, command_size = struct.unpack_from("<II", header, offset)
+            if command_size < 8 or offset + command_size > end:
+                raise ValueError(f"{target}: invalid Mach-O load command for {name}")
+            if command == 0x19 and command_size >= 72:
+                segment = header[offset + 8:offset + 24].split(b"\0", 1)[0]
+                file_offset, file_size = struct.unpack_from("<QQ", header, offset + 40)
+                initial_protection = struct.unpack_from("<I", header, offset + 60)[0]
+                if (segment == b"__TEXT" and file_size > 0
+                        and file_offset + file_size <= size and initial_protection & 4):
+                    text_segment = True
+            if command == 0x80000028 and command_size >= 24:
+                entry_offset = struct.unpack_from("<Q", header, offset + 8)[0]
+                entry_command = 0 < entry_offset < size
+            elif command == 0x5:
+                entry_command = True
+            offset += command_size
+        if offset != end or not text_segment or not entry_command:
+            raise ValueError(f"{target}: invalid Mach-O load commands for {name}")
     else:
         if len(header) < 64 or header[:2] != b"MZ":
             raise ValueError(f"{target}: invalid PE header for {name}")
         offset = struct.unpack_from("<I", header, 0x3C)[0]
-        if offset + 6 > len(header) or header[offset:offset + 4] != b"PE\0\0":
+        if offset + 24 > len(header) or header[offset:offset + 4] != b"PE\0\0":
             raise ValueError(f"{target}: invalid PE signature for {name}")
         actual = struct.unpack_from("<H", header, offset + 4)[0]
+        section_count = struct.unpack_from("<H", header, offset + 6)[0]
+        optional_size = struct.unpack_from("<H", header, offset + 20)[0]
+        optional_offset = offset + 24
+        expected_magic = 0x10B if installer else 0x20B
+        if (section_count == 0 or section_count > 96 or optional_size < 96
+                or optional_offset + optional_size + section_count * 40 > len(header)
+                or struct.unpack_from("<H", header, optional_offset)[0] != expected_magic
+                or struct.unpack_from("<I", header, optional_offset + 16)[0] == 0):
+            raise ValueError(f"{target}: invalid PE section table for {name}")
+        executable_section = False
+        section_offset = optional_offset + optional_size
+        for index in range(section_count):
+            section = section_offset + index * 40
+            raw_size, raw_offset = struct.unpack_from("<II", header, section + 16)
+            flags = struct.unpack_from("<I", header, section + 36)[0]
+            if flags & 0x20000000 and raw_size > 0 and raw_offset + raw_size <= size:
+                executable_section = True
+        if not executable_section:
+            raise ValueError(f"{target}: no executable section in {name}")
+        if installer and b"Nullsoft" not in header:
+            raise ValueError(f"{target}: installer lacks the NSIS signature in {name}")
     if actual != machine:
         raise ValueError(f"{target}: wrong binary machine for {name}: {actual:#x}, expected {machine:#x}")
 
@@ -130,6 +233,7 @@ def check_binary(header, kind, machine, target, name):
 def check_primary(path, target, dist):
     _, _, machine, kind = TARGETS[target]
     binary_names = ("ravend", "raven-cli", "raven-qt")
+    binary_hashes = {}
     if kind == "pe":
         members = inspect_zip(path, dist)
         with zipfile.ZipFile(path) as archive:
@@ -138,7 +242,10 @@ def check_primary(path, target, dist):
                 if name not in members:
                     raise ValueError(f"{target}: missing binary {name}")
                 with archive.open(members[name]) as stream:
-                    check_binary(stream.read(4096), kind, machine, target, name)
+                    header = stream.read(HEADER_READ_SIZE)
+                    check_binary(header, kind, machine, target, name,
+                                 members[name].file_size)
+                    binary_hashes[binary] = digest_stream(stream, header)
     else:
         members = inspect_tar(path, dist)
         with tarfile.open(path, "r:gz") as archive:
@@ -147,8 +254,12 @@ def check_primary(path, target, dist):
                 if name not in members or not members[name].isfile():
                     raise ValueError(f"{target}: missing binary {name}")
                 with archive.extractfile(members[name]) as stream:
-                    check_binary(stream.read(4096), kind, machine, target, name)
-    return {"format": kind, "machine": f"{machine:#x}", "archive_paths_safe": True}
+                    header = stream.read(HEADER_READ_SIZE)
+                    check_binary(header, kind, machine, target, name,
+                                 members[name].size)
+                    binary_hashes[binary] = digest_stream(stream, header)
+    return {"format": kind, "machine": f"{machine:#x}",
+            "archive_paths_safe": True, "binary_sha256": binary_hashes}
 
 
 def source_commit(path):
@@ -296,32 +407,53 @@ def verify(root, sha, dist, repository=None):
             # The unsigned NSIS installer uses a 32-bit PE launcher around 64-bit payloads.
             installer = bundle / (dist + suffixes[1])
             with installer.open("rb") as stream:
-                check_binary(stream.read(4096), "pe", 0x14C, target, installer.name)
+                check_binary(stream.read(HEADER_READ_SIZE), "pe", 0x14C,
+                             target, installer.name, installer.stat().st_size,
+                             installer=True)
+            check_container(installer, "Nsis")
             signing = bundle / (dist + suffixes[2])
             signing_members = inspect_tar(signing)
             deploy = bundle / "windeploy"
-            if deploy.exists():
-                if not deploy.is_dir() or deploy.is_symlink():
-                    raise ValueError("windows: invalid windeploy directory")
-                expected_deploy = {"win-codesign.cert", "detached-sig-create.sh"}
-                if {entry.name for entry in deploy.iterdir()} != expected_deploy:
-                    raise ValueError("windows: unexpected windeploy contents")
-                with tarfile.open(signing, "r:gz") as archive:
-                    for name in expected_deploy:
-                        file = deploy / name
-                        member = signing_members.get(name)
-                        if (not file.is_file() or file.is_symlink() or member is None
-                                or not member.isfile() or archive.extractfile(member).read() != file.read_bytes()):
-                            raise ValueError(f"windows: windeploy differs from signing bundle: {name}")
+            if not deploy.is_dir() or deploy.is_symlink():
+                raise ValueError("windows: missing or invalid windeploy directory")
+            expected_deploy = {"win-codesign.cert", "detached-sig-create.sh"}
+            if {entry.name for entry in deploy.iterdir()} != expected_deploy:
+                raise ValueError("windows: unexpected windeploy contents")
+            with tarfile.open(signing, "r:gz") as archive:
+                for name in expected_deploy:
+                    file = deploy / name
+                    member = signing_members.get(name)
+                    if member is None or not member.isfile() or member.size == 0:
+                        raise ValueError(f"windows: missing signing bundle entry: {name}")
+                    if (not file.is_file() or file.is_symlink()
+                            or archive.extractfile(member).read() != file.read_bytes()):
+                        raise ValueError(f"windows: windeploy differs from signing bundle: {name}")
         elif target == "osx":
             dmg = bundle / (dist + suffixes[1])
-            if dmg.stat().st_size < 512:
-                raise ValueError(f"{target}: invalid DMG trailer")
+            if dmg.stat().st_size < MIN_INSTALLER_SIZE:
+                raise ValueError(f"{target}: small DMG payload")
             with dmg.open("rb") as stream:
                 stream.seek(-512, os.SEEK_END)
                 if stream.read(4) != b"koly":
                     raise ValueError(f"{target}: invalid DMG trailer")
-            inspect_tar(bundle / (dist + suffixes[2]), mac_signing_bundle=True)
+            check_container(dmg, "Dmg")
+            signing = bundle / (dist + suffixes[2])
+            signing_members = inspect_tar(signing, mac_signing_bundle=True)
+            app_prefix = "dist/Raven-Qt.app/Contents"
+            info = signing_members.get(app_prefix + "/Info.plist")
+            if info is None or not info.isfile() or info.size == 0:
+                raise ValueError("osx: missing signing app metadata")
+            with tarfile.open(signing, "r:gz") as archive:
+                for primary_name, app_name in (("ravend", "ravend"),
+                                               ("raven-cli", "raven-cli"),
+                                               ("raven-qt", "Raven-Qt")):
+                    name = app_prefix + "/MacOS/" + app_name
+                    member = signing_members.get(name)
+                    if member is None or not member.isfile() or member.size < MIN_BINARY_SIZE:
+                        raise ValueError(f"osx: missing signing app binary: {name}")
+                    with archive.extractfile(member) as stream:
+                        if digest_stream(stream) != binary["binary_sha256"][primary_name]:
+                            raise ValueError(f"osx: signing app differs from primary: {name}")
 
         source_hashes.add(hashes[source_name])
         records.append({

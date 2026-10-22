@@ -374,6 +374,11 @@ jobs:
           git diff --exit-code
           git diff --cached --exit-code
 
+      - name: Install archive validation tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
       - name: Prove the artifact verifier fails closed
         run: python3 -m unittest discover -s contrib/devtools -p test_build_raven_artifacts.py -v
 

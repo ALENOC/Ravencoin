@@ -11,6 +11,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 import verify_build_raven_artifacts as verifier
@@ -19,25 +20,56 @@ import verify_build_raven_artifacts as verifier
 SHA = "a" * 40
 DIST = "raven-4.8.1-aaaaaaaaa"
 STATUS = "unsigned CI build; Windows and macOS outputs are not signed final releases"
+TEST_BINARY_SIZE = 128 * 1024
+TEST_INSTALLER_SIZE = 1024 * 1024
 
 
 def elf(machine, elf_class):
-    header = bytearray(64)
-    header[:6] = b"\x7fELF" + bytes((elf_class, 1))
+    header = bytearray(TEST_BINARY_SIZE)
+    header[:7] = b"\x7fELF" + bytes((elf_class, 1, 1))
+    struct.pack_into("<H", header, 16, 3)
     struct.pack_into("<H", header, 18, machine)
+    struct.pack_into("<I", header, 20, 1)
+    if elf_class == 1:
+        struct.pack_into("<II", header, 24, 0x1000, 52)
+        struct.pack_into("<HH", header, 42, 32, 1)
+        struct.pack_into("<IIIIIIII", header, 52, 1, 0, 0x1000, 0x1000,
+                         TEST_BINARY_SIZE, TEST_BINARY_SIZE, 5, 0x1000)
+    else:
+        struct.pack_into("<QQ", header, 24, 0x1000, 64)
+        struct.pack_into("<HH", header, 54, 56, 1)
+        struct.pack_into("<IIQQQQQQ", header, 64, 1, 5, 0, 0x1000, 0x1000,
+                         TEST_BINARY_SIZE, TEST_BINARY_SIZE, 0x1000)
     return bytes(header)
 
 
 def macho():
-    return struct.pack("<II", 0xFEEDFACF, 0x01000007) + bytes(56)
+    header = bytearray(TEST_BINARY_SIZE)
+    struct.pack_into("<IIIIIIII", header, 0, 0xFEEDFACF, 0x01000007,
+                     3, 2, 2, 96, 0, 0)
+    struct.pack_into("<II16sQQQQIIII", header, 32, 0x19, 72,
+                     b"__TEXT", 0x100000000, TEST_BINARY_SIZE, 0,
+                     TEST_BINARY_SIZE, 7, 5, 0, 0)
+    struct.pack_into("<IIQQ", header, 104, 0x80000028, 24, 4096, 0)
+    return bytes(header)
 
 
-def pe(machine):
-    header = bytearray(256)
+def pe(machine, size=TEST_BINARY_SIZE):
+    header = bytearray(size)
     header[:2] = b"MZ"
     struct.pack_into("<I", header, 0x3C, 128)
     header[128:132] = b"PE\0\0"
     struct.pack_into("<H", header, 132, machine)
+    struct.pack_into("<H", header, 134, 1)
+    optional_size = 224 if machine == 0x14C else 240
+    struct.pack_into("<H", header, 148, optional_size)
+    struct.pack_into("<H", header, 152, 0x10B if machine == 0x14C else 0x20B)
+    struct.pack_into("<I", header, 168, 0x1000)
+    section = 152 + optional_size
+    struct.pack_into("<8sIIIIIIHHI", header, section, b".text", 0x1000,
+                     0x1000, 0x10000, 0x200, 0, 0, 0, 0, 0x60000020)
+    if machine == 0x14C:
+        header[116900:116908] = b"Nullsoft"
     return bytes(header)
 
 
@@ -64,8 +96,11 @@ def payloads(source):
                 for binary in ("ravend.exe", "raven-cli.exe", "raven-qt.exe"):
                     z.writestr(f"{DIST}/bin/{binary}", pe(machine))
             files[primary] = buffer.getvalue()
-            files[DIST + suffixes[1]] = pe(0x14C)
-            files[DIST + suffixes[2]] = archive([("./detached-sig-create.sh", b"test")])
+            files[DIST + suffixes[1]] = pe(0x14C, TEST_INSTALLER_SIZE)
+            files[DIST + suffixes[2]] = archive([
+                ("./detached-sig-create.sh", b"test"),
+                ("./win-codesign.cert", b"cert"),
+            ])
         else:
             binary = macho() if kind == "macho" else elf(
                 machine, 1 if target == "arm32v7" else 2
@@ -75,8 +110,13 @@ def payloads(source):
                  ("ravend", "raven-cli", "raven-qt")]
             )
             if target == "osx":
-                files[DIST + suffixes[1]] = bytes(512) + b"koly" + bytes(508)
-                files[DIST + suffixes[2]] = archive([("./dist/Raven-Qt.app/Contents/Info.plist", b"test")])
+                files[DIST + suffixes[1]] = bytes(TEST_INSTALLER_SIZE) + b"koly" + bytes(508)
+                files[DIST + suffixes[2]] = archive([
+                    ("./dist/Raven-Qt.app/Contents/Info.plist", b"test"),
+                    ("./dist/Raven-Qt.app/Contents/MacOS/Raven-Qt", binary),
+                    ("./dist/Raven-Qt.app/Contents/MacOS/raven-cli", binary),
+                    ("./dist/Raven-Qt.app/Contents/MacOS/ravend", binary),
+                ])
         output[target] = files
     return output
 
@@ -108,6 +148,11 @@ class ArtifactVerificationTests(unittest.TestCase):
             files["PROVENANCE.txt"] = provenance.encode()
             for name, content in files.items():
                 (path / name).write_bytes(content)
+            if target == "windows":
+                deploy = path / "windeploy"
+                deploy.mkdir(exist_ok=True)
+                (deploy / "detached-sig-create.sh").write_bytes(b"test")
+                (deploy / "win-codesign.cert").write_bytes(b"cert")
             self.rehash(target)
 
     def rehash(self, target):
@@ -119,7 +164,10 @@ class ArtifactVerificationTests(unittest.TestCase):
         (path / "SHA256SUMS").write_text(manifest)
 
     def verify(self):
-        return verifier.verify(self.root, SHA, DIST)
+        # The synthetic valid fixtures exercise structural checks. The real
+        # unsigned installer and DMG are tested by 7-Zip in the CI verifier.
+        with mock.patch.object(verifier, "check_container"):
+            return verifier.verify(self.root, SHA, DIST)
 
     def test_five_valid_bundles(self):
         result = self.verify()
@@ -164,6 +212,122 @@ class ArtifactVerificationTests(unittest.TestCase):
         (self.bundle("linux") / name).write_bytes(contents)
         self.rehash("linux")
         with self.assertRaisesRegex(ValueError, "missing binary"):
+            self.verify()
+
+    def test_skeletal_elf_fails_with_updated_manifest(self):
+        target = "linux"
+        name = DIST + verifier.TARGETS[target][1][0]
+        contents = archive([
+            (f"{DIST}/bin/{binary}", elf(0x3E, 2)[:64])
+            for binary in ("ravend", "raven-cli", "raven-qt")
+        ])
+        self.files[target][name] = contents
+        (self.bundle(target) / name).write_bytes(contents)
+        self.rehash(target)
+        with self.assertRaisesRegex(ValueError, "small|program header"):
+            self.verify()
+
+    def test_padded_elf_without_program_headers_fails(self):
+        target = "linux"
+        name = DIST + verifier.TARGETS[target][1][0]
+        broken = bytearray(elf(0x3E, 2))
+        struct.pack_into("<H", broken, 56, 0)
+        contents = archive([(f"{DIST}/bin/{binary}", bytes(broken))
+                            for binary in ("ravend", "raven-cli", "raven-qt")])
+        self.files[target][name] = contents
+        (self.bundle(target) / name).write_bytes(contents)
+        self.rehash(target)
+        with self.assertRaisesRegex(ValueError, "program header"):
+            self.verify()
+
+    def test_padded_macho_without_load_commands_fails(self):
+        target = "osx"
+        name = DIST + verifier.TARGETS[target][1][0]
+        broken = bytearray(macho())
+        struct.pack_into("<I", broken, 16, 0)
+        contents = archive([(f"{DIST}/bin/{binary}", bytes(broken))
+                            for binary in ("ravend", "raven-cli", "raven-qt")])
+        self.files[target][name] = contents
+        (self.bundle(target) / name).write_bytes(contents)
+        self.rehash(target)
+        with self.assertRaisesRegex(ValueError, "load command"):
+            self.verify()
+
+    def test_padded_pe_without_executable_section_fails(self):
+        target = "windows"
+        name = DIST + verifier.TARGETS[target][1][0]
+        broken = bytearray(pe(0x8664))
+        struct.pack_into("<I", broken, 152 + 240 + 36, 0)
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zipped:
+            for binary in ("ravend.exe", "raven-cli.exe", "raven-qt.exe"):
+                zipped.writestr(f"{DIST}/bin/{binary}", broken)
+        self.files[target][name] = buffer.getvalue()
+        (self.bundle(target) / name).write_bytes(buffer.getvalue())
+        self.rehash(target)
+        with self.assertRaisesRegex(ValueError, "executable section"):
+            self.verify()
+
+    def test_skeletal_windows_installer_fails(self):
+        target = "windows"
+        name = DIST + verifier.TARGETS[target][1][1]
+        self.files[target][name] = pe(0x14C)[:256]
+        (self.bundle(target) / name).write_bytes(self.files[target][name])
+        self.rehash(target)
+        with self.assertRaisesRegex(ValueError, "small|section"):
+            self.verify()
+
+    def test_dummy_dmg_fails(self):
+        target = "osx"
+        name = DIST + verifier.TARGETS[target][1][1]
+        self.files[target][name] = bytes(512) + b"koly" + bytes(508)
+        (self.bundle(target) / name).write_bytes(self.files[target][name])
+        self.rehash(target)
+        with self.assertRaisesRegex(ValueError, "small DMG"):
+            self.verify()
+
+    def test_archive_parser_rejects_synthetic_installers(self):
+        for target, suffix_index, container_type in (
+                ("windows", 1, "Nsis"), ("osx", 1, "Dmg")):
+            with self.subTest(target=target):
+                name = DIST + verifier.TARGETS[target][1][suffix_index]
+                with self.assertRaisesRegex(ValueError, "invalid " + container_type):
+                    verifier.check_container(self.bundle(target) / name,
+                                             container_type)
+
+    def test_mac_signing_app_must_match_primary(self):
+        target = "osx"
+        name = DIST + verifier.TARGETS[target][1][2]
+        changed = bytearray(macho())
+        changed[-1] = 1
+        contents = archive([
+            ("./dist/Raven-Qt.app/Contents/Info.plist", b"test"),
+            ("./dist/Raven-Qt.app/Contents/MacOS/Raven-Qt", bytes(changed)),
+            ("./dist/Raven-Qt.app/Contents/MacOS/raven-cli", macho()),
+            ("./dist/Raven-Qt.app/Contents/MacOS/ravend", macho()),
+        ])
+        self.files[target][name] = contents
+        (self.bundle(target) / name).write_bytes(contents)
+        self.rehash(target)
+        with self.assertRaisesRegex(ValueError, "signing app differs"):
+            self.verify()
+
+    def test_windows_signing_bundle_requires_certificate(self):
+        target = "windows"
+        name = DIST + verifier.TARGETS[target][1][2]
+        contents = archive([("./detached-sig-create.sh", b"test")])
+        self.files[target][name] = contents
+        (self.bundle(target) / name).write_bytes(contents)
+        self.rehash(target)
+        with self.assertRaisesRegex(ValueError, "signing bundle"):
+            self.verify()
+
+    def test_windows_deploy_directory_is_required(self):
+        deploy = self.bundle("windows") / "windeploy"
+        for file in deploy.iterdir():
+            file.unlink()
+        deploy.rmdir()
+        with self.assertRaisesRegex(ValueError, "windeploy"):
             self.verify()
 
     def test_wrong_embedded_source_commit_fails_with_updated_manifest(self):
