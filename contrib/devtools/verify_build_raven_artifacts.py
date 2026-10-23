@@ -193,9 +193,11 @@ def list_dmg_app_entries(path):
                       if " = " in line)
         name = fields.get("Path", "")
         normalized = posixpath.normpath(name.replace("\\", "/"))
-        if (name == root or name.startswith(root + "/")
-                or normalized == root or normalized.startswith(root + "/")):
-            if archive_name(name, path.name) != name or name.casefold() in folded:
+        if (normalized.casefold() == root.casefold()
+                or normalized.casefold().startswith(root.casefold() + "/")):
+            if (not (name == root or name.startswith(root + "/"))
+                    or archive_name(name, path.name) != name
+                    or name.casefold() in folded):
                 raise ValueError(f"{path.name}: unsafe or ambiguous DMG app path {name!r}")
             folded.add(name.casefold())
             entries[name] = fields

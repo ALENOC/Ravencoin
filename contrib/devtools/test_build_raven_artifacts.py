@@ -421,6 +421,15 @@ class ArtifactVerificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "DMG app inventory differs"):
             self.verify()
 
+    def test_mac_dmg_case_alias_fails(self):
+        listing = ("Header\n----------\n"
+                   "Path = Raven-Qt.app\nFolder = +\n\n"
+                   "Path = raven-qt.app/Contents/Info.plist\nFolder = -\nSize = 4\n")
+        completed = subprocess.CompletedProcess([], 0, listing, "")
+        with mock.patch.object(verifier.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(ValueError, "unsafe or ambiguous DMG app path"):
+                verifier.list_dmg_app_entries(Path("app.dmg"))
+
     def test_windows_signing_bundle_requires_certificate(self):
         target = "windows"
         name = DIST + verifier.TARGETS[target][1][2]
