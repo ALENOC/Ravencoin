@@ -97,8 +97,12 @@ def archive(members, commit=None):
                       pax_headers=pax) as tar:
         for name, content in members:
             entry = tarfile.TarInfo(name)
-            entry.size = len(content)
-            tar.addfile(entry, io.BytesIO(content))
+            if name.endswith("/"):
+                entry.type = tarfile.DIRTYPE
+                tar.addfile(entry)
+            else:
+                entry.size = len(content)
+                tar.addfile(entry, io.BytesIO(content))
     return gzip.compress(buffer.getvalue(), mtime=0)
 
 
@@ -129,10 +133,15 @@ def payloads(source):
             if target == "osx":
                 files[DIST + suffixes[1]] = bytes(TEST_INSTALLER_SIZE) + b"koly" + bytes(508)
                 files[DIST + suffixes[2]] = archive([
+                    ("./dist/Raven-Qt.app/", b""),
+                    ("./dist/Raven-Qt.app/Contents/", b""),
+                    ("./dist/Raven-Qt.app/Contents/MacOS/", b""),
+                    ("./dist/Raven-Qt.app/Contents/Resources/", b""),
                     ("./dist/Raven-Qt.app/Contents/Info.plist", b"test"),
                     ("./dist/Raven-Qt.app/Contents/MacOS/Raven-Qt", binary),
                     ("./dist/Raven-Qt.app/Contents/MacOS/raven-cli", binary),
                     ("./dist/Raven-Qt.app/Contents/MacOS/ravend", binary),
+                    ("./dist/Raven-Qt.app/Contents/Resources/qt.conf", b"Plugins=PlugIns\n"),
                 ])
         output[target] = files
     return output
@@ -151,7 +160,21 @@ class ArtifactVerificationTests(unittest.TestCase):
             "Raven-Qt.app/Contents/MacOS/ravend": macho(),
             "Raven-Qt.app/Contents/MacOS/raven-cli": macho(),
             "Raven-Qt.app/Contents/MacOS/Raven-Qt": macho(),
+            "Raven-Qt.app/Contents/Info.plist": b"test",
+            "Raven-Qt.app/Contents/Resources/qt.conf": b"Plugins=PlugIns\n",
         }
+        self.dmg_entries = {
+            name: {"Path": name, "Folder": "+", "Symbolic Link": ""}
+            for name in ("Raven-Qt.app", "Raven-Qt.app/Contents",
+                         "Raven-Qt.app/Contents/MacOS",
+                         "Raven-Qt.app/Contents/Resources")
+        }
+        self.dmg_entries.update({
+            name: {"Path": name, "Folder": "-", "Size": str(len(content)),
+                   "Symbolic Link": ""}
+            for name, content in self.installed.items()
+            if name.startswith("Raven-Qt.app/")
+        })
         self.write_bundles()
 
     def tearDown(self):
@@ -193,7 +216,12 @@ class ArtifactVerificationTests(unittest.TestCase):
         # unsigned installer and DMG are tested by 7-Zip in the CI verifier.
         with (mock.patch.object(verifier, "check_container"),
               mock.patch.object(verifier, "read_container_member",
-                                side_effect=lambda path, name: self.installed[name])):
+                                side_effect=lambda path, name: self.installed[name]),
+              mock.patch.object(verifier, "list_dmg_app_entries",
+                                return_value=self.dmg_entries, create=True),
+              mock.patch.object(verifier, "extract_dmg_app_file",
+                                side_effect=lambda path, name, size: self.installed[name],
+                                create=True)):
             return verifier.verify(self.root, SHA, DIST)
 
     def test_five_valid_bundles(self):
@@ -379,6 +407,18 @@ class ArtifactVerificationTests(unittest.TestCase):
         changed[-1] = 1
         self.installed["Raven-Qt.app/Contents/MacOS/Raven-Qt"] = bytes(changed)
         with self.assertRaisesRegex(ValueError, "DMG app differs"):
+            self.verify()
+
+    def test_mac_dmg_resource_substitution_fails(self):
+        self.installed["Raven-Qt.app/Contents/Resources/qt.conf"] = b"Plugins=BadPlug\n"
+        with self.assertRaisesRegex(ValueError, "DMG app differs from signing archive"):
+            self.verify()
+
+    def test_mac_dmg_extra_app_member_fails(self):
+        name = "Raven-Qt.app/Contents/Resources/extra.conf"
+        self.dmg_entries[name] = {"Path": name, "Folder": "-", "Size": "4",
+                                  "Symbolic Link": ""}
+        with self.assertRaisesRegex(ValueError, "DMG app inventory differs"):
             self.verify()
 
     def test_windows_signing_bundle_requires_certificate(self):

@@ -173,6 +173,87 @@ def read_container_member(path, expected_name):
     return result.stdout
 
 
+def list_dmg_app_entries(path):
+    """Inventory the installed app, rejecting path aliases and duplicates."""
+    try:
+        listing = subprocess.run(
+            ["7z", "l", "-slt", "-bd", str(path)], capture_output=True,
+            text=True, timeout=180, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError(f"{path.name}: cannot list DMG app: {error}") from error
+    separator = "\n----------\n"
+    if listing.returncode or separator not in listing.stdout:
+        raise ValueError(f"{path.name}: cannot list DMG app")
+    root = "Raven-Qt.app"
+    entries = {}
+    folded = set()
+    for block in listing.stdout.rsplit(separator, 1)[1].strip().split("\n\n"):
+        fields = dict(line.split(" = ", 1) for line in block.splitlines()
+                      if " = " in line)
+        name = fields.get("Path", "")
+        normalized = posixpath.normpath(name.replace("\\", "/"))
+        if (name == root or name.startswith(root + "/")
+                or normalized == root or normalized.startswith(root + "/")):
+            if archive_name(name, path.name) != name or name.casefold() in folded:
+                raise ValueError(f"{path.name}: unsafe or ambiguous DMG app path {name!r}")
+            folded.add(name.casefold())
+            entries[name] = fields
+    if root not in entries:
+        raise ValueError(f"{path.name}: missing DMG app")
+    return entries
+
+
+def extract_dmg_app_file(path, name, size):
+    if size < 0 or size > MAX_CONTAINER_MEMBER_SIZE:
+        raise ValueError(f"{path.name}: invalid DMG app file size {name}")
+    try:
+        result = subprocess.run(
+            ["7z", "e", "-so", "-bd", str(path), name],
+            capture_output=True, timeout=180, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError(f"{path.name}: cannot extract DMG app file {name}: {error}") from error
+    if result.returncode or len(result.stdout) != size:
+        raise ValueError(f"{path.name}: invalid extracted DMG app file {name}")
+    return result.stdout
+
+
+def verify_dmg_app(dmg, signing, signing_members):
+    """Bind every installed app entry to the unsigned signing archive."""
+    prefix = "dist/Raven-Qt.app"
+    expected = {name[5:]: member for name, member in signing_members.items()
+                if name == prefix or name.startswith(prefix + "/")}
+    actual = list_dmg_app_entries(dmg)
+    if set(actual) != set(expected):
+        raise ValueError("osx: DMG app inventory differs from signing archive")
+    with tarfile.open(signing, "r:gz") as archive:
+        for name, member in expected.items():
+            fields = actual[name]
+            if member.isdir():
+                if fields.get("Folder") != "+" or fields.get("Symbolic Link", ""):
+                    raise ValueError(f"osx: DMG app type differs: {name}")
+            elif member.issym():
+                if (fields.get("Folder") == "+"
+                        or fields.get("Symbolic Link") != member.linkname):
+                    raise ValueError(f"osx: DMG app link differs: {name}")
+            elif member.isfile():
+                try:
+                    size = int(fields["Size"])
+                except (KeyError, ValueError) as error:
+                    raise ValueError(f"osx: invalid DMG app file size: {name}") from error
+                if (fields.get("Folder") != "-" or fields.get("Symbolic Link", "")
+                        or size != member.size):
+                    raise ValueError(f"osx: DMG app type or size differs: {name}")
+                installed = extract_dmg_app_file(dmg, name, size)
+                with archive.extractfile(member) as stream:
+                    if hashlib.sha256(installed).digest() != hashlib.sha256(stream.read()).digest():
+                        raise ValueError(f"osx: DMG app differs from signing archive: {name}")
+            else:
+                raise ValueError(f"osx: unsupported signing app entry: {name}")
+    return len(actual)
+
+
 def pe_sections(payload, name):
     offset = struct.unpack_from("<I", payload, 0x3C)[0]
     count = struct.unpack_from("<H", payload, offset + 6)[0]
@@ -631,6 +712,7 @@ def verify(root, sha, dist, repository=None):
                     with archive.extractfile(member) as stream:
                         if digest_stream(stream) != binary["binary_sha256"][primary_name]:
                             raise ValueError(f"osx: signing app differs from primary: {name}")
+            binary["dmg_app_entries_verified"] = verify_dmg_app(dmg, signing, signing_members)
 
         source_hashes.add(hashes[source_name])
         records.append({
