@@ -564,6 +564,9 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
     if (!pqEnabled && HasPQWitnessV2Output(tx))
         return state.DoS(0, false, REJECT_NONSTANDARD, "premature-pq-witness", true);
 
+    if (pqAssetActivationHeight < 0 && HasPQOnlyAssetOutput(tx))
+        return state.DoS(0, false, REJECT_NONSTANDARD, "premature-pq-asset", true);
+
     // Rather not work on nonstandard transactions (unless -testnet/-regtest)
     std::string reason;
     if (fRequireStandard && !IsStandardTx(tx, reason, witnessEnabled))
@@ -1906,6 +1909,26 @@ static DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* 
         error("DisconnectBlock(): block asset undo data inconsistent");
         return DISCONNECT_FAILED;
     }
+
+#ifdef ENABLE_WALLET
+    if (databaseMessaging && fMessaging) {
+        bool hasAssetOutput = false;
+        for (const auto& tx : block.vtx) {
+            for (const auto& output : tx->vout) {
+                if (output.scriptPubKey.IsAssetScript()) {
+                    hasAssetOutput = true;
+                    break;
+                }
+            }
+            if (hasAssetOutput)
+                break;
+        }
+        if (hasAssetOutput && !InvalidateMessageWalletScans()) {
+            error("DisconnectBlock(): failed to invalidate wallet message scans");
+            return DISCONNECT_FAILED;
+        }
+    }
+#endif
     
     std::vector<std::pair<CAddressIndexKey, CAmount> > addressIndex;
     std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > addressUnspentIndex;
@@ -2167,9 +2190,7 @@ static DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* 
                         (IsAssetNameAnOwner(transfer.strName) || IsAssetNameAnMsgChannel(transfer.strName))) {
 
                         LOCK(cs_messaging);
-                        if (IsChannelSubscribed(transfer.strName)) {
-                            OrphanMessage(COutPoint(hash, index));
-                        }
+                        OrphanMessage(COutPoint(hash, index));
                     }
                 }
 
@@ -2489,6 +2510,78 @@ static TxAssetDeploymentContext GetTxAssetDeploymentContextLocked(const CBlockIn
     };
 }
 
+bool CollectConfirmedAssetMessages(const CBlock& block, const CBlockIndex* pindex,
+                                   std::set<CMessage>& messages)
+{
+    AssertLockHeld(cs_main);
+    if (!pindex || !pindex->pprev)
+        return false;
+    const TxAssetDeploymentContext context = GetTxAssetDeploymentContextLocked(
+        pindex->pprev, GetParams().GetConsensus());
+    if (!context.fMessagesDeployed)
+        return true;
+
+    bool hasCandidate = false;
+    for (const auto& tx : block.vtx) {
+        for (const CTxOut& output : tx->vout) {
+            CAssetOutputEntry data;
+            if (GetAssetData(output.scriptPubKey, data, &context) &&
+                data.type == TX_TRANSFER_ASSET && !data.message.empty() &&
+                (IsAssetNameAnOwner(data.assetName) ||
+                 IsAssetNameAnMsgChannel(data.assetName))) {
+                hasCandidate = true;
+                break;
+            }
+        }
+        if (hasCandidate)
+            break;
+    }
+    if (!hasCandidate)
+        return true;
+
+    CBlockUndo undo;
+    if (pindex->GetUndoPos().IsNull() ||
+        !UndoReadFromDisk(undo, pindex->GetUndoPos(), pindex->pprev->GetBlockHash()) ||
+        undo.vtxundo.size() + 1 != block.vtx.size())
+        return false;
+
+    for (size_t txIndex = 1; txIndex < block.vtx.size(); ++txIndex) {
+        const CTransaction& tx = *block.vtx[txIndex];
+        const CTxUndo& txUndo = undo.vtxundo[txIndex - 1];
+        if (txUndo.vprevout.size() != tx.vin.size())
+            return false;
+        std::map<std::string, std::string> inputAddresses;
+        for (const Coin& input : txUndo.vprevout) {
+            if (!input.IsAsset())
+                continue;
+            CAssetOutputEntry data;
+            if (!GetAssetData(input.out.scriptPubKey, data, &context))
+                return false;
+            inputAddresses.emplace(data.assetName, EncodeDestination(data.destination));
+        }
+        for (size_t outputIndex = 0; outputIndex < tx.vout.size(); ++outputIndex) {
+            CAssetOutputEntry data;
+            if (!GetAssetData(tx.vout[outputIndex].scriptPubKey, data, &context) ||
+                data.type != TX_TRANSFER_ASSET || data.message.empty() ||
+                (!IsAssetNameAnOwner(data.assetName) &&
+                 !IsAssetNameAnMsgChannel(data.assetName)) ||
+                (data.expireTime != 0 && data.expireTime <= block.nTime))
+                continue;
+            const auto sender = inputAddresses.find(data.assetName);
+            if (sender == inputAddresses.end() ||
+                sender->second != EncodeDestination(data.destination))
+                continue;
+            CMessage message(COutPoint(tx.GetHash(), outputIndex), data.assetName,
+                             data.message, data.expireTime, block.nTime);
+            message.nBlockHeight = pindex->nHeight;
+            if (data.expireTime != 0 && data.expireTime <= GetTime())
+                message.status = MessageStatus::EXPIRED;
+            messages.insert(message);
+        }
+    }
+    return true;
+}
+
 unsigned int GetMaxBlockWeightForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params)
 {
     LOCK(cs_main);
@@ -2599,6 +2692,98 @@ static int64_t nBlocksTotal = 0;
 static bool ContextualCheckBlock(const CBlock& block, CValidationState& state,
                                  const Consensus::Params& consensusParams,
                                  const CBlockIndex* pindexPrev, CAssetsCache* assetCache);
+
+#ifdef ENABLE_WALLET
+static void CollectRestrictedEvents(const CBlock& block,
+                                    std::vector<std::pair<std::string, CNullAssetTxData>>& events)
+{
+    for (const auto& tx : block.vtx) {
+        for (const auto& output : tx->vout) {
+            CNullAssetTxData data;
+            std::string address;
+            if (AssetNullDataFromScript(output.scriptPubKey, data, address))
+                events.emplace_back(address, data);
+        }
+    }
+}
+
+bool BackfillMyRestrictedIndex(const CChainParams& chainparams)
+{
+    static bool incompleteChecked = false;
+    LOCK(cs_main);
+    if (!pmyrestricteddb)
+        return true;
+
+    char state = 0;
+    uint256 indexedTip;
+    const bool hasState = pmyrestricteddb->ReadRestrictedIndexState(state);
+    const bool hasTip = pmyrestricteddb->ReadRestrictedIndexTip(indexedTip);
+    const uint256 activeTip = chainActive.Tip() ? chainActive.Tip()->GetBlockHash() : uint256();
+    if (hasState && state == 'C' && hasTip && indexedTip == activeTip)
+        return true;
+    if (hasState && state == 'P' && incompleteChecked)
+        return true;
+
+    int startHeight = 0;
+    bool reset = !hasState || (state != 'C' && state != 'S') || !hasTip;
+    if (!reset && !indexedTip.IsNull()) {
+        const auto found = mapBlockIndex.find(indexedTip);
+        if (found == mapBlockIndex.end() || !chainActive.Contains(found->second)) {
+            reset = true;
+        } else {
+            startHeight = found->second->nHeight + 1;
+        }
+    }
+
+    for (int height = reset ? 0 : startHeight; height <= chainActive.Height(); ++height) {
+        const CBlockIndex* pindex = chainActive[height];
+        if (GetTxAssetDeploymentContextLocked(pindex->pprev, chainparams.GetConsensus()).fRestrictedAssetsDeployed &&
+            !(pindex->nStatus & BLOCK_HAVE_DATA)) {
+            LogPrintf("Restricted address history is incomplete: block %d is pruned or missing\n", height);
+            incompleteChecked = true;
+            return pmyrestricteddb->WriteRestrictedIndexState('P');
+        }
+    }
+
+    if (reset) {
+        LogPrintf("Rebuilding restricted address index from active chain\n");
+        if (!pmyrestricteddb->WriteRestrictedIndexState('N') ||
+            !pmyrestricteddb->EraseAllRestrictedEvents() ||
+            !pmyrestricteddb->WriteRestrictedIndexTip(uint256()) ||
+            !pmyrestricteddb->WriteRestrictedIndexState('S'))
+            return error("BackfillMyRestrictedIndex(): could not reset restricted address index");
+    } else if (!pmyrestricteddb->WriteRestrictedIndexState('S')) {
+        return error("BackfillMyRestrictedIndex(): could not mark scan in progress");
+    }
+
+    for (int height = startHeight; height <= chainActive.Height(); ++height) {
+        boost::this_thread::interruption_point();
+        if (ShutdownRequested())
+            return false;
+        const CBlockIndex* pindex = chainActive[height];
+        if (GetTxAssetDeploymentContextLocked(pindex->pprev, chainparams.GetConsensus()).fRestrictedAssetsDeployed) {
+            CBlock block;
+            if (!ReadBlockFromDisk(block, pindex, chainparams.GetConsensus())) {
+                LogPrintf("Restricted address history is incomplete: block %d cannot be read\n", height);
+                incompleteChecked = true;
+                return pmyrestricteddb->WriteRestrictedIndexState('P');
+            }
+            std::vector<std::pair<std::string, CNullAssetTxData>> events;
+            CollectRestrictedEvents(block, events);
+            if (!events.empty() &&
+                !pmyrestricteddb->WriteRestrictedBlock(events, block.nTime, pindex->GetBlockHash()))
+                return error("BackfillMyRestrictedIndex(): failed writing block %d", height);
+        }
+        if ((height % 256) == 0 && !pmyrestricteddb->WriteRestrictedIndexTip(pindex->GetBlockHash()))
+            return error("BackfillMyRestrictedIndex(): failed checkpointing block %d", height);
+    }
+
+    if (!pmyrestricteddb->WriteRestrictedIndexTip(activeTip) ||
+        !pmyrestricteddb->WriteRestrictedIndexState('C'))
+        return error("BackfillMyRestrictedIndex(): could not finish restricted address index");
+    return true;
+}
+#endif
 
 /** Apply the effects of this block (with given index) on the UTXO set represented by coins.
  *  Validity checks that depend on the UTXO set are also done; ConnectBlock()
@@ -3094,19 +3279,18 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
         }
     }
 #ifdef ENABLE_WALLET
-    if (assetContext.fRestrictedAssetsDeployed && myNullAssetData.size() && pmyrestricteddb) {
-        for (auto item : myNullAssetData) {
-            if (IsAssetNameAQualifier(item.second.asset_name)) {
-                // TODO we can add block height to this data also, and use it to pull more info on when this was tagged/untagged
-                pmyrestricteddb->WriteTaggedAddress(item.first, item.second.asset_name, item.second.flag ? true : false, block.nTime);
-            } else if (IsAssetNameAnRestricted(item.second.asset_name)) {
-                pmyrestricteddb->WriteRestrictedAddress(item.first, item.second.asset_name, item.second.flag ? true : false, block.nTime);
+    if (!ignoreAddressIndex && pmyrestricteddb) {
+        if (!pmyrestricteddb->WriteRestrictedBlock(myNullAssetData, block.nTime,
+                                                   pindex->GetBlockHash()))
+            return AbortNode(state, "Failed to write restricted address index");
+        if (assetContext.fRestrictedAssetsDeployed) {
+            for (auto& item : myNullAssetData) {
+                for (CWalletRef wallet : vpwallets) {
+                    if (GetRestrictedAddressOwnership(*wallet, item.first) & ISMINE_ALL)
+                        wallet->UpdateMyRestrictedAssets(item.first, item.second.asset_name,
+                                                         item.second.flag, block.nTime);
+                }
             }
-
-
-            if (vpwallets.size())
-                vpwallets[0]->UpdateMyRestrictedAssets(item.first, item.second.asset_name, item.second.flag, block.nTime);
-
         }
     }
 #endif
@@ -3406,6 +3590,36 @@ bool static DisconnectTip(CValidationState& state, const CChainParams& chainpara
     CBlock& block = *pblock;
     if (!ReadBlockFromDisk(block, pindexDelete, chainparams.GetConsensus()))
         return error("DisconnectTip() : Failed to read block");
+#ifdef ENABLE_WALLET
+    std::vector<std::tuple<std::string, std::string, int, uint32_t>> restoredRestrictedEvents;
+    bool reloadRestrictedViews = false;
+    if (pmyrestricteddb) {
+        char indexState = 0;
+        uint256 indexedTip;
+        if (pmyrestricteddb->ReadRestrictedIndexState(indexState) && indexState == 'C' &&
+            pmyrestricteddb->ReadRestrictedIndexTip(indexedTip) &&
+            indexedTip == pindexDelete->GetBlockHash()) {
+            std::vector<std::pair<std::string, CNullAssetTxData>> events;
+            if (GetTxAssetDeploymentContextLocked(pindexDelete->pprev, chainparams.GetConsensus()).fRestrictedAssetsDeployed)
+                CollectRestrictedEvents(block, events);
+            const uint256 previousHash = pindexDelete->pprev ? pindexDelete->pprev->GetBlockHash() : uint256();
+            if (!pmyrestricteddb->UndoRestrictedBlock(events, indexedTip, previousHash,
+                                                      restoredRestrictedEvents)) {
+                indexState = 'N';
+                reloadRestrictedViews = true;
+            }
+        } else {
+            reloadRestrictedViews = true;
+            if (indexState != 'P')
+                indexState = 'N';
+        }
+        if (indexState == 'N') {
+            restoredRestrictedEvents.clear();
+            if (!pmyrestricteddb->WriteRestrictedIndexState('N'))
+                return AbortNode(state, "Failed to invalidate restricted address index");
+        }
+    }
+#endif
     // Apply the block atomically to the chain state.
     int64_t nStart = GetTimeMicros();
     {
@@ -3441,6 +3655,25 @@ bool static DisconnectTip(CValidationState& state, const CChainParams& chainpara
 
     // Update chainActive and related variables.
     UpdateTip(pindexDelete->pprev, chainparams);
+#ifdef ENABLE_WALLET
+    if (reloadRestrictedViews) {
+        std::string address;
+        std::string assetName;
+        for (CWalletRef wallet : vpwallets) {
+            wallet->UpdateMyRestrictedAssets(address, assetName, RESTRICTED_ASSET_VIEW_RELOAD, 0);
+        }
+    } else {
+        for (const auto& event : restoredRestrictedEvents) {
+            std::string address = std::get<0>(event);
+            std::string assetName = std::get<1>(event);
+            for (CWalletRef wallet : vpwallets) {
+                if (GetRestrictedAddressOwnership(*wallet, address) & ISMINE_ALL)
+                    wallet->UpdateMyRestrictedAssets(address, assetName,
+                                                     std::get<2>(event), std::get<3>(event));
+            }
+        }
+    }
+#endif
     // Let wallets know transactions went from 1-confirmed to
     // 0-confirmed or conflicted:
     GetMainSignals().BlockDisconnected(pblock);

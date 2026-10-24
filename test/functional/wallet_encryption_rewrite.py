@@ -6,9 +6,11 @@
 """Test fail-closed wallet encryption rewrite recovery."""
 
 import glob
+import http.client
 import os
 import tempfile
 
+from test_framework.authproxy import JSONRPCException
 from test_framework.test_framework import RavenTestFramework
 from test_framework.util import assert_equal, assert_raises_rpc_error
 
@@ -30,13 +32,31 @@ class WalletEncryptionRewriteTest(RavenTestFramework):
         )
 
         os.mkdir(rewrite_path)
-        assert_raises_rpc_error(
-            -16,
-            "Wallet encryption failed after the live key state changed",
-            node.encryptwallet,
-            passphrase,
-        )
+        try:
+            node.encryptwallet(passphrase)
+        except JSONRPCException as error:
+            assert_equal(error.error["code"], -16)
+            assert_equal(
+                error.error["message"],
+                "Error: Wallet encryption failed after the live key state changed. "
+                "The Raven server is stopping; restart before using the wallet.",
+            )
+        except (
+            http.client.RemoteDisconnected,
+            ConnectionRefusedError,
+            ConnectionResetError,
+            BrokenPipeError,
+        ):
+            # Shutdown can close the RPC connection before the error is delivered.
+            pass
+        else:
+            raise AssertionError("encryptwallet unexpectedly succeeded")
         node.wait_until_stopped()
+        debug_log = os.path.join(os.path.dirname(rewrite_path), "debug.log")
+        with open(debug_log, encoding="utf-8") as log_file:
+            assert (
+                "CDB::Rewrite: Refusing stale non-regular path " + rewrite_path
+            ) in log_file.read()
         return address, private_key, passphrase, rewrite_path
 
     def assert_encrypted_key_survives(self, node_index, address, private_key, passphrase):

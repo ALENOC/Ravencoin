@@ -38,12 +38,12 @@ class TransferSidebranchTest(RavenTestFramework):
         self.sync_all()
         assert_equal(verifier.getblockcount(), 861)
         assert_equal(verifier.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'locked_in')
-        parent_hash = verifier.getbestblockhash()
 
         disconnect_nodes(producer, 1)
         disconnect_nodes(verifier, 0)
         producer.generate(2)
         verifier.generate(3)
+        assert_equal(producer.getblockcount(), 863)
         assert_equal(producer.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'active')
         assert_equal(verifier.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'active')
         active_tip = verifier.getbestblockhash()
@@ -65,20 +65,26 @@ class TransferSidebranchTest(RavenTestFramework):
             config['environment']['BUILDDIR'], 'src', 'test',
             'test_raven_hash' + config['environment']['EXEEXT'])
 
-        block_time = verifier.getblockheader(parent_hash)['time'] + 1
-        block = create_block(int(parent_hash, 16), create_coinbase(862), block_time)
-        block.nVersion = verifier.getblockheader(verifier.getblockhash(862))['version']
-        block.vtx.append(from_hex(CTransaction(), transfer_raw))
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
-        assert_equal(verifier.submitblock(block.serialize().hex()),
-                     'bad-txns-transfer-asset-bad-deserialize')
-        assert_equal(verifier.getbestblockhash(), active_tip)
+        # Both candidate blocks immediately before activation use the old
+        # parser, even though the verifier's current tip has reached ACTIVE.
+        for candidate_height in (862, 863):
+            candidate_parent = verifier.getblockhash(candidate_height - 1)
+            block_time = verifier.getblockheader(candidate_parent)['time'] + 1
+            block = create_block(int(candidate_parent, 16),
+                                 create_coinbase(candidate_height), block_time)
+            block.nVersion = verifier.getblockheader(verifier.getblockhash(candidate_height))['version']
+            block.vtx.append(from_hex(CTransaction(), transfer_raw))
+            block.hashMerkleRoot = block.calc_merkle_root()
+            block.solve()
+            assert_equal(verifier.submitblock(block.serialize().hex()),
+                         'bad-txns-transfer-asset-bad-deserialize')
+            assert_equal(verifier.getbestblockhash(), active_tip)
 
         # The producer's branch has a different height-862 parent history. Its
         # transfer is mined only after bit 8 is active on that branch.
         branch_start = producer.getblockhash(862)
         transfer_block = producer.generate(1)[0]
+        assert_equal(producer.getblockcount(), 864)
         assert txid in producer.getblock(transfer_block)['tx']
         producer.generate(2)
         branch_tip = producer.getbestblockhash()
@@ -94,6 +100,15 @@ class TransferSidebranchTest(RavenTestFramework):
         assert_equal(verifier.getbestblockhash(), branch_tip)
         assert_equal(verifier.getblockchaininfo()['bip9_softforks']['transfer_script']['status'], 'active')
         assert txid in verifier.getblock(transfer_block)['tx']
+        transfer_tx = next(tx for tx in verifier.getblock(transfer_block, 2)['tx']
+                           if tx['txid'] == txid)
+        message_outputs = [out['scriptPubKey'] for out in transfer_tx['vout']
+                           if out['scriptPubKey'].get('asset', {}).get('message') == 'ab' * 32]
+        assert_equal(len(message_outputs), 1)
+        assert_equal(message_outputs[0]['asset']['name'], asset_name)
+        assert_equal(message_outputs[0]['asset']['amount'], 1)
+        assert_equal(message_outputs[0]['asset']['expire_time'], 123456789)
+        assert_equal(message_outputs[0]['hex'][52:54], '4c')
         assert_equal(verifier.verifychain(4, 6), True)
 
         # Walk backward over both forks and the activation boundary, restart

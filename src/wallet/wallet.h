@@ -952,6 +952,8 @@ public:
     bool AddPQKeyPubKey(const CPQKey &key, const CPQPubKey &pubkey) override;
     //! Derives and atomically persists the next deterministic PQ key.
     bool GenerateNewPQKey(CPQPubKey& pubkeyOut, uint32_t* indexOut = nullptr);
+    //! Restores one deterministic PQ key and advances its allocation counter atomically.
+    bool RecoverPQKey(uint32_t index, bool& addedOut);
     //! Adds a PQ key to the store, without saving it to disk (used by LoadWallet)
     bool LoadPQKey(const CPQKey& key, const CPQPubKey &pubkey) { return CCryptoKeyStore::AddPQKeyPubKey(key, pubkey); }
     //! Load metadata (used by LoadWallet)
@@ -995,6 +997,8 @@ public:
     bool StoreOwnedPQAssetDestination(const CKeyID& classicalKey, const uint256& pqProgram);
     //! Return persisted asset destinations whose pairing and private-key ownership still validate.
     std::vector<std::string> GetOwnedPQAssetDestinations() const;
+    //! Recognize a synthetic PQ-only asset identifier in this wallet's destination data.
+    bool IsPQOnlyAssetID(const CTxDestination& dest) const;
 
     //! Adds a watch-only address to the store, and saves it to disk.
     bool AddWatchOnly(const CScript& dest, int64_t nCreateTime);

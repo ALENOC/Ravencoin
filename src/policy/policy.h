@@ -87,6 +87,7 @@ bool IsStandard(const CScript& scriptPubKey, txnouttype& whichType, const bool w
 /** RIP-25 policy predicates shared by admission and reorg cleanup. */
 bool IsPQWitnessV2Program(const CScript& scriptPubKey);
 bool HasPQWitnessV2Output(const CTransaction& tx);
+bool HasPQOnlyAssetOutput(const CTransaction& tx);
 bool SpendsPQWitnessV2Program(const CTxIn& txin, const CScript& prevScriptPubKey);
 
     /**

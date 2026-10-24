@@ -13,6 +13,7 @@
 #include "consensus/consensus.h"
 #include "consensus/validation.h"
 #include "fs.h"
+#include "hash.h"
 #include "init.h"
 #include "key.h"
 #include "keystore.h"
@@ -37,6 +38,7 @@
 #include "wallet/pqderivation.h"
 
 #include <assert.h>
+#include <cstdio>
 
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/thread.hpp>
@@ -77,6 +79,114 @@ public:
     explicit ScopedSecureStringCleanser(SecureString& valueIn) : value(valueIn) {}
     ~ScopedSecureStringCleanser() { ClearSecureString(value); }
 };
+
+static CKeyID Bip39SeedId(const SecureVector& seed)
+{
+    // Include the trailing zero to make this domain unambiguous. The raw
+    // BIP39 seed remains the input to BIP32 derivation; this is metadata only.
+    static const char domain[] = "Ravencoin BIP39 HD seed ID v1";
+    uint160 hash;
+    CHash160()
+        .Write(reinterpret_cast<const unsigned char*>(domain), sizeof(domain))
+        .Write(seed.data(), seed.size())
+        .Finalize(hash.begin());
+    return CKeyID(hash);
+}
+
+static CKeyID LegacyBip39SeedId()
+{
+    uint160 hash;
+    CHash160().Finalize(hash.begin());
+    return CKeyID(hash);
+}
+
+static bool MatchesBip44Keypath(const SecureVector& seed,
+                                const std::string& path, const CPubKey& pubkey)
+{
+    unsigned int coin = 0;
+    unsigned int account = 0;
+    unsigned int change = 0;
+    unsigned int index = 0;
+    int consumed = 0;
+    if (std::sscanf(path.c_str(), "m/44'/%u'/%u'/%u/%u%n",
+                    &coin, &account, &change, &index, &consumed) != 4 ||
+        consumed != static_cast<int>(path.size()) ||
+        coin >= BIP32_HARDENED_KEY_LIMIT ||
+        account >= BIP32_HARDENED_KEY_LIMIT ||
+        change > 1 || index >= BIP32_HARDENED_KEY_LIMIT ||
+        path != strprintf("m/44'/%u'/%u'/%u/%u",
+                          coin, account, change, index))
+        return false;
+
+    CExtKey root, purposeKey, coinKey, accountKey, chainKey, childKey;
+    root.SetSeed(seed.data(), seed.size());
+    return root.Derive(purposeKey, 44 | BIP32_HARDENED_KEY_LIMIT) &&
+           purposeKey.Derive(coinKey, coin | BIP32_HARDENED_KEY_LIMIT) &&
+           coinKey.Derive(accountKey, account | BIP32_HARDENED_KEY_LIMIT) &&
+           accountKey.Derive(chainKey, change) &&
+           chainKey.Derive(childKey, index) &&
+           childKey.key.GetPubKey() == pubkey;
+}
+
+static bool MigrateLegacyBip39SeedId(CWallet& wallet)
+{
+    AssertLockHeld(wallet.cs_wallet);
+    if (!wallet.IsBip44Enabled() || wallet.IsLocked())
+        return true;
+
+    SecureVector seed;
+    if (!wallet.GetBip39Seed(seed))
+        return false;
+    const CKeyID oldId = LegacyBip39SeedId();
+    const CKeyID newId = Bip39SeedId(seed);
+    if (wallet.GetHDChain().seed_id != oldId)
+        return true;
+    if (newId.IsNull() || newId == oldId)
+        return false;
+
+    // The old constant ID could also label keys from a prior BIP44 seed.
+    // Update only keys provably derived from the currently stored seed.
+    // Replace those references and the current chain together so a failed
+    // write leaves the legacy state intact.
+    std::vector<std::pair<CTxDestination, CPubKey>> metadataUpdates;
+    for (const auto& entry : wallet.mapKeyMetadata) {
+        if (entry.second.hd_seed_id != oldId)
+            continue;
+        const CKeyID* keyId = boost::get<CKeyID>(&entry.first);
+        CPubKey pubkey;
+        if (keyId && wallet.GetPubKey(*keyId, pubkey) &&
+            pubkey.IsValid() && pubkey.GetID() == *keyId &&
+            MatchesBip44Keypath(seed, entry.second.hdKeypath, pubkey))
+            metadataUpdates.emplace_back(entry.first, pubkey);
+    }
+
+    CHDChain migrated = wallet.GetHDChain();
+    migrated.seed_id = newId;
+    // The synchronous transaction commit supplies durability; skip the
+    // separate checkpoint so transaction-begin failure leaves no side effect.
+    CWalletDB walletdb(wallet.GetDBHandle(), "r+", false);
+    if (!walletdb.TxnBegin(DB_TXN_SYNC))
+        return false;
+    for (const auto& update : metadataUpdates) {
+        CKeyMetadata metadata = wallet.mapKeyMetadata.at(update.first);
+        metadata.hd_seed_id = newId;
+        if (!walletdb.WriteKeyMetadata(update.second, metadata)) {
+            walletdb.TxnAbort();
+            return false;
+        }
+    }
+    if (!walletdb.WriteHDChain(migrated)) {
+        walletdb.TxnAbort();
+        return false;
+    }
+    if (!walletdb.TxnCommit(DB_TXN_SYNC))
+        return false;
+
+    wallet.SetHDChain(migrated, true);
+    for (const auto& update : metadataUpdates)
+        wallet.mapKeyMetadata.at(update.first).hd_seed_id = newId;
+    return true;
+}
 
 void SetPendingMnemonicInput(SecureString words, SecureString passphrase)
 {
@@ -593,6 +703,112 @@ bool CWallet::GenerateNewPQKey(CPQPubKey& pubkeyOut, uint32_t* indexOut)
     return true;
 }
 
+bool CWallet::RecoverPQKey(uint32_t index, bool& addedOut)
+{
+    LOCK(cs_wallet);
+    addedOut = false;
+    if (index >= pqderivation::HARDENED_LIMIT || !IsHDEnabled() ||
+        IsLocked() || !pqHDChain.IsValid()) {
+        return false;
+    }
+
+    SecureVector walletSeed;
+    const uint8_t seedSource = hdChain.IsBip44()
+        ? pqderivation::SEED_SOURCE_BIP39
+        : pqderivation::SEED_SOURCE_LEGACY_HD;
+    if (hdChain.IsBip44()) {
+        if (!GetBip39Seed(walletSeed))
+            return false;
+    } else {
+        CKey seed;
+        if (!GetKey(hdChain.seed_id, seed) ||
+            seed.size() != pqderivation::LEGACY_SEED_BYTES) {
+            return false;
+        }
+        walletSeed.assign(seed.begin(), seed.end());
+    }
+
+    const uint32_t coinType = GetParams().ExtCoinType();
+    uint256 lineageId;
+    if (!pqderivation::GetLineageId(walletSeed.data(), walletSeed.size(),
+                                    seedSource, coinType, lineageId)) {
+        return false;
+    }
+
+    CPQHDChain allocationChain = pqHDChain;
+    if (!allocationChain.IsInitialized() ||
+        allocationChain.nSeedSource != seedSource ||
+        allocationChain.nCoinType != coinType ||
+        allocationChain.lineage_id != lineageId) {
+        allocationChain.SetLineage(seedSource, coinType, lineageId);
+    }
+    if (!allocationChain.IsInitialized())
+        return false;
+
+    SecureVector pqSeed;
+    if (!pqderivation::DeriveSeed(walletSeed.data(), walletSeed.size(),
+                                  coinType, index, pqSeed)) {
+        return false;
+    }
+    SecureVector().swap(walletSeed);
+    CPQKey candidateKey;
+    const bool generated = candidateKey.SetSeed(pqSeed.data());
+    SecureVector().swap(pqSeed);
+    if (!generated)
+        return false;
+    const CPQPubKey candidatePubKey = candidateKey.GetPubKey();
+    const bool keyExists = HavePQKey(candidatePubKey.GetWitnessProgram());
+
+    CPQHDChain updatedChain = allocationChain;
+    updatedChain.nExternalChainCounter = std::max(
+        allocationChain.nExternalChainCounter, index + 1);
+    const bool chainChanged = !pqHDChain.IsInitialized() ||
+        pqHDChain.nSeedSource != updatedChain.nSeedSource ||
+        pqHDChain.nCoinType != updatedChain.nCoinType ||
+        pqHDChain.lineage_id != updatedChain.lineage_id ||
+        pqHDChain.nExternalChainCounter != updatedChain.nExternalChainCounter;
+    if (keyExists && !chainChanged)
+        return true;
+
+    CWalletDB walletdb(*dbw);
+    if (!walletdb.TxnBegin(DB_TXN_SYNC))
+        return false;
+
+    bool addedToMemory = false;
+    bool transactionActive = true;
+    auto abortRecovery = [&]() {
+        if (transactionActive && !walletdb.TxnAbort())
+            LogPrintf("RecoverPQKey: failed to abort wallet transaction\n");
+        transactionActive = false;
+        if (addedToMemory)
+            ErasePQKeyFromMemory(candidatePubKey.GetWitnessProgram());
+        return false;
+    };
+
+    try {
+        if (!keyExists) {
+            if (!AddPQKeyPubKeyWithDB(walletdb, candidateKey, candidatePubKey))
+                return abortRecovery();
+            addedToMemory = true;
+        }
+        if (chainChanged && !walletdb.WritePQHDChain(updatedChain))
+            return abortRecovery();
+        if (!walletdb.TxnCommit(DB_TXN_SYNC)) {
+            transactionActive = false;
+            if (addedToMemory)
+                ErasePQKeyFromMemory(candidatePubKey.GetWitnessProgram());
+            return false;
+        }
+        transactionActive = false;
+    } catch (...) {
+        return abortRecovery();
+    }
+
+    pqHDChain = updatedChain;
+    addedOut = !keyExists;
+    return true;
+}
+
 bool CWallet::AddCryptedKey(const CPubKey &vchPubKey,
                             const std::vector<unsigned char> &vchCryptedSecret)
 {
@@ -838,6 +1054,10 @@ bool CWallet::Unlock(const SecureString& strWalletPassphrase)
             if (!crypter.Decrypt(pMasterKey.second.vchCryptedKey, _vMasterKey))
                 continue; // try another master key
             if (CCryptoKeyStore::Unlock(_vMasterKey)) {
+                if (!MigrateLegacyBip39SeedId(*this)) {
+                    Lock();
+                    return false;
+                }
                 return true;
             }
         }
@@ -1941,12 +2161,22 @@ isminetype CWallet::IsMine(const CTxOut& txout) const
 isminetype CWallet::IsMine(const CTxOut& txout, const CBlockIndex* originBlock) const
 {
     LOCK2(cs_main, cs_wallet);
+    const int activationHeight =
+        GetPQAssetActivationHeightForPrev(
+            originBlock ? originBlock->pprev : chainActive.Tip(),
+            GetParams().GetConsensus());
+    uint256 pqOnlyProgram;
+    if (IsPQOnlyAssetScript(txout.scriptPubKey, pqOnlyProgram)) {
+        if (activationHeight < 0 ||
+            (originBlock && originBlock->nHeight < activationHeight))
+            return ISMINE_NO;
+        return HavePQKey(pqOnlyProgram) ? ISMINE_SPENDABLE : ISMINE_NO;
+    }
+
     const isminetype mine = IsMine(txout);
     if (!(mine & ISMINE_SPENDABLE) || !txout.scriptPubKey.IsAssetScript())
         return mine;
 
-    const int activationHeight =
-        GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
     return HasRequiredPQAssetKey(*this, txout, originBlock ? 1 : 0,
                                  originBlock, activationHeight) ? mine : ISMINE_NO;
 }
@@ -2206,12 +2436,13 @@ CPubKey CWallet::GenerateNewSeed(CWalletDB* pwalletdb)
 	if (!AddVchSeed(vchSeed))
 		throw std::runtime_error(std::string(__func__) + ": storing BIP39 seed failed");
 
-	CPubKey seed(vchSeed.begin(), vchSeed.end());
-	newHdChain.seed_id = seed.GetID();
+	newHdChain.seed_id = Bip39SeedId(vchSeed);
 
 	SetHDChain(newHdChain, false, pwalletdb);
 
-	return seed;
+	// BIP39 uses a 64-byte seed, which is not a public key. The BIP44 caller
+	// uses the persisted chain ID and ignores this legacy return value.
+	return CPubKey();
 
 }
 
@@ -3092,10 +3323,7 @@ void CWallet::AvailableCoinsAll(std::vector<COutput>& vCoins, std::map<std::stri
                 bool fIsOwner;
                 bool isAssetScript = pcoin->tx->vout[i].scriptPubKey.IsAssetScript(nType, fIsOwner);
 
-                // A post-activation asset belongs to the wallet only if it
-                // has both its classical key and the PQ key named by the
-                // output. Historical lookalikes keep their old ownership
-                // semantics, including after a reorg across activation.
+                // Verify the PQ key required by a protected asset output.
                 if (fGetAssets && isAssetScript &&
                     !HasRequiredPQAssetKey(*this, pcoin->tx->vout[i], nDepth,
                                            originBlock, pqAssetActivationHeight))
@@ -3114,7 +3342,7 @@ void CWallet::AvailableCoinsAll(std::vector<COutput>& vCoins, std::map<std::stri
                 if (IsSpent(wtxid, i))
                     continue;
 
-                isminetype mine = IsMine(pcoin->tx->vout[i]);
+                isminetype mine = IsMine(pcoin->tx->vout[i], originBlock);
 
                 if (mine == ISMINE_NO) {
                     continue;
@@ -4086,8 +4314,8 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                 if (!pqAssetsActive)
                     return true;
                 CScript tagged;
-                if (!program || !BuildPQAssetTaggedScript(script, *program, tagged)) {
-                    strFailReason = _("Active PQ asset output requires a canonical classical|PQ asset destination");
+                if (!program || !BuildPQOnlyAssetScript(script, *program, tagged)) {
+                    strFailReason = _("Active PQ asset output requires a canonical PQ-only asset destination");
                     return false;
                 }
                 script = std::move(tagged);
@@ -4340,7 +4568,7 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                                 if (!boost::get<CNoDestination>(&coin_control.assetDestChange)) {
                                     if (!IsSupportedAssetDestination(coin_control.assetDestChange) ||
                                         !coin_control.pqAssetChangeProgram) {
-                                        strFailReason = _("Active PQ asset change requires a canonical classical|PQ destination");
+                                        strFailReason = _("Active PQ asset change requires a canonical PQ-only destination");
                                         return false;
                                     }
                                     changeDestination = coin_control.assetDestChange;
@@ -4397,7 +4625,7 @@ bool CWallet::CreateTransactionAll(const std::vector<CRecipient>& vecSend, CWall
                                 CAssetTransfer assetTransfer(assetChange.first, assetChange.second);
                                 assetTransfer.ConstructTransaction(scriptAssetChange);
                                 CScript tagged;
-                                if (!BuildPQAssetTaggedScript(scriptAssetChange, changeProgram, tagged)) {
+                                if (!BuildPQOnlyAssetScript(scriptAssetChange, changeProgram, tagged)) {
                                     strFailReason = _("Could not construct canonical PQ asset change");
                                     return false;
                                 }
@@ -4900,6 +5128,9 @@ DBErrors CWallet::LoadWallet(bool& fFirstRunRet, bool notifyLoad)
     if (nLoadWalletRet != DB_LOAD_OK)
         return nLoadWalletRet;
 
+    if (!MigrateLegacyBip39SeedId(*this))
+        return DB_LOAD_FAIL;
+
     if (notifyLoad)
         uiInterface.LoadWallet(this);
 
@@ -5293,7 +5524,9 @@ std::map<CTxDestination, CAmount> CWallet::GetAddressBalances()
             for (unsigned int i = 0; i < pcoin->tx->vout.size(); i++)
             {
                 CTxDestination addr;
-                if (!IsMine(pcoin->tx->vout[i], originBlock))
+                uint256 assetProgram;
+                if (IsPQOnlyAssetScript(pcoin->tx->vout[i].scriptPubKey, assetProgram) ||
+                    !IsMine(pcoin->tx->vout[i], originBlock))
                     continue;
                 if(!ExtractDestination(pcoin->tx->vout[i].scriptPubKey, addr))
                     continue;
@@ -5331,7 +5564,10 @@ std::set< std::set<CTxDestination> > CWallet::GetAddressGroupings()
                 CTxDestination address;
                 if(!IsMine(txin)) /* If this input isn't mine, ignore it */
                     continue;
-                if(!ExtractDestination(mapWallet[txin.prevout.hash].tx->vout[txin.prevout.n].scriptPubKey, address))
+                const CScript& prevScript = mapWallet[txin.prevout.hash].tx->vout[txin.prevout.n].scriptPubKey;
+                uint256 assetProgram;
+                if (IsPQOnlyAssetScript(prevScript, assetProgram) ||
+                    !ExtractDestination(prevScript, address))
                     continue;
                 grouping.insert(address);
                 any_mine = true;
@@ -5345,7 +5581,9 @@ std::set< std::set<CTxDestination> > CWallet::GetAddressGroupings()
                    {
                        CTxDestination txoutAddr;
                        const CTxOut& txout = pcoin->tx->vout[i];
-                       if(!ExtractDestination(txout.scriptPubKey, txoutAddr))
+                       uint256 assetProgram;
+                       if (IsPQOnlyAssetScript(txout.scriptPubKey, assetProgram) ||
+                           !ExtractDestination(txout.scriptPubKey, txoutAddr))
                            continue;
                        grouping.insert(txoutAddr);
                    }
@@ -5362,7 +5600,9 @@ std::set< std::set<CTxDestination> > CWallet::GetAddressGroupings()
             if (IsMine(txout, originBlock))
             {
                 CTxDestination address;
-                if(!ExtractDestination(txout.scriptPubKey, address))
+                uint256 assetProgram;
+                if (IsPQOnlyAssetScript(txout.scriptPubKey, assetProgram) ||
+                    !ExtractDestination(txout.scriptPubKey, address))
                     continue;
                 grouping.insert(address);
                 groupings.insert(grouping);
@@ -5414,7 +5654,7 @@ std::set<CTxDestination> CWallet::GetAccountAddresses(const std::string& strAcco
     {
         const CTxDestination& address = item.first;
         const std::string& strName = item.second.name;
-        if (strName == strAccount)
+        if (strName == strAccount && !IsPQOnlyAssetID(address))
             result.insert(address);
     }
     return result;
@@ -5663,7 +5903,16 @@ bool CWallet::EraseDestData(const CTxDestination &dest, const std::string &key)
 
 bool CWallet::LoadDestData(const CTxDestination &dest, const std::string &key, const std::string &value)
 {
-    mapAddressBook[dest].destdata.insert(std::make_pair(key, value));
+    CAddressBookData& data = mapAddressBook[dest];
+    data.destdata.insert(std::make_pair(key, value));
+    if (key == "pqasset:destination:v2") {
+        const CKeyID* assetID = boost::get<CKeyID>(&dest);
+        CKeyID decodedID;
+        uint256 program;
+        if (assetID && DecodePQOnlyAssetDestination(value, decodedID, program) &&
+            decodedID == *assetID && EncodePQAssetDestination(decodedID, program) == value)
+            data.purpose = "pqasset";
+    }
     return true;
 }
 
@@ -5699,13 +5948,35 @@ std::vector<std::string> CWallet::GetDestValues(const std::string& prefix) const
 
 namespace {
 const char* const PQ_ASSET_DESTDATA_KEY = "pqasset:destination:v1";
+const char* const PQ_ONLY_ASSET_DESTDATA_KEY = "pqasset:destination:v2";
+}
+
+bool CWallet::IsPQOnlyAssetID(const CTxDestination& dest) const
+{
+    LOCK(cs_wallet);
+    const CKeyID* assetID = boost::get<CKeyID>(&dest);
+    if (!assetID)
+        return false;
+    const auto address = mapAddressBook.find(dest);
+    if (address == mapAddressBook.end())
+        return false;
+    const auto pair = address->second.destdata.find(PQ_ONLY_ASSET_DESTDATA_KEY);
+    if (pair == address->second.destdata.end())
+        return false;
+    CKeyID decodedID;
+    uint256 program;
+    return DecodePQOnlyAssetDestination(pair->second, decodedID, program) &&
+           decodedID == *assetID &&
+           EncodePQAssetDestination(decodedID, program) == pair->second;
 }
 
 bool CWallet::StoreOwnedPQAssetDestination(const CKeyID& classicalKey, const uint256& pqProgram)
 {
     LOCK(cs_wallet);
-    if (!HaveKey(classicalKey) || !HavePQKey(pqProgram))
+    const bool pqOnly = classicalKey == CKeyID(Hash160(pqProgram.begin(), pqProgram.end()));
+    if (!HavePQKey(pqProgram) || (!pqOnly && !HaveKey(classicalKey)))
         return false;
+    const char* const destdataKey = pqOnly ? PQ_ONLY_ASSET_DESTDATA_KEY : PQ_ASSET_DESTDATA_KEY;
 
     const std::string descriptor = EncodePQAssetDestination(classicalKey, pqProgram);
     CKeyID decodedClassical;
@@ -5717,27 +5988,29 @@ bool CWallet::StoreOwnedPQAssetDestination(const CKeyID& classicalKey, const uin
 
     const auto existingAddress = mapAddressBook.find(classicalKey);
     if (existingAddress != mapAddressBook.end()) {
-        const auto existingPair = existingAddress->second.destdata.find(PQ_ASSET_DESTDATA_KEY);
+        const auto existingPair = existingAddress->second.destdata.find(destdataKey);
         if (existingPair != existingAddress->second.destdata.end())
             return existingPair->second == descriptor;
     }
 
-    // A PQ key must not be silently reused by a different classical owner.
+    // A PQ key must not be silently reused by another asset identity.
     for (const auto& address : mapAddressBook) {
-        const auto existingPair = address.second.destdata.find(PQ_ASSET_DESTDATA_KEY);
-        if (existingPair == address.second.destdata.end())
-            continue;
-        CKeyID pairedClassical;
-        uint256 pairedProgram;
-        if (DecodePQAssetDestination(existingPair->second, pairedClassical, pairedProgram) &&
-            pairedProgram == pqProgram)
-            return false;
+        for (const char* key : {PQ_ASSET_DESTDATA_KEY, PQ_ONLY_ASSET_DESTDATA_KEY}) {
+            const auto existingPair = address.second.destdata.find(key);
+            if (existingPair == address.second.destdata.end())
+                continue;
+            CKeyID pairedClassical;
+            uint256 pairedProgram;
+            if (DecodePQAssetDestination(existingPair->second, pairedClassical, pairedProgram) &&
+                pairedProgram == pqProgram)
+                return false;
+        }
     }
 
     if (!CWalletDB(*dbw).WriteDestData(
-            EncodeDestination(classicalKey), PQ_ASSET_DESTDATA_KEY, descriptor))
+            EncodeDestination(classicalKey), destdataKey, descriptor))
         return false;
-    mapAddressBook[classicalKey].destdata.emplace(PQ_ASSET_DESTDATA_KEY, descriptor);
+    mapAddressBook[classicalKey].destdata.emplace(destdataKey, descriptor);
     return true;
 }
 
@@ -5750,18 +6023,23 @@ std::vector<std::string> CWallet::GetOwnedPQAssetDestinations() const
         const CKeyID* associatedClassical = boost::get<CKeyID>(&address.first);
         if (!associatedClassical)
             continue;
-        const auto pair = address.second.destdata.find(PQ_ASSET_DESTDATA_KEY);
-        if (pair == address.second.destdata.end())
-            continue;
-        CKeyID decodedClassical;
-        uint256 decodedProgram;
-        if (!DecodePQAssetDestination(pair->second, decodedClassical, decodedProgram) ||
-            decodedClassical != *associatedClassical ||
-            EncodePQAssetDestination(decodedClassical, decodedProgram) != pair->second ||
-            !HaveKey(decodedClassical) || !HavePQKey(decodedProgram) ||
-            !usedPrograms.insert(decodedProgram).second)
-            continue;
-        descriptors.push_back(pair->second);
+        for (const char* key : {PQ_ASSET_DESTDATA_KEY, PQ_ONLY_ASSET_DESTDATA_KEY}) {
+            const auto pair = address.second.destdata.find(key);
+            if (pair == address.second.destdata.end())
+                continue;
+            CKeyID decodedClassical;
+            uint256 decodedProgram;
+            if (!DecodePQAssetDestination(pair->second, decodedClassical, decodedProgram) ||
+                decodedClassical != *associatedClassical ||
+                EncodePQAssetDestination(decodedClassical, decodedProgram) != pair->second ||
+                !HavePQKey(decodedProgram) ||
+                (key == PQ_ASSET_DESTDATA_KEY && !HaveKey(decodedClassical)) ||
+                (key == PQ_ONLY_ASSET_DESTDATA_KEY &&
+                 decodedClassical != CKeyID(Hash160(decodedProgram.begin(), decodedProgram.end()))) ||
+                !usedPrograms.insert(decodedProgram).second)
+                continue;
+            descriptors.push_back(pair->second);
+        }
     }
     return descriptors;
 }
@@ -5883,7 +6161,13 @@ CWallet* CWallet:: CreateWalletFromFile(const std::string walletFile)
             if (!gArgs.IsArgSetAndNonEmpty("-mnemonic") &&
                 !gArgs.IsArgSetAndNonEmpty("-mnemonicpassphrase") &&
                 !HasPendingMnemonicInput()) {
+                const bool promptHasHandler =
+                    uiInterface.ShowMnemonic.num_slots() != 0;
                 uiInterface.ShowMnemonic(CClientUIInterface::MODAL);
+                if (promptHasHandler && !HasPendingMnemonicInput()) {
+                    InitError(_("Wallet setup was cancelled"));
+                    return nullptr;
+                }
             }
 
             // The HD chain, complete BIP39 domain, and initial keypool must

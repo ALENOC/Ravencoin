@@ -15,30 +15,34 @@
 #include "base58.h"
 
 #include <assert.h>
+#include <algorithm>
 #include <assets/assets.h>
 #include <wallet/wallet.h>
 
 #ifdef ENABLE_WALLET
-static bool WalletOwnsAssetForMessageSubscription(const CTxOut& output,
-                                                  int height, const uint256& blockHash)
+static bool HasIndexedMessageBlock(int height, const uint256& blockHash)
 {
+    LOCK(cs_main);
+    const auto candidate = mapBlockIndex.find(blockHash);
+    return candidate != mapBlockIndex.end() && candidate->second->nHeight == height;
+}
+
+static std::vector<CWalletRef> WalletsOwningAssetForMessageSubscription(
+    const CTxOut& output, int height, const uint256& blockHash)
+{
+    std::vector<CWalletRef> owners;
     if (vpwallets.empty())
-        return false;
+        return owners;
 
     LOCK(cs_main);
     const auto candidate = mapBlockIndex.find(blockHash);
     if (candidate == mapBlockIndex.end() || candidate->second->nHeight != height)
-        return false;
-    if (vpwallets[0]->IsMine(output) != ISMINE_SPENDABLE)
-        return false;
-
-    const int activationHeight = GetPQAssetActivationHeightForPrev(
-        candidate->second->pprev, GetParams().GetConsensus());
-    if (activationHeight < 0 || height < activationHeight)
-        return true;
-
-    uint256 program;
-    return GetPQAssetProgram(output.scriptPubKey, program) && vpwallets[0]->HavePQKey(program);
+        return owners;
+    for (CWalletRef wallet : vpwallets) {
+        if (wallet->IsMine(output, candidate->second) == ISMINE_SPENDABLE)
+            owners.push_back(wallet);
+    }
+    return owners;
 }
 #endif
 
@@ -305,23 +309,26 @@ void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint2
 
                         /** Subscribe to new message channels if they are sent to a new address, or they are the owner token or message channel */
 #ifdef ENABLE_WALLET
-                        if (fMessaging && pMessageSubscribedChannelsCache) {
-                            const bool ownedAsset = WalletOwnsAssetForMessageSubscription(tx.vout[i], nHeight, blockHash);
+                        if (fMessaging && pMessageSubscribedChannelsCache &&
+                            HasIndexedMessageBlock(nHeight, blockHash)) {
+                            const auto owners = WalletsOwningAssetForMessageSubscription(
+                                tx.vout[i], nHeight, blockHash);
                             LOCK(cs_messaging);
-                            if (ownedAsset) {
+                            for (CWalletRef wallet : owners) {
                                 AssetType aType;
                                 IsAssetNameValid(assetTransfer.strName, aType);
 
                                 if (aType == AssetType::ROOT || aType == AssetType::SUB) {
-                                    if (!IsChannelSubscribed(GetParentName(assetTransfer.strName) + OWNER_TAG)) {
-                                        if (!IsAddressSeen(address)) {
-                                            AddChannel(GetParentName(assetTransfer.strName) + OWNER_TAG);
-                                            AddAddressSeen(address);
+                                    if (!IsChannelSubscribed(*wallet, GetParentName(assetTransfer.strName) + OWNER_TAG)) {
+                                        if (!IsAddressSeen(*wallet, address)) {
+                                            AddChannel(*wallet, GetParentName(assetTransfer.strName) + OWNER_TAG,
+                                                       nHeight, blockHash);
+                                            AddAddressSeen(*wallet, address);
                                         }
                                     }
                                 } else if (aType == AssetType::OWNER || aType == AssetType::MSGCHANNEL) {
-                                    AddChannel(assetTransfer.strName);
-                                    AddAddressSeen(address);
+                                    AddChannel(*wallet, assetTransfer.strName, nHeight, blockHash);
+                                    AddAddressSeen(*wallet, address);
                                 }
                             }
                         }
@@ -329,24 +336,28 @@ void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, uint2
                     } else if (assetData.type == TX_NEW_ASSET) {
                         /** Subscribe to new message channels if they are assets you created, or are new msgchannels of channels already being watched */
 #ifdef ENABLE_WALLET
-                        if (fMessaging && pMessageSubscribedChannelsCache) {
-                            const bool ownedAsset = WalletOwnsAssetForMessageSubscription(tx.vout[i], nHeight, blockHash);
+                        if (fMessaging && pMessageSubscribedChannelsCache &&
+                            HasIndexedMessageBlock(nHeight, blockHash)) {
+                            const auto owners = WalletsOwningAssetForMessageSubscription(
+                                tx.vout[i], nHeight, blockHash);
                             LOCK(cs_messaging);
-                            if (vpwallets.size()) {
-                                AssetType aType;
-                                IsAssetNameValid(assetData.assetName, aType);
+                            AssetType aType;
+                            IsAssetNameValid(assetData.assetName, aType);
+                            for (CWalletRef wallet : vpwallets) {
+                                const bool ownedAsset = std::find(owners.begin(), owners.end(), wallet) != owners.end();
                                 if (ownedAsset) {
                                     if (aType == AssetType::ROOT || aType == AssetType::SUB) {
-                                        AddChannel(assetData.assetName + OWNER_TAG);
-                                        AddAddressSeen(EncodeDestination(assetData.destination));
+                                        AddChannel(*wallet, assetData.assetName + OWNER_TAG,
+                                                   nHeight, blockHash);
+                                        AddAddressSeen(*wallet, EncodeDestination(assetData.destination));
                                     } else if (aType == AssetType::OWNER || aType == AssetType::MSGCHANNEL) {
-                                        AddChannel(assetData.assetName);
-                                        AddAddressSeen(EncodeDestination(assetData.destination));
+                                        AddChannel(*wallet, assetData.assetName, nHeight, blockHash);
+                                        AddAddressSeen(*wallet, EncodeDestination(assetData.destination));
                                     }
                                 } else {
                                     if (aType == AssetType::MSGCHANNEL) {
-                                        if (IsChannelSubscribed(GetParentName(assetData.assetName) + OWNER_TAG)) {
-                                            AddChannel(assetData.assetName);
+                                        if (IsChannelSubscribed(*wallet, GetParentName(assetData.assetName) + OWNER_TAG)) {
+                                            AddChannel(*wallet, assetData.assetName, nHeight, blockHash);
                                         }
                                     }
                                 }

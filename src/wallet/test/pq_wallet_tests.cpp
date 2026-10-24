@@ -623,6 +623,61 @@ BOOST_AUTO_TEST_CASE(protected_asset_destination_pair_survives_reload)
     BOOST_CHECK(unrelatedWallet.GetOwnedPQAssetDestinations().empty());
 }
 
+BOOST_AUTO_TEST_CASE(pq_only_asset_destination_needs_no_classical_key)
+{
+    const std::string filename = "pq-only-asset-destination-wallet.dat";
+    CPQKey pqKey;
+    pqKey.MakeNewKey();
+    BOOST_REQUIRE(pqKey.IsValid());
+    const uint256 program = pqKey.GetPubKey().GetWitnessProgram();
+    const CKeyID pseudoAddress(Hash160(program.begin(), program.end()));
+    const std::string descriptor = EncodePQAssetDestination(pseudoAddress, program);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        LOCK(wallet->cs_wallet);
+        BOOST_REQUIRE(wallet->AddPQKeyPubKey(pqKey, pqKey.GetPubKey()));
+        BOOST_CHECK(!wallet->HaveKey(pseudoAddress));
+        BOOST_REQUIRE(wallet->StoreOwnedPQAssetDestination(pseudoAddress, program));
+        BOOST_CHECK(wallet->IsPQOnlyAssetID(pseudoAddress));
+        BOOST_CHECK(wallet->GetOwnedPQAssetDestinations() ==
+                    std::vector<std::string>{descriptor});
+    }
+    bitdb.Flush(false);
+
+    std::unique_ptr<CWallet> reloaded = LoadPQWallet(filename);
+    BOOST_CHECK(!reloaded->HaveKey(pseudoAddress));
+    BOOST_CHECK(reloaded->IsPQOnlyAssetID(pseudoAddress));
+    BOOST_CHECK(reloaded->GetOwnedPQAssetDestinations() ==
+                std::vector<std::string>{descriptor});
+
+    CWallet dummyWallet;
+    std::string backupFilename;
+    BOOST_REQUIRE(CWalletDB::Recover(
+        filename, &dummyWallet, CWalletDB::RecoverKeysOnlyFilter, backupFilename));
+    bitdb.Flush(false);
+    std::unique_ptr<CWallet> recovered = LoadPQWallet(filename);
+    BOOST_CHECK(recovered->GetOwnedPQAssetDestinations() ==
+                std::vector<std::string>{descriptor});
+    BOOST_CHECK(recovered->IsPQOnlyAssetID(pseudoAddress));
+    BOOST_CHECK_EQUAL(recovered->mapAddressBook[pseudoAddress].purpose, "pqasset");
+
+    auto retainedPair = [&](const CKeyID& address, const std::string& key) {
+        CWallet filterWallet;
+        CDataStream dbKey(SER_DISK, CLIENT_VERSION);
+        CDataStream dbValue(SER_DISK, CLIENT_VERSION);
+        dbKey << std::string("destdata") << EncodeDestination(address) << key;
+        dbValue << descriptor;
+        return CWalletDB::RecoverKeysOnlyFilter(
+            &filterWallet, std::move(dbKey), std::move(dbValue));
+    };
+    BOOST_CHECK(retainedPair(pseudoAddress, "pqasset:destination:v2"));
+    CKey unrelatedKey;
+    unrelatedKey.MakeNewKey(true);
+    BOOST_CHECK(!retainedPair(unrelatedKey.GetPubKey().GetID(),
+                              "pqasset:destination:v2"));
+}
+
 BOOST_AUTO_TEST_CASE(protected_asset_destination_pair_survives_key_only_recovery)
 {
     const std::string filename = "pq-asset-pair-salvage-wallet.dat";
@@ -783,6 +838,84 @@ BOOST_AUTO_TEST_CASE(cancelled_mnemonic_prompt_cleans_pending_secrets)
         std::runtime_error);
     BOOST_CHECK(!HasPendingMnemonicInput());
     mnemonicConnection.disconnect();
+}
+
+BOOST_AUTO_TEST_CASE(dismissed_mnemonic_prompt_does_not_create_wallet)
+{
+    const std::string filename = "dismissed-mnemonic-prompt-wallet.dat";
+    ScopedArgState mnemonicArg("-mnemonic");
+    ScopedArgState passphraseArg("-mnemonicpassphrase");
+    ScopedArgState bip44Arg("-bip44");
+    ScopedMnemonicInput restoreInput;
+    gArgs.ClearArg("-mnemonic");
+    gArgs.ClearArg("-mnemonicpassphrase");
+    gArgs.ForceSetArg("-bip44", "1");
+    ClearPendingMnemonicInput();
+
+    unsigned int promptCount = 0;
+    unsigned int loadNotifications = 0;
+    boost::signals2::scoped_connection mnemonicConnection(
+        uiInterface.ShowMnemonic.connect([&](int) {
+            ++promptCount;
+            // A dismissed modal dialog supplies no mnemonic.
+        }));
+    boost::signals2::scoped_connection loadConnection(
+        uiInterface.LoadWallet.connect([&](CWallet*) {
+            ++loadNotifications;
+        }));
+
+    CWallet* unexpectedWallet = nullptr;
+    BOOST_CHECK_NO_THROW(
+        unexpectedWallet = CWallet::CreateWalletFromFile(filename));
+    if (unexpectedWallet) {
+        UnregisterValidationInterface(unexpectedWallet);
+        delete unexpectedWallet;
+    }
+    BOOST_CHECK(unexpectedWallet == nullptr);
+    BOOST_CHECK_EQUAL(promptCount, 1U);
+    BOOST_CHECK_EQUAL(loadNotifications, 0U);
+    BOOST_CHECK(!HasPendingMnemonicInput());
+    BOOST_CHECK(!WalletContainsAnyRecordType(
+        filename, {"hdchain", "bip39words", "bip39passphrase", "bip39vchseed",
+                   "key", "wkey", "ckey", "keymeta", "pool"}));
+
+    {
+        std::unique_ptr<CWalletDBWrapper> probeDbw(
+            new CWalletDBWrapper(&bitdb, filename));
+        CWallet probe(std::move(probeDbw));
+        bool firstRun = false;
+        BOOST_REQUIRE_EQUAL(probe.LoadWallet(firstRun, false), DB_LOAD_OK);
+        BOOST_CHECK(firstRun);
+    }
+
+    mnemonicConnection.disconnect();
+    boost::signals2::scoped_connection recoveryConnection(
+        uiInterface.ShowMnemonic.connect([&](int) {
+            ++promptCount;
+            SetPendingMnemonicInput(
+                SecureString(BIP39_TEST_MNEMONIC.begin(),
+                             BIP39_TEST_MNEMONIC.end()),
+                SecureString(BIP39_TEST_PASSPHRASE.begin(),
+                             BIP39_TEST_PASSPHRASE.end()));
+        }));
+    CWallet* recoveredWallet = nullptr;
+    BOOST_CHECK_NO_THROW(
+        recoveredWallet = CWallet::CreateWalletFromFile(filename));
+    BOOST_REQUIRE(recoveredWallet != nullptr);
+    BOOST_CHECK_EQUAL(promptCount, 2U);
+    BOOST_CHECK_EQUAL(loadNotifications, 1U);
+    BOOST_CHECK(!HasPendingMnemonicInput());
+
+    uint256 wordHash;
+    std::vector<unsigned char> words;
+    std::vector<unsigned char> passphrase;
+    std::vector<unsigned char> seed;
+    recoveredWallet->GetBip39Data(wordHash, words, passphrase, seed);
+    BOOST_CHECK(words == Bip39TestWords());
+    BOOST_CHECK(passphrase == Bip39TestPassphrase());
+    BOOST_CHECK(seed == Bip39TestSeed());
+    UnregisterValidationInterface(recoveredWallet);
+    delete recoveredWallet;
 }
 
 BOOST_AUTO_TEST_CASE(deterministic_pq_generation_requires_hd_root)
@@ -1155,6 +1288,70 @@ BOOST_AUTO_TEST_CASE(encrypted_deterministic_pq_generation_is_ciphertext_only)
         BOOST_REQUIRE(wallet->GenerateNewPQKey(second, &index));
         BOOST_CHECK_EQUAL(index, 1U);
         BOOST_CHECK(second != generated);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(encrypted_pq_index_recovery_is_idempotent_and_ciphertext_only)
+{
+    const std::string filename = "pq-hd-encrypted-index-recovery-wallet.dat";
+    const SecureString passphrase("pq-hd-index-recovery-passphrase");
+    SecureVector seed;
+    const std::vector<unsigned char> bip39Seed = Bip39TestSeed();
+    BOOST_REQUIRE(pqderivation::DeriveSeed(
+        bip39Seed.data(), bip39Seed.size(), 1, 2, seed));
+    CPQKey expected;
+    BOOST_REQUIRE(expected.SetSeed(seed.data()));
+    const uint256 recoveredProgram = expected.GetPubKey().GetWitnessProgram();
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_REQUIRE(InitializeBip39Wallet(*wallet));
+        CKey classicalKey;
+        classicalKey.MakeNewKey(true);
+        {
+            LOCK(wallet->cs_wallet);
+            BOOST_REQUIRE(wallet->AddKeyPubKey(
+                classicalKey, classicalKey.GetPubKey()));
+        }
+        BOOST_REQUIRE(wallet->EncryptWallet(passphrase));
+
+        bool added = true;
+        BOOST_CHECK(!wallet->RecoverPQKey(2, added));
+        BOOST_CHECK(!added);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 0U);
+
+        BOOST_REQUIRE(wallet->Unlock(passphrase));
+        BOOST_REQUIRE(wallet->RecoverPQKey(2, added));
+        BOOST_CHECK(added);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 3U);
+        BOOST_CHECK(wallet->HavePQKey(recoveredProgram));
+
+        BOOST_REQUIRE(wallet->RecoverPQKey(2, added));
+        BOOST_CHECK(!added);
+        BOOST_REQUIRE(wallet->RecoverPQKey(0, added));
+        BOOST_CHECK(added);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 3U);
+
+        CWalletDBWrapper rawDbw(&bitdb, filename);
+        CDB rawDb(rawDbw, "r");
+        BOOST_CHECK(rawDb.Exists(
+            std::make_pair(std::string("cpqkey"), recoveredProgram)));
+        BOOST_CHECK(!rawDb.Exists(
+            std::make_pair(std::string("pqkey"), recoveredProgram)));
+    }
+    bitdb.Flush(false);
+
+    {
+        std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+        BOOST_CHECK_EQUAL(wallet->GetPQHDChain().nExternalChainCounter, 3U);
+        BOOST_REQUIRE(wallet->Unlock(passphrase));
+        CPQKey loaded;
+        BOOST_REQUIRE(wallet->GetPQKey(recoveredProgram, loaded));
+        BOOST_CHECK(loaded.MatchesPubKey(expected.GetPubKey()));
+        CPQPubKey next;
+        uint32_t index = 99;
+        BOOST_REQUIRE(wallet->GenerateNewPQKey(next, &index));
+        BOOST_CHECK_EQUAL(index, 3U);
     }
 }
 
@@ -2172,6 +2369,71 @@ BOOST_AUTO_TEST_CASE(bip44_incomplete_or_malformed_seed_fails_load)
     expectCorrupt("long-seed", true, true, std::vector<unsigned char>(65, 0x22));
 }
 
+BOOST_AUTO_TEST_CASE(bip44_plaintext_lineage_requires_semantic_integrity)
+{
+    const std::vector<unsigned char> validWords = Bip39TestWords();
+    const std::vector<unsigned char> validPassphrase = Bip39TestPassphrase();
+    const std::vector<unsigned char> validSeed = Bip39TestSeed();
+    const uint256 validHash = Hash(validWords.begin(), validWords.end());
+
+    for (int fault = 0; fault < 5; ++fault) {
+        const std::string filename = strprintf("bip44-lineage-integrity-%d.dat", fault);
+        std::vector<unsigned char> words = validWords;
+        std::vector<unsigned char> passphrase = validPassphrase;
+        std::vector<unsigned char> seed = validSeed;
+        uint256 wordHash = validHash;
+        if (fault == 1)
+            wordHash.begin()[0] ^= 1;
+        else if (fault == 2) {
+            const std::string invalidMnemonic =
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon";
+            words.assign(invalidMnemonic.begin(), invalidMnemonic.end());
+            wordHash = Hash(words.begin(), words.end());
+            const SecureString invalidWords(words.begin(), words.end());
+            const SecureString securePassphrase(passphrase.begin(), passphrase.end());
+            SecureVector invalidSeed;
+            BOOST_REQUIRE(CMnemonic::ToSeed(invalidWords, securePassphrase, invalidSeed));
+            seed.assign(invalidSeed.begin(), invalidSeed.end());
+        } else if (fault == 3)
+            passphrase.push_back('!');
+        else if (fault == 4)
+            seed[0] ^= 1;
+
+        {
+            std::unique_ptr<CWallet> wallet = LoadPQWallet(filename);
+            BOOST_REQUIRE(wallet->SetHDChain(Bip44TestChain(wallet.get()), false));
+            CWalletDB walletdb(wallet->GetDBHandle());
+            BOOST_REQUIRE(walletdb.WriteBip39Words(wordHash, words, false));
+            BOOST_REQUIRE(walletdb.WriteBip39Passphrase(passphrase, false));
+            BOOST_REQUIRE(walletdb.WriteBip39VchSeed(seed, false));
+        }
+        bitdb.Flush(false);
+
+        std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
+        CWallet wallet(std::move(dbw));
+        bool firstRun = false;
+        const DBErrors loadResult = wallet.LoadWallet(firstRun);
+        if (fault == 0) {
+            BOOST_REQUIRE_EQUAL(loadResult, DB_LOAD_OK);
+            const std::vector<unsigned char> expectedBytes = ParseHex(
+                "023765b56ecb006a47d775beee38c45a9fe5dbe11d100b2e2ea3c99196dc915a2d");
+            const CPubKey expectedFirstExternal(expectedBytes.begin(), expectedBytes.end());
+            BOOST_REQUIRE(expectedFirstExternal.IsValid());
+            BOOST_REQUIRE(wallet.TopUpKeyPool(1));
+            CPubKey firstExternal;
+            BOOST_REQUIRE(wallet.GetKeyFromPool(firstExternal, false));
+            BOOST_CHECK(firstExternal == expectedFirstExternal);
+        } else {
+            BOOST_CHECK_EQUAL(loadResult, DB_CORRUPT);
+            BOOST_CHECK(!wallet.HasValidBip39Seed());
+            BOOST_CHECK_EQUAL(wallet.GetHDChain().nExternalChainCounter, 0U);
+            BOOST_CHECK_EQUAL(wallet.GetHDChain().nInternalChainCounter, 0U);
+            BOOST_CHECK(wallet.GetKeys().empty());
+        }
+        bitdb.Flush(false);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(bip44_derivation_refuses_missing_seed_without_advancing_counter)
 {
     const std::string filename = "bip44-missing-seed-derivation-wallet.dat";
@@ -2784,6 +3046,27 @@ BOOST_AUTO_TEST_CASE(bip44_encryption_write_failure_returns_and_aborts)
     BOOST_CHECK(loadedWords == words);
     BOOST_CHECK(loadedPassphrase == mnemonicPassphrase);
     BOOST_CHECK(loadedSeed == seed);
+}
+
+BOOST_AUTO_TEST_CASE(wallet_database_clears_entire_new_page)
+{
+    const std::string filename = "pq-full-page-clear-wallet.dat";
+    CWalletDBWrapper dbw(&bitdb, filename);
+    CDB db(dbw, "c+");
+
+    LOCK(bitdb.cs_db);
+    const auto it = bitdb.mapDb.find(filename);
+    BOOST_REQUIRE(it != bitdb.mapDb.end());
+    BOOST_REQUIRE(it->second != nullptr);
+
+    u_int32_t pageSize = 0;
+    u_int32_t clearLength = 0;
+    BOOST_REQUIRE_EQUAL(it->second->get_pagesize(&pageSize), 0);
+    DbMpoolFile* mpoolFile = it->second->get_mpf();
+    BOOST_REQUIRE(mpoolFile != nullptr);
+    BOOST_REQUIRE_EQUAL(mpoolFile->get_clear_len(&clearLength), 0);
+    BOOST_REQUIRE_GT(pageSize, 32U);
+    BOOST_CHECK_EQUAL(clearLength, pageSize);
 }
 
 BOOST_AUTO_TEST_CASE(rewrite_discards_stale_regular_temporary_database)

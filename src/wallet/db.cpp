@@ -865,6 +865,23 @@ bool CDB::Rewrite(CWalletDBWrapper& dbw, const char* pszSkip)
                         fSuccess = false;
                     }
 
+                    if (fSuccess) {
+                        u_int32_t pageSize = 0;
+                        u_int32_t clearLength = 0;
+                        DbMpoolFile* mpf = pdbCopy->get_mpf();
+                        const int pageResult = pdbCopy->get_pagesize(&pageSize);
+                        const int clearResult = mpf ? mpf->get_clear_len(&clearLength) : EINVAL;
+                        // Berkeley DB treats an unset clear length as a full page.
+                        if (pageResult != 0 || clearResult != 0 || pageSize == 0 ||
+                            (clearLength != std::numeric_limits<u_int32_t>::max() &&
+                             clearLength != pageSize)) {
+                            LogPrintf("CDB::Rewrite: Refusing rewrite without full-page clearing "
+                                      "(page result %d, clear result %d, page size %u, clear length %u)\n",
+                                      pageResult, clearResult, pageSize, clearLength);
+                            fSuccess = false;
+                        }
+                    }
+
                     Dbc* pcursor = fSuccess ? db.GetCursor() : nullptr;
                     bool fReachedEnd = false;
                     if (!pcursor)

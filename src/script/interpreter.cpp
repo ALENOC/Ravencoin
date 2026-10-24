@@ -1791,7 +1791,7 @@ size_t static WitnessSigOps(int witversion, const std::vector<unsigned char> &wi
 
     if (witversion == 2 && witprogram.size() == 32 && (flags & SCRIPT_VERIFY_PQ_HYBRID))
     {
-        return 1;
+        return PQ_WITNESS_V2_SIGOPS_COST;
     }
 
     // Future flags may be implemented here.

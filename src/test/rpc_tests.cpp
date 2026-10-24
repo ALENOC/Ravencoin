@@ -17,7 +17,11 @@
 
 #include <univalue.h>
 #include <validation.h>
+#include <assets/messages.h>
+#include <assets/myassetsdb.h>
 #include <consensus/consensus.h>
+
+UniValue exportlegacymessagedata(const JSONRPCRequest& request);
 
 UniValue CallRPC(std::string args)
 {
@@ -43,6 +47,66 @@ UniValue CallRPC(std::string args)
 }
 
 BOOST_FIXTURE_TEST_SUITE(rpc_tests, TestingSetup)
+
+    BOOST_AUTO_TEST_CASE(legacy_message_export_preserves_unscoped_rows)
+    {
+        CMessageDB messageStore(1 << 20, true, true);
+        CMessageChannelDB channelStore(1 << 20, true, true);
+        struct RestoreDatabases {
+            CMessageDB* messages;
+            CMessageChannelDB* channels;
+            ~RestoreDatabases() {
+                pmessagedb = messages;
+                pmessagechanneldb = channels;
+            }
+        } restore{pmessagedb, pmessagechanneldb};
+        pmessagedb = &messageStore;
+        pmessagechanneldb = &channelStore;
+
+        CMessage message;
+        message.out = COutPoint(uint256S("01"), 7);
+        message.strName = "LEGACY~NEWS";
+        message.ipfsHash = std::string("\x01\x02", 2);
+        message.time = 100;
+        message.nExpiredTime = 200;
+        message.nBlockHeight = 300;
+        message.status = MessageStatus::UNREAD;
+        BOOST_REQUIRE(messageStore.WriteMessage(message));
+        BOOST_REQUIRE(channelStore.WriteMyMessageChannel("LEGACY~NEWS"));
+
+        JSONRPCRequest request;
+        request.URI = "/";
+        BOOST_REQUIRE(request.params.read("[true]"));
+        UniValue exportResult = exportlegacymessagedata(request).get_obj();
+        BOOST_CHECK_EQUAL(find_value(exportResult, "scope").get_str(),
+                          "legacy-global-unscoped");
+        const UniValue& rows = find_value(exportResult, "messages");
+        BOOST_REQUIRE_EQUAL(rows.size(), 1U);
+        BOOST_CHECK_EQUAL(find_value(rows[0].get_obj(), "txid").get_str(),
+                          message.out.hash.GetHex());
+        BOOST_CHECK_EQUAL(find_value(rows[0].get_obj(), "vout").get_int(), 7);
+        BOOST_CHECK_EQUAL(find_value(rows[0].get_obj(), "message_hex").get_str(), "0102");
+        BOOST_CHECK_EQUAL(find_value(rows[0].get_obj(), "status").get_int(), 1);
+        const UniValue& channels = find_value(exportResult, "channels");
+        BOOST_REQUIRE_EQUAL(channels.size(), 1U);
+        BOOST_CHECK_EQUAL(channels[0].get_str(), "LEGACY~NEWS");
+
+        const UniValue cliArgs = RPCConvertValues("exportlegacymessagedata", {"true"});
+        BOOST_REQUIRE_EQUAL(cliArgs.size(), 1U);
+        BOOST_CHECK(cliArgs[0].get_bool());
+        request.URI = "/wallet/w1";
+        BOOST_CHECK_THROW(exportlegacymessagedata(request), UniValue);
+        request.URI = "/";
+
+        const COutPoint badOut(uint256S("02"), 8);
+        BOOST_REQUIRE(messageStore.Write(std::make_pair('Z', badOut),
+                                         std::string("bad")));
+        BOOST_CHECK_THROW(exportlegacymessagedata(request), UniValue);
+        BOOST_REQUIRE(messageStore.Erase(std::make_pair('Z', badOut)));
+        BOOST_REQUIRE(channelStore.Write(std::make_pair('C', std::string("BROKEN~NEWS")),
+                                         std::string("x")));
+        BOOST_CHECK_THROW(exportlegacymessagedata(request), UniValue);
+    }
 
     BOOST_AUTO_TEST_CASE(rip25_gbt_reports_contextual_resource_limits)
     {

@@ -33,6 +33,8 @@ static const unsigned int MAX_BLOCK_SERIALIZED_SIZE_RIP25_PHASE2 = 16000000;
 /** RIP-25: PQ witness scaling and per-element safety bound. */
 static const int PQ_WITNESS_SCALE_FACTOR = 8;
 static const unsigned int MAX_PQ_WITNESS_ELEMENT_SIZE = 4096;
+/** One active witness-v2 ML-DSA verification consumes two sigop cost units. */
+static const int64_t PQ_WITNESS_V2_SIGOPS_COST = 2;
 
 /** The maximum allowed number of signature check operations in a block (network rule) */
 static const int64_t MAX_BLOCK_SIGOPS_COST = 80000;

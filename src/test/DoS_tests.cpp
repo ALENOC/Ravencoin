@@ -242,6 +242,77 @@ BOOST_FIXTURE_TEST_SUITE(DoS_tests, TestingSetup)
         peerLogic->FinalizeNode(dummyNode.GetId(), updateConnectionTime);
     }
 
+    BOOST_AUTO_TEST_CASE(process_messages_releases_receive_queue_ownership)
+    {
+        std::atomic<bool> interruptDummy(false);
+        CNetMessageBuffer recvBuffer(MAX_PROTOCOL_MESSAGE_LENGTH);
+        CAddress address(ip(0xa0b0c004), NODE_NONE);
+        CNode dummyNode(id++, NODE_NETWORK, 0, INVALID_SOCKET, address, 0, 0,
+                        CAddress(), recvBuffer, "", true);
+        dummyNode.SetSendVersion(PROTOCOL_VERSION);
+        dummyNode.SetRecvVersion(PROTOCOL_VERSION);
+        dummyNode.nVersion = PROTOCOL_VERSION;
+        dummyNode.fSuccessfullyConnected = true;
+        peerLogic->InitializeNode(&dummyNode);
+
+        for (uint64_t nonce = 1; nonce <= 2; ++nonce) {
+            CDataStream payload(SER_NETWORK, PROTOCOL_VERSION);
+            payload << nonce;
+            CMessageHeader header(GetParams().MessageStart(), NetMsgType::PONG,
+                                  payload.size());
+            const uint256 payloadHash = Hash(payload.begin(), payload.end());
+            memcpy(header.pchChecksum, payloadHash.begin(),
+                   CMessageHeader::CHECKSUM_SIZE);
+            CDataStream wire(SER_NETWORK, PROTOCOL_VERSION);
+            wire << header;
+            wire += payload;
+
+            bool complete = false;
+            BOOST_REQUIRE(dummyNode.ReceiveMsgBytes(
+                wire.data(), static_cast<unsigned int>(wire.size()), complete));
+            BOOST_REQUIRE(complete);
+        }
+
+        BOOST_REQUIRE(dummyNode.MoveCompletedMessagesToProcessQueue(0));
+        size_t firstUsage = 0;
+        size_t secondUsage = 0;
+        {
+            LOCK(dummyNode.cs_vProcessMsg);
+            BOOST_REQUIRE_EQUAL(dummyNode.vProcessMsg.size(), 2U);
+            auto it = dummyNode.vProcessMsg.begin();
+            firstUsage = it++->GetMemoryUsage();
+            secondUsage = it->GetMemoryUsage();
+            BOOST_CHECK_EQUAL(dummyNode.nProcessQueueSize,
+                              firstUsage + secondUsage);
+        }
+        BOOST_CHECK_EQUAL(recvBuffer.SizeForOwner(dummyNode.GetId()),
+                          firstUsage + secondUsage);
+        BOOST_CHECK(dummyNode.fPauseRecv);
+
+        BOOST_CHECK(peerLogic->ProcessMessages(&dummyNode, interruptDummy));
+        {
+            LOCK(dummyNode.cs_vProcessMsg);
+            BOOST_CHECK_EQUAL(dummyNode.vProcessMsg.size(), 1U);
+            BOOST_CHECK_EQUAL(dummyNode.nProcessQueueSize, secondUsage);
+        }
+        BOOST_CHECK_EQUAL(recvBuffer.SizeForOwner(dummyNode.GetId()), secondUsage);
+        BOOST_CHECK(dummyNode.fPauseRecv);
+
+        BOOST_CHECK(!peerLogic->ProcessMessages(&dummyNode, interruptDummy));
+        {
+            LOCK(dummyNode.cs_vProcessMsg);
+            BOOST_CHECK(dummyNode.vProcessMsg.empty());
+            BOOST_CHECK_EQUAL(dummyNode.nProcessQueueSize, 0U);
+        }
+        BOOST_CHECK_EQUAL(recvBuffer.SizeForOwner(dummyNode.GetId()), 0U);
+        BOOST_CHECK_EQUAL(recvBuffer.Size(), 0U);
+        BOOST_CHECK(!dummyNode.fPauseRecv);
+        BOOST_CHECK(!dummyNode.fDisconnect);
+
+        bool updateConnectionTime = false;
+        peerLogic->FinalizeNode(dummyNode.GetId(), updateConnectionTime);
+    }
+
     CTransactionRef RandomOrphan()
     {
         std::map<uint256, COrphanTx>::iterator it;

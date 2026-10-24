@@ -7,6 +7,7 @@
 #include <util.h>
 #include "ismine.h"
 
+#include "assets/assets.h"
 #include "key.h"
 #include "keystore.h"
 #include "script/script.h"
@@ -159,6 +160,9 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey, bool& 
         case TX_NEW_ASSET: {
             if (!AreAssetsDeployed())
                 return ISMINE_NO;
+            uint256 program;
+            if (IsPQOnlyAssetScript(scriptPubKey, program))
+                break;
             keyID = CKeyID(uint160(vSolutions[0]));
             if (sigversion != SIGVERSION_BASE) {
                 CPubKey pubkey;
@@ -176,6 +180,9 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey, bool& 
         case TX_TRANSFER_ASSET: {
             if (!AreAssetsDeployed())
                 return ISMINE_NO;
+            uint256 program;
+            if (IsPQOnlyAssetScript(scriptPubKey, program))
+                break;
             keyID = CKeyID(uint160(vSolutions[0]));
             if (sigversion != SIGVERSION_BASE) {
                 CPubKey pubkey;
@@ -192,6 +199,9 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey, bool& 
         case TX_REISSUE_ASSET: {
             if (!AreAssetsDeployed())
                 return ISMINE_NO;
+            uint256 program;
+            if (IsPQOnlyAssetScript(scriptPubKey, program))
+                break;
             keyID = CKeyID(uint160(vSolutions[0]));
             if (sigversion != SIGVERSION_BASE) {
                 CPubKey pubkey;

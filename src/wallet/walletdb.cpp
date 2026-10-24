@@ -10,6 +10,7 @@
 #include "consensus/tx_verify.h"
 #include "consensus/validation.h"
 #include "fs.h"
+#include "hash.h"
 #include "protocol.h"
 #include "serialize.h"
 #include "sync.h"
@@ -71,6 +72,11 @@ bool CWalletDB::WriteKey(const CPubKey& vchPubKey, const CPrivKey& vchPrivKey, c
     vchKey.insert(vchKey.end(), vchPrivKey.begin(), vchPrivKey.end());
 
     return WriteIC(std::make_pair(std::string("key"), vchPubKey), std::make_pair(vchPrivKey, Hash(vchKey.begin(), vchKey.end())), false);
+}
+
+bool CWalletDB::WriteKeyMetadata(const CPubKey& vchPubKey, const CKeyMetadata& keyMeta)
+{
+    return WriteIC(std::make_pair(std::string("keymeta"), vchPubKey), keyMeta);
 }
 
 bool CWalletDB::WriteCryptedKey(const CPubKey& vchPubKey,
@@ -422,6 +428,10 @@ public:
     bool fHasCryptedBip39Words;
     bool fHasCryptedBip39Passphrase;
     bool fHasCryptedBip39Seed;
+    uint256 plaintextBip39WordHash;
+    SecureVector plaintextBip39Words;
+    SecureVector plaintextBip39Passphrase;
+    SecureVector plaintextBip39Seed;
     bool fHasHDChain;
     bool fHasPQHDChain;
     bool fEncryptionRewritePending;
@@ -878,36 +888,27 @@ bool ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
         else if (strType == "bip39words")
         {
             wss.fHasPlaintextBip39Words = true;
-            std::pair<uint256,std::vector<unsigned char> > valuePair;
+            std::pair<uint256, SecureVector> valuePair;
             ssValue >> valuePair;
-            if (!ssValue.empty())
+            if (!ssValue.empty() || valuePair.second.size() > 4096)
             {
-                strErr = "Error reading wallet database: BIP39 words trailing data";
+                strErr = "Error reading wallet database: BIP39 words corrupt";
                 return false;
             }
-
-            if (!pwallet->LoadWords(valuePair.first, valuePair.second))
-            {
-                strErr = "Error reading wallet database: LoadWords failed";
-                return false;
-            }
+            wss.plaintextBip39WordHash = valuePair.first;
+            wss.plaintextBip39Words.swap(valuePair.second);
         }
         else if (strType == "bip39passphrase")
         {
             wss.fHasPlaintextBip39Passphrase = true;
-            std::vector<unsigned char> vchPassphrase;
+            SecureVector vchPassphrase;
             ssValue >> vchPassphrase;
             if (!ssValue.empty())
             {
                 strErr = "Error reading wallet database: BIP39 passphrase trailing data";
                 return false;
             }
-
-            if (!pwallet->LoadPassphrase(vchPassphrase))
-            {
-                strErr = "Error reading wallet database: LoadPassphrase failed";
-                return false;
-            }
+            wss.plaintextBip39Passphrase.swap(vchPassphrase);
         }
         else if (strType == "bip39vchseed")
         {
@@ -923,14 +924,9 @@ bool ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
                 strErr = "Error reading wallet database: BIP39 seed trailing data";
                 return false;
             }
-            std::vector<unsigned char> vchSeed(seedSize);
+            SecureVector vchSeed(seedSize);
             ssValue.read(reinterpret_cast<char*>(vchSeed.data()), vchSeed.size());
-
-            if (!pwallet->LoadVchSeed(vchSeed))
-            {
-                strErr = "Error reading wallet database: LoadVchSeed failed";
-                return false;
-            }
+            wss.plaintextBip39Seed.swap(vchSeed);
         }
         else if (strType == "encryption_rewrite_pending")
         {
@@ -1095,6 +1091,40 @@ DBErrors CWalletDB::LoadWallet(CWallet* pwallet)
     } else if (hasPlaintextBip39 || hasCryptedBip39) {
         LogPrintf("Error reading wallet database: BIP39 key material has no BIP44 chain\n");
         result = DB_CORRUPT;
+    }
+
+    if (result == DB_LOAD_OK && pwallet->IsBip44Enabled() && hasPlaintextBip39) {
+        SecureString words;
+        words.reserve(wss.plaintextBip39Words.size() > 64 ?
+                      wss.plaintextBip39Words.size() : 64);
+        words.assign(wss.plaintextBip39Words.begin(),
+                     wss.plaintextBip39Words.end());
+        SecureString passphrase;
+        passphrase.reserve(wss.plaintextBip39Passphrase.size() > 64 ?
+                           wss.plaintextBip39Passphrase.size() : 64);
+        passphrase.assign(wss.plaintextBip39Passphrase.begin(),
+                          wss.plaintextBip39Passphrase.end());
+        SecureVector derivedSeed;
+        const bool validLineage =
+            Hash(wss.plaintextBip39Words.begin(), wss.plaintextBip39Words.end()) ==
+                wss.plaintextBip39WordHash &&
+            CMnemonic::Check(words) &&
+            CMnemonic::ToSeed(words, passphrase, derivedSeed) &&
+            derivedSeed.size() == BIP39_SEED_SIZE &&
+            TimingResistantEqual(derivedSeed, wss.plaintextBip39Seed);
+        ClearSecureString(words);
+        ClearSecureString(passphrase);
+        if (!validLineage) {
+            LogPrintf("Error reading wallet database: BIP39 plaintext lineage corrupt\n");
+            result = DB_CORRUPT;
+        } else if (!pwallet->LoadWords(wss.plaintextBip39WordHash,
+                                      std::move(wss.plaintextBip39Words)) ||
+                   !pwallet->LoadPassphrase(
+                       std::move(wss.plaintextBip39Passphrase)) ||
+                   !pwallet->LoadVchSeed(std::move(wss.plaintextBip39Seed))) {
+            LogPrintf("Error reading wallet database: BIP39 plaintext install failed\n");
+            result = DB_CORRUPT;
+        }
     }
 
     if (fNoncriticalErrors && result == DB_LOAD_OK)
@@ -1335,14 +1365,18 @@ bool CWalletDB::RecoverKeysOnlyFilter(void *callbackData, CDataStream ssKey, CDa
             std::string parsedType, address, key, descriptor;
             ssKey >> parsedType >> address >> key;
             ssValue >> descriptor;
-            if (parsedType != "destdata" || key != "pqasset:destination:v1" ||
+            if (parsedType != "destdata" ||
+                (key != "pqasset:destination:v1" &&
+                 key != "pqasset:destination:v2") ||
                 !ssKey.empty() || !ssValue.empty())
                 return false;
             CKeyID classicalKey;
             uint256 pqProgram;
             return DecodePQAssetDestination(descriptor, classicalKey, pqProgram) &&
                 address == EncodeDestination(classicalKey) &&
-                descriptor == EncodePQAssetDestination(classicalKey, pqProgram);
+                descriptor == EncodePQAssetDestination(classicalKey, pqProgram) &&
+                (key == "pqasset:destination:v1" ||
+                 classicalKey == CKeyID(Hash160(pqProgram.begin(), pqProgram.end())));
         } catch (...) {
             return false;
         }

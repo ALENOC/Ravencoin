@@ -1605,6 +1605,10 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
                     pSnapshotRequestDb = new CSnapshotRequestDB(nBlockTreeDBCache, false, false);
                     pAssetSnapshotDb = new CAssetSnapshotDB(nBlockTreeDBCache, false, false);
                     pDistributeSnapshotDb = new CDistributeSnapshotRequestDB(nBlockTreeDBCache, false, false);
+#ifdef ENABLE_WALLET
+                    pDistributeSnapshotDb->LoadAllDistributeSnapshot(mapRewardSnapshots,
+                                                                      mapRewardWalletBindings);
+#endif
 
                     // Read for fAssetIndex to make sure that we only load asset address balances if it if true
                     pblocktree->ReadFlag("assetindex", fAssetIndex);
@@ -1651,6 +1655,13 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
                     strLoadError = _("Error loading block database");
                     break;
                 }
+#ifdef ENABLE_WALLET
+                if ((fReset || fReindexChainState || fReindex) &&
+                    !pmyrestricteddb->WriteRestrictedIndexState('N')) {
+                    strLoadError = _("Unable to reset restricted address history for reindex");
+                    break;
+                }
+#endif
 
                 // If the loaded chain has a wrong genesis, bail out immediately
                 // (we're likely using a testnet datadir, or the other way around).
@@ -1924,6 +1935,8 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
 
     // ********************************************************* Step 8: load wallet
 #ifdef ENABLE_WALLET
+    if (!BackfillMyRestrictedIndex(chainparams))
+        return InitError(_("Unable to rebuild restricted address history"));
     if (!OpenWallets())
         return false;
 #else
@@ -2069,15 +2082,62 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
 
 
     // ********************************************************* Step 12: Init Msg Channel list
-    if (!fReindex && fLoaded && fMessaging && pmessagechanneldb && !gArgs.GetBoolArg("-disablewallet", false)) {
-        bool found;
-        if (!pmessagechanneldb->ReadFlag("init", found)) {
+    if (fLoaded && fMessaging && pmessagechanneldb && !gArgs.GetBoolArg("-disablewallet", false)) {
+        LOCK(cs_main);
+        for (CWalletRef wallet : vpwallets) {
+            std::string scope;
+            if (!GetMessageWalletScope(*wallet, scope)) {
+                LogPrintf("%s: Failed to establish message scope for wallet %s\n",
+                          __func__, wallet->GetName());
+                continue;
+            }
+            int scanStart = GetParams().GetAssetActivationHeight();
+            int previousHeight = -1;
+            uint256 previousHash;
+            if (pmessagechanneldb->ReadWalletMessageScanTip(scope, previousHeight, previousHash)) {
+                if (previousHeight < 0 || previousHeight > chainActive.Height() ||
+                    chainActive[previousHeight]->GetBlockHash() != previousHash) {
+                    if (!pmessagechanneldb->WriteFlag("init:" + scope, false) ||
+                        !ResetWalletDerivedMessageState(*wallet)) {
+                        LogPrintf("%s: Failed to reset orphaned message scan for wallet %s\n",
+                                  __func__, wallet->GetName());
+                        continue;
+                    }
+                    LogPrintf("%s: Rebuilding message channels after reorganization for wallet %s\n",
+                              __func__, wallet->GetName());
+                    previousHeight = -1;
+                }
+                if (previousHeight >= 0)
+                    scanStart = std::max(scanStart, previousHeight + 1);
+            }
+            if (previousHeight < 0 &&
+                (!pmessagedb || !pmessagedb->OrphanWalletMessages(scope))) {
+                LogPrintf("%s: Failed to orphan previous message history for wallet %s\n",
+                          __func__, wallet->GetName());
+                continue;
+            }
+            bool scanned = false;
+            if (scanStart > chainActive.Height() &&
+                pmessagechanneldb->ReadFlag("init:" + scope, scanned) && scanned)
+                continue;
+            if (!pmessagechanneldb->WriteFlag("init:" + scope, false)) {
+                LogPrintf("%s: Failed to mark message channel scan incomplete for wallet %s\n",
+                          __func__, wallet->GetName());
+                continue;
+            }
             uiInterface.InitMessage(_("Init Message Channels - Scanning Asset Transactions"));
             std::string strLoadError;
-            if (!ScanForMessageChannels(strLoadError)) {
-                LogPrintf("%s : Failed to scan for message channels, %s\n", __func__, strLoadError);
-            } else {
-                pmessagechanneldb->WriteFlag("init", true);
+            if (!ScanForMessageChannels(*wallet, scanStart, strLoadError)) {
+                LogPrintf("%s: Failed to scan message channels for wallet %s: %s\n",
+                          __func__, wallet->GetName(), strLoadError);
+            } else if (!pmessagechanneldb->Flush() ||
+                       !pmessagedb->Flush() ||
+                       !pmessagedb->Sync() ||
+                       !pmessagechanneldb->Sync() ||
+                       !pmessagechanneldb->CompleteWalletMessageScan(
+                           scope, chainActive.Height(), chainActive.Tip()->GetBlockHash())) {
+                LogPrintf("%s: Failed to persist message channel scan for wallet %s\n",
+                          __func__, wallet->GetName());
             }
         }
     }

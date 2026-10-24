@@ -91,6 +91,21 @@ require_fixed 'feature_pq_asset_source_rpc.py' .github/workflows/build-raven.yml
 require_fixed 'feature_pq_asset_wallet_ownership.py' test/functional/test_runner.py 'PQ asset wallet ownership regression is not registered'
 require_fixed 'feature_mempool_clear_reissue.py' test/functional/test_runner.py 'mempool clear reissue regression is not registered'
 require_fixed 'feature_mempool_reissue_restart.py' test/functional/test_runner.py 'mempool reissue restart regression is not registered'
+require_fixed "'feature_rewards_restart.py'" test/functional/test_runner.py 'reward restart regression is not registered'
+require_fixed 'feature_rewards_restart.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits reward restart regression'
+require_fixed 'feature_rewards_restart.py' .github/workflows/build-raven.yml 'release workflow omits reward restart regression'
+require_fixed "'wallet_pq_recovery.py'" test/functional/test_runner.py 'PQ wallet recovery regression is not registered'
+require_fixed 'wallet_pq_recovery.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits PQ wallet recovery regression'
+require_fixed 'wallet_pq_recovery.py' .github/workflows/build-raven.yml 'release workflow omits PQ wallet recovery regression'
+require_fixed "'wallet_restricted_multiwallet.py'" test/functional/test_runner.py 'restricted multiwallet regression is not registered'
+require_fixed 'wallet_restricted_multiwallet.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits restricted multiwallet regression'
+require_fixed 'wallet_restricted_multiwallet.py' .github/workflows/build-raven.yml 'release workflow omits restricted multiwallet regression'
+require_fixed "'wallet_messaging_multiwallet.py'" test/functional/test_runner.py 'messaging multiwallet regression is not registered'
+require_fixed 'wallet_messaging_multiwallet.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits messaging multiwallet regression'
+require_fixed 'wallet_messaging_multiwallet.py' .github/workflows/build-raven.yml 'release workflow omits messaging multiwallet regression'
+require_fixed "'feature_pq_activation_reorg_sigops.py'" test/functional/test_runner.py 'PQ activation reorg and sigop regression is not registered'
+require_fixed 'feature_pq_activation_reorg_sigops.py' .github/workflows/rip25-v48-final-gate.yml 'final gate omits PQ activation reorg and sigop regression'
+require_fixed 'feature_pq_activation_reorg_sigops.py' .github/workflows/build-raven.yml 'release workflow omits PQ activation reorg and sigop regression'
 
 # GLM-003: contextual 8 -> 12 -> 16 MWU and UTXO-bound 8x discount.
 require_fixed 'VersionBitsStateSinceHeight' src/validation.cpp 'deterministic RIP-25 phase boundary missing'
@@ -100,6 +115,8 @@ require_fixed 'return MAX_BLOCK_WEIGHT_RIP25_PHASE2' src/validation.cpp '16 MWU 
 require_fixed 'IsPQWitnessV2Prevout' src/validation.cpp 'PQ discount is not bound to a witness-v2 prevout'
 require_fixed 'GetContextualPQWitnessDiscount' src/validation.cpp 'UTXO-bound PQ discount calculation missing'
 require_fixed 'contextualBlockWeight -= GetContextualPQWitnessDiscount(tx, view)' src/validation.cpp 'ConnectBlock does not apply the contextual PQ discount'
+discount_guard="$(grep -A1 -F 'if (pqWitnessDiscountActive)' src/validation.cpp | sed 's/^[[:space:]]*//')"
+[[ "$discount_guard" == $'if (pqWitnessDiscountActive)\ncontextualBlockWeight -= GetContextualPQWitnessDiscount(tx, view);' ]] || fail 'ConnectBlock does not apply the contextual PQ discount'
 require_fixed 'contextualBlockWeight > activeBlockWeightLimit' src/validation.cpp 'ConnectBlock does not enforce the active contextual limit'
 require_fixed 'preliminaryWeight > activeWeightLimit' src/validation.cpp 'contextual preliminary block-weight check missing'
 require_fixed 'const size_t activeMaxWeight = GetMaxBlockWeightForPrev(pindexPrev, chainparams.GetConsensus())' src/miner.cpp 'miner does not query the active contextual limit'
@@ -422,7 +439,7 @@ for record_write in WriteBip39Words WriteBip39VchSeed WriteBip39Passphrase; do
   record_write_count="$(grep -Fc "$record_write" <<<"$wallet_factory_function" || true)"
   (( record_write_count == 1 )) || fail "BIP44 $record_write occurs outside the single creation boundary"
 done
-factory_mnemonic_line="$(grep -nF 'uiInterface.ShowMnemonic' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
+factory_mnemonic_line="$(grep -nF 'uiInterface.ShowMnemonic(CClientUIInterface::MODAL);' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
 factory_creation_begin_line="$(grep -nF 'active(walletdb.TxnBegin(DB_TXN_SYNC))' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
 factory_creation_construct_line="$(grep -nF '} transaction(walletdb);' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
 factory_seed_line="$(grep -nF 'GenerateNewSeed(&walletdb)' <<<"$wallet_factory_function" | cut -d: -f1 || true)"
@@ -435,7 +452,7 @@ factory_clear_line="$(grep -nF 'walletInstance->hdChain.ClearSensitiveData()' <<
 [[ -n "$factory_mnemonic_line" && -n "$factory_creation_begin_line" && -n "$factory_creation_construct_line" && -n "$factory_seed_line" && -n "$factory_words_line" && -n "$factory_seed_record_line" && -n "$factory_passphrase_line" && -n "$factory_keypool_line" && -n "$factory_creation_commit_line" && -n "$factory_clear_line" ]] || fail 'cannot locate the BIP44 atomic-creation boundaries'
 (( factory_mnemonic_line < factory_creation_begin_line && factory_creation_begin_line < factory_creation_construct_line && factory_creation_construct_line < factory_seed_line && factory_seed_line < factory_words_line && factory_words_line < factory_seed_record_line && factory_seed_record_line < factory_keypool_line && factory_keypool_line < factory_passphrase_line && factory_passphrase_line < factory_creation_commit_line && factory_creation_commit_line < factory_clear_line )) || fail 'BIP44 creation publishes lineage or keys outside its atomic boundary'
 for unique_anchor in \
-  'uiInterface.ShowMnemonic' \
+  'uiInterface.ShowMnemonic(CClientUIInterface::MODAL);' \
   'active(walletdb.TxnBegin(DB_TXN_SYNC))' \
   '} transaction(walletdb);' \
   'GenerateNewSeed(&walletdb)' \
@@ -606,6 +623,12 @@ require_fixed 'observer.checkaddresstag(tagged_address, qualifier_name), False' 
 
 # GLM-001 and CI supply-chain integrity: checkout commit is the tested tree.
 final_gate=.github/workflows/rip25-v48-final-gate.yml
+if grep -Eq '^    (if|continue-on-error):' "$final_gate"; then
+  fail 'final gate contains a conditional or fail-open job'
+fi
+if grep -Eq '^[[:space:]]+(exit|return)([[:space:]]+0+([[:space:]]|$)|[[:space:]]*$)' "$final_gate"; then
+  fail 'final gate contains an early successful shell exit'
+fi
 require_min_count 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5' "$final_gate" 2 'final gate checkout is not immutably pinned in every job'
 require_fixed '  pull_request:' "$final_gate" 'final gate does not run on pull requests'
 require_min_count 'persist-credentials: false' "$final_gate" 2 'final gate checkout credentials are not disabled'
@@ -619,12 +642,30 @@ require_fixed 'python3 contrib/devtools/test-required-functional-gate.py' "$fina
 require_fixed 'python3 test/functional/test_runner.py --require-tests' "$final_gate" 'functional gate permits absent or skipped security tests'
 require_fixed 'feature_mempool_clear_reissue.py' "$final_gate" 'final gate omits inherited mempool clear regression'
 require_fixed 'feature_mempool_reissue_restart.py' "$final_gate" 'final gate omits inherited reissue restart regression'
-require_fixed 'wallet_encryption_rewrite.py wallet_asset_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py' "$final_gate" 'required wallet, multiwallet asset, asset-scope, and chainstate-ahead functional tests are missing'
+require_fixed 'wallet_encryption_rewrite.py wallet_asset_multiwallet.py feature_rewards_restart.py wallet_pq_recovery.py wallet_restricted_multiwallet.py wallet_messaging_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py' "$final_gate" 'required wallet, rewards, PQ recovery, restricted multiwallet, messaging multiwallet, asset-scope, and chainstate-ahead functional tests are missing'
 require_fixed 'wallet_asset_multiwallet.py' .github/workflows/build-raven.yml 'release security job omits the multiwallet asset regression'
 require_fixed "'wallet_asset_multiwallet.py'" test/functional/test_runner.py 'multiwallet asset regression is not in the functional suite'
 require_fixed 'id: posttest_integrity' "$final_gate" 'final gate does not recheck source after security tests'
 final_security_job="$(sed -n '/^  security-tests:/,/^  build:/p' "$final_gate")"
 require_text "$final_security_job" 'test/test_raven_fuzzy --pq-smoke' 'final security job does not run the PQ verifier fuzz smoke test'
+mapfile -t final_security_sha_lines < <(grep -nFx '          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' <<<"$final_security_job" | cut -d: -f1)
+(( ${#final_security_sha_lines[@]} == 2 )) || fail 'final security job must execute exact-SHA checks before and after tests'
+final_make_check_line="$(grep -nFx '        run: make check' <<<"$final_security_job" | cut -d: -f1 || true)"
+[[ "$final_make_check_line" =~ ^[0-9]+$ ]] || fail 'final security job does not execute make check'
+(( final_security_sha_lines[0] < final_make_check_line && final_make_check_line < final_security_sha_lines[1] )) || fail 'final security job does not bracket make check with exact-SHA checks'
+final_behavior_line="$(grep -nFx '        run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests' <<<"$final_security_job" | cut -d: -f1 || true)"
+final_mutation_line="$(grep -nFx '        run: python3 contrib/devtools/test-rip25-source-mutation-sensitivity.py --full' <<<"$final_security_job" | cut -d: -f1 || true)"
+final_functional_line="$(grep -nFx '          python3 test/functional/test_runner.py --require-tests --jobs=2 \' <<<"$final_security_job" | cut -d: -f1 || true)"
+[[ "$final_behavior_line" =~ ^[0-9]+$ && "$final_mutation_line" =~ ^[0-9]+$ && "$final_functional_line" =~ ^[0-9]+$ ]] || fail 'final security job must execute behavioral, mutation, and required functional tests'
+(( final_make_check_line < final_behavior_line && final_behavior_line < final_mutation_line && final_mutation_line < final_functional_line && final_functional_line < final_security_sha_lines[1] )) || fail 'final security test steps are not in the required order'
+if grep -Eq '^        (if|continue-on-error):' <<<"$final_security_job"; then
+  fail 'final security job contains a conditional or fail-open step'
+fi
+final_required_step="$(sed -n '/^      - id: required_functional$/,/^      - id: posttest_integrity$/p' <<<"$final_security_job")"
+[[ -n "$final_required_step" ]] || fail 'final required functional step is missing'
+if grep -Fq '<<' <<<"$final_required_step"; then
+  fail 'final security job must not hide required commands in a here document'
+fi
 require_fixed 'id: postbuild_integrity' "$final_gate" 'final gate does not recheck source after cross-builds'
 final_build_matrix="$(sed -n '/^      matrix:/,/^    steps:/p' "$final_gate")"
 require_text "$final_build_matrix" $'          - name: aarch64-disable-wallet\n            host: aarch64-linux-gnu\n            packages: g++-aarch64-linux-gnu\n            configure_flags: --without-gui --disable-wallet --disable-bench\n            run_tests: false' 'final gate lacks the aarch64 no-wallet cross-build'
@@ -654,6 +695,12 @@ require_fixed 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
 require_fixed 'permissions:' .github/workflows/build-raven.yml 'build workflow lacks explicit permissions'
 require_fixed '  contents: read' .github/workflows/build-raven.yml 'build workflow permissions are not read-only'
 release_workflow=.github/workflows/build-raven.yml
+if grep -Eq '^    (if|continue-on-error):' "$release_workflow"; then
+  fail 'release workflow contains a conditional or fail-open job'
+fi
+if grep -Eq '^[[:space:]]+(exit|return)([[:space:]]+0+([[:space:]]|$)|[[:space:]]*$)' "$release_workflow"; then
+  fail 'release workflow contains an early successful shell exit'
+fi
 require_fixed '      - fix/rip25-v48-glm-remediation' "$release_workflow" 'release workflow does not build remediation-branch pushes'
 require_fixed '  pull_request:' "$release_workflow" 'release workflow does not build integration pull requests'
 require_fixed 'runs-on: ubuntu-22.04' "$release_workflow" 'release workflow uses an unsupported runner'
@@ -667,7 +714,25 @@ require_text "$release_security_job" 'feature_mempool_clear_reissue.py' 'release
 require_text "$release_security_job" 'feature_mempool_reissue_restart.py' 'release artifact workflow omits inherited reissue restart regression'
 require_text "$release_security_job" 'feature_chainstate_ahead.py' 'release artifact workflow does not test chainstate-ahead recovery'
 require_text "$release_security_job" 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' 'release security job does not bind tests to the artifact SHA'
-require_text "$release_build_job" '    needs: security-tests' 'release artifact matrix can package without passing security tests'
+grep -Fxq '    needs: security-tests' <<<"$release_build_job" || fail 'release artifact matrix can package without passing security tests'
+mapfile -t release_security_sha_lines < <(grep -nFx '          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' <<<"$release_security_job" | cut -d: -f1)
+(( ${#release_security_sha_lines[@]} == 2 )) || fail 'release security job must execute exact-SHA checks before and after tests'
+release_make_check_line="$(grep -nFx '          if ! make check; then' <<<"$release_security_job" | cut -d: -f1 || true)"
+[[ "$release_make_check_line" =~ ^[0-9]+$ ]] || fail 'release security job does not execute make check'
+(( release_security_sha_lines[0] < release_make_check_line && release_make_check_line < release_security_sha_lines[1] )) || fail 'release security job does not bracket make check with exact-SHA checks'
+release_behavior_line="$(grep -nFx '        run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests' <<<"$release_security_job" | cut -d: -f1 || true)"
+release_mutation_line="$(grep -nFx '        run: python3 contrib/devtools/test-rip25-source-mutation-sensitivity.py --full' <<<"$release_security_job" | cut -d: -f1 || true)"
+release_functional_line="$(grep -nFx '          python3 test/functional/test_runner.py --require-tests --jobs=2 \' <<<"$release_security_job" | cut -d: -f1 || true)"
+[[ "$release_behavior_line" =~ ^[0-9]+$ && "$release_mutation_line" =~ ^[0-9]+$ && "$release_functional_line" =~ ^[0-9]+$ ]] || fail 'release security job must execute behavioral, mutation, and required functional tests'
+(( release_make_check_line < release_behavior_line && release_behavior_line < release_mutation_line && release_mutation_line < release_functional_line && release_functional_line < release_security_sha_lines[1] )) || fail 'release security test steps are not in the required order'
+if grep -Eq '^        (if|continue-on-error):' <<<"$release_security_job"; then
+  fail 'release security job contains a conditional or fail-open step'
+fi
+release_required_step="$(sed -n '/^      - name: Run required functional security tests$/,/^      - name: Verify tested source and commit$/p' <<<"$release_security_job")"
+[[ -n "$release_required_step" ]] || fail 'release required functional step is missing'
+if grep -Fq '<<' <<<"$release_required_step"; then
+  fail 'release security job must not hide required commands in a here document'
+fi
 release_matrix="$(sed -n '/^      matrix:/,/^    steps:/p' "$release_workflow")"
 release_axes="$(grep -E '^        [A-Za-z_][A-Za-z_0-9]*:' <<<"$release_matrix" || true)"
 [[ "$release_axes" == '        include:' ]] || fail 'release workflow has unexpected matrix axes'
@@ -701,6 +766,49 @@ require_fixed 'echo "target=${{ matrix.OS }}"' "$release_workflow" 'release prov
 require_fixed 'echo "host=${{ matrix.host }}"' "$release_workflow" 'release provenance omits the cross-build host'
 require_fixed 'name: raven-unsigned-${{ matrix.OS }}-${{ github.sha }}' "$release_workflow" 'release workflow labels unsigned artifacts as releases'
 require_fixed 'status=unsigned CI build; Windows and macOS outputs are not signed final releases' "$release_workflow" 'release provenance claims unsigned outputs are signed releases'
+release_package_step="$(sed -n '/^    - name: Verify Packaged Source and Artifacts$/,/^    - name: Upload Artifacts to Job$/p' "$release_workflow")"
+[[ -n "$release_package_step" ]] || fail 'release package attestation step is missing'
+grep -Fxq '      run: |' <<<"$release_package_step" || fail 'release package attestation is not an executable shell block'
+if grep -Eq '^      (if|continue-on-error):' <<<"$release_package_step" ||
+    grep -Fq '<<' <<<"$release_package_step" ||
+    grep -Eq '^[[:space:]]+(exit|return)([[:space:]]|$)' <<<"$release_package_step"; then
+  fail 'release package attestation can be skipped or hidden'
+fi
+for command in \
+  '        git archive --format=tar --prefix="${distname}/" HEAD > "$source_tar"' \
+  '        test "$(git get-tar-commit-id < "$source_tar")" = "$GITHUB_SHA"' \
+  '          test -s "$artifact"' \
+  '        grep -Fx "commit=$GITHUB_SHA" PROVENANCE.txt' \
+  '        sha256sum -- "${artifacts[@]}" "$source_archive" PROVENANCE.txt > SHA256SUMS' \
+  '        sha256sum --check SHA256SUMS'; do
+  grep -Fxq -- "$command" <<<"$release_package_step" ||
+    fail "release package attestation does not execute: $command"
+done
+release_upload_step="$(sed -n '/^    - name: Upload Artifacts to Job$/,/^        retention-days: /p' "$release_workflow")"
+[[ -n "$release_upload_step" ]] || fail 'release artifact upload step is missing'
+if grep -Eq '^      (if|continue-on-error):' <<<"$release_upload_step"; then
+  fail 'release artifact upload can be skipped or fail open'
+fi
+release_artifact_job="$(sed -n '/^  verify-artifacts:$/,$p' "$release_workflow")"
+[[ -n "$release_artifact_job" ]] || fail 'independent release artifact verification job is missing'
+grep -Fxq '    needs: build' <<<"$release_artifact_job" ||
+  fail 'independent release artifact verification must depend on every build target'
+if grep -Eq '^    (if|continue-on-error):|^        (if|continue-on-error):' <<<"$release_artifact_job" ||
+    grep -Fq '<<' <<<"$release_artifact_job" ||
+    grep -Eq '^[[:space:]]+(exit|return)([[:space:]]|$)' <<<"$release_artifact_job"; then
+  fail 'independent release artifact verification can be skipped or hidden'
+fi
+for command in \
+  '        run: python3 -m unittest discover -s contrib/devtools -p test_build_raven_artifacts.py -v' \
+  '        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0' \
+  '          pattern: raven-unsigned-*' \
+  '          merge-multiple: false' \
+  '          python3 contrib/devtools/verify_build_raven_artifacts.py \' \
+  '            "$RUNNER_TEMP/rip25-artifacts" "$GITHUB_SHA" \' \
+  '            --repository "$GITHUB_WORKSPACE" --package-ref "$PACKAGE_REF" \' ; do
+  grep -Fxq -- "$command" <<<"$release_artifact_job" ||
+    fail "independent release artifact verification does not execute: $command"
+done
 require_fixed 'EXTRA_OPTS=()' .github/scripts/04-configure-build.sh 'release configure helper fails under nounset without wallet flags'
 require_fixed '436df6dfc7073365d12f8ef6c1fdb060777c720602cc67c2dcf9a59d94290e38' .github/scripts/02-copy-build-dependencies.sh 'macOS SDK checksum pin changed'
 require_fixed 'sha256sum --check' .github/scripts/02-copy-build-dependencies.sh 'macOS SDK is not verified before extraction'
@@ -723,6 +831,8 @@ if [[ "$mode" == '--structural-only' ]]; then
   exit 0
 fi
 
+python3 contrib/devtools/test-rip25-invariant-gate-negative-controls.py
+
 test_binary=src/test/test_raven
 [[ -x "$test_binary" ]] || fail "behavioral test binary is missing or not executable: $test_binary"
 # Qt and benchmark translation units are not linked into the headless
@@ -736,6 +846,7 @@ behavioral_tests=(
   asset_tx_tests/transfer_overflow_checks_follow_explicit_context
   asset_tx_tests/asset_destination_scope_test
   asset_tx_tests/pq_asset_envelope_is_not_witness_v2_test
+  asset_tx_tests/pq_asset_creation_height_and_anchor_rule_test
   asset_tx_tests/pq_asset_history_destination_uses_origin_height_test
   coins_tests/txundo_large_roundtrip_test
   coins_tests/txundo_deserialization_limit_test
@@ -765,6 +876,7 @@ behavioral_tests=(
   blockencodings_tests/compact_prefilled_wide_indexes_and_positions
   blockencodings_tests/compact_prefilled_offset_wrap_completes
   DoS_tests/unexpected_blocktxn_is_rejected_before_body_parse
+  DoS_tests/process_messages_releases_receive_queue_ownership
   DoS_tests/orphan_pq_shape_uses_raw_size_limit
   rpc_tests/rip25_gbt_reports_contextual_resource_limits
   mempool_tests/rip25_reorg_purges_preactivation_policy_transactions
@@ -804,7 +916,8 @@ echo "$fuzz_smoke_output"
 "$fuzz_binary" --pq-seed-tx | "$fuzz_binary"
 
 python3 contrib/devtools/test-required-functional-gate.py
+PYTHONPATH=test/functional python3 -m unittest test_framework.test_cache_peers
 python3 test/functional/test_runner.py --require-tests --jobs=2 \
-  wallet_encryption_rewrite.py rpc_assettransfer.py feature_chainstate_ahead.py feature_pq_asset_anchor.py feature_pq_asset_authority_selection.py feature_pq_asset_source_rpc.py feature_pq_asset_wallet_ownership.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py
+  wallet_encryption_rewrite.py feature_rewards_restart.py wallet_pq_recovery.py wallet_restricted_multiwallet.py wallet_messaging_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py feature_pq_activation_reorg_sigops.py feature_pq_asset_anchor.py feature_pq_asset_authority_selection.py feature_pq_asset_source_rpc.py feature_pq_asset_wallet_ownership.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py
 
 echo 'RIP-25/v4.8 structural + behavioral invariants: OK'
