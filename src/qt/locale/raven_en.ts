@@ -512,7 +512,7 @@
     <name>AssetsDialog</name>
     <message>
         <location filename="../forms/assetsdialog.ui" line="+14"/>
-        <location filename="../assetsdialog.cpp" line="+714"/>
+        <location filename="../assetsdialog.cpp" line="+727"/>
         <source>Send Coins</source>
         <translation type="unfinished">Send Coins</translation>
     </message>
@@ -582,17 +582,28 @@
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+209"/>
+        <location line="+242"/>
         <source>Transaction Fee:</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+14"/>
+        <location line="-157"/>
+        <location line="+171"/>
         <source>Choose...</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+30"/>
+        <location line="-191"/>
+        <source>For a partial transfer of historical assets after PQ asset activation, choose a wallet-owned protected destination for the remaining assets.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+3"/>
+        <source>Protected asset change:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+218"/>
         <source>Using the fallbackfee can result in sending a transaction that will take several hours or days (or never) to confirm. Consider choosing your fee manually or wait until you have validated the complete chain.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -698,7 +709,7 @@
         <translation type="unfinished">Balance:</translation>
     </message>
     <message>
-        <location filename="../assetsdialog.cpp" line="-632"/>
+        <location filename="../assetsdialog.cpp" line="-641"/>
         <source>Copy quantity</source>
         <translation type="unfinished"></translation>
     </message>
@@ -733,12 +744,19 @@
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+89"/>
+        <location line="+91"/>
         <source>%1 (%2 blocks)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+241"/>
+        <location line="+205"/>
+        <location line="+608"/>
+        <location line="+14"/>
+        <source>Protected asset change</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="-579"/>
         <location line="+5"/>
         <location line="+5"/>
         <location line="+4"/>
@@ -841,6 +859,41 @@
     <message>
         <location line="+21"/>
         <source>(no label)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+17"/>
+        <source>Choose a wallet-owned PQ-only destination when a partial transfer of historical assets creates change.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Protected asset change is available after PQ asset activation.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+9"/>
+        <source>Create a new protected change destination</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+4"/>
+        <source>Wallet-owned destination:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+14"/>
+        <source>Could not create or select a wallet-owned PQ-only asset destination.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+20"/>
+        <source>Enter a canonical PQ-only asset destination after PQ asset activation.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+6"/>
+        <source>Asset change must use a protected destination owned by this wallet.</source>
         <translation type="unfinished"></translation>
     </message>
 </context>
@@ -2261,7 +2314,7 @@ They are not recoverable!!</source>
 <context>
     <name>MyRestrictedAssetsTableModel</name>
     <message>
-        <location filename="../myrestrictedassettablemodel.cpp" line="+190"/>
+        <location filename="../myrestrictedassettablemodel.cpp" line="+228"/>
         <source>Date</source>
         <translation type="unfinished">Date</translation>
     </message>
@@ -3715,12 +3768,12 @@ They are not recoverable!!</source>
         <translation>Sign &amp;message...</translation>
     </message>
     <message>
-        <location line="+825"/>
+        <location line="+828"/>
         <source>Synchronizing with network...</source>
         <translation>Synchronizing with network...</translation>
     </message>
     <message>
-        <location line="-972"/>
+        <location line="-975"/>
         <source>&amp;Overview</source>
         <translation>&amp;Overview</translation>
     </message>
@@ -3756,12 +3809,12 @@ They are not recoverable!!</source>
     </message>
     <message>
         <location line="+1"/>
-        <location line="+1143"/>
+        <location line="+1146"/>
         <source>Transfer assets to RVN addresses</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="-1136"/>
+        <location line="-1139"/>
         <source>&amp;Manage Assets</source>
         <translation type="unfinished"></translation>
     </message>
@@ -3793,12 +3846,12 @@ They are not recoverable!!</source>
     </message>
     <message>
         <location line="+1"/>
-        <location line="+1126"/>
+        <location line="+1129"/>
         <source>Manage restricted assets</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="-1090"/>
+        <location line="-1093"/>
         <source>E&amp;xit</source>
         <translation>E&amp;xit</translation>
     </message>
@@ -3908,7 +3961,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+444"/>
+        <location line="+447"/>
         <source>Click to disable network activity.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -3933,7 +3986,7 @@ They are not recoverable!!</source>
         <translation>Reindexing blocks on disk...</translation>
     </message>
     <message>
-        <location line="-974"/>
+        <location line="-977"/>
         <source>Send coins to a Raven address</source>
         <translation>Send coins to a Raven address</translation>
     </message>
@@ -3958,12 +4011,12 @@ They are not recoverable!!</source>
         <translation>&amp;Verify message...</translation>
     </message>
     <message>
-        <location line="+912"/>
+        <location line="+915"/>
         <source>Raven</source>
         <translation>Raven</translation>
     </message>
     <message>
-        <location line="-1252"/>
+        <location line="-1255"/>
         <source>Wallet</source>
         <translation>Wallet</translation>
     </message>
@@ -4038,7 +4091,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message numerus="yes">
-        <location line="+748"/>
+        <location line="+751"/>
         <source>%n active connection(s) to Raven network</source>
         <translation>
             <numerusform>%n active connection to Raven network</numerusform>
@@ -4099,18 +4152,18 @@ They are not recoverable!!</source>
         <translation>Up to date</translation>
     </message>
     <message>
-        <location line="-961"/>
-        <location line="+1153"/>
+        <location line="-964"/>
+        <location line="+1156"/>
         <source>Create new assets</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="-1025"/>
+        <location line="-1028"/>
         <source>Show the %1 help message to get a list with possible Raven command-line options</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+559"/>
+        <location line="+562"/>
         <source>%1 client</source>
         <translation type="unfinished"></translation>
     </message>
@@ -6860,12 +6913,12 @@ They are not recoverable!!</source>
         <translation>Run in the background as a daemon and accept commands</translation>
     </message>
     <message>
-        <location line="+52"/>
+        <location line="+54"/>
         <source>Unable to start HTTP server. See debug log for details.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="-567"/>
+        <location line="-569"/>
         <source>Raven Core</source>
         <translation type="unfinished">Raven Core</translation>
     </message>
@@ -7445,7 +7498,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+8"/>
+        <location line="+10"/>
         <source>Unsupported argument -benchmark ignored, use -debug=bench.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -7515,7 +7568,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="-570"/>
+        <location line="-572"/>
         <source>Allow JSON-RPC connections from specified source. Valid for &lt;ip&gt; are a single IP (e.g. 1.2.3.4), a network/netmask (e.g. 1.2.3.4/255.255.255.0) or a network/CIDR (e.g. 1.2.3.4/24). This option can be specified multiple times</source>
         <translation type="unfinished"></translation>
     </message>
@@ -7740,7 +7793,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+17"/>
+        <location line="+19"/>
         <source>Upgrade wallet to latest format on startup</source>
         <translation type="unfinished"></translation>
     </message>
@@ -7801,6 +7854,11 @@ They are not recoverable!!</source>
     </message>
     <message>
         <location line="+1"/>
+        <source>Wallet setup was cancelled</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+1"/>
         <source>Warning</source>
         <translation>Warning</translation>
     </message>
@@ -7830,7 +7888,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="-105"/>
+        <location line="-108"/>
         <source>Password for JSON-RPC connections</source>
         <translation>Password for JSON-RPC connections</translation>
     </message>
@@ -8516,6 +8574,11 @@ They are not recoverable!!</source>
     </message>
     <message>
         <location line="+2"/>
+        <source>Unable to rebuild restricted address history</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+1"/>
         <source>Unable to reissue asset: amount must be 0 or larger</source>
         <translation type="unfinished"></translation>
     </message>
@@ -8540,12 +8603,17 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
+        <location line="+1"/>
+        <source>Unable to reset restricted address history for reindex</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <location line="+2"/>
         <source>Unknown network specified in -onlynet: &apos;%s&apos;</source>
         <translation>Unknown network specified in -onlynet: &apos;%s&apos;</translation>
     </message>
     <message>
-        <location line="-117"/>
+        <location line="-119"/>
         <source>Insufficient funds</source>
         <translation>Insufficient funds</translation>
     </message>
