@@ -1,8 +1,8 @@
-# Raven Core 4.8.1 release notes (draft)
+# Raven Core 4.8.1 release notes
 
-Status: release qualification in progress. These notes are for review and
-must be updated with the final source SHA, artifact checksums, and release
-date before publication.
+The release tag identifies the source commit. Published release metadata
+provides the final artifact checksums. Verify the tag commit and the checksum
+of the downloaded package before installation.
 
 ## Upgrade before bit 12 activates
 
@@ -178,7 +178,7 @@ recovery, asset and owner-token send and receive, and clean shutdown.
 Bit-13 asset activation behavior needs a controlled test environment
 because the public deployment has not activated.
 
-## Release qualification still required
+## Qualification evidence and limits
 
 The available testnet active chain was replayed from genesis by a clean
 4.8.1 candidate with `-assumevalid=0`, then synchronized with public
@@ -210,12 +210,20 @@ downloaded-bundle verification passed. A separate check of all five
 downloaded bundles confirmed their common source archive, the Windows
 installer program identity, and all 23 entries of the macOS DMG app.
 FINDING-020, FINDING-193, and FINDING-194 are fixed for their documented
-scope. The final release SHA, after these documentation updates, still
-requires its own paired CI and package review.
-Operator readiness still requires qualification. The owner assigned
-native Windows and macOS GUI exercise to post-publication community
-testing, with the residual uncertainty stated above. After final-SHA
-CI and review of all five
-packages, the owner must separately approve the exact 4.8.1 tag.
-Signing and final checksums follow tag creation. Publication requires
-another explicit owner decision.
+scope. A later pre-tag candidate at `97eb1bfb5` passed Build Raven
+`40069848322` and Final Gate `40069850388` on that exact source SHA.
+Mandatory `make check`, the required functional security gate, all five
+release targets, and pinned-Qt Linux checks passed. Independent review of
+all five downloaded bundles accepted their checksums, provenance, common
+source archive, Windows installer program code, and 23 macOS DMG app
+entries. These runs precede this documentation change and are prior
+evidence, not qualification of a later tag commit.
+
+The release process requires `make check`, paired green Build Raven and
+Final Gate runs, pinned-Qt Linux checks, and independent review of all five
+packages at the exact tag commit. Record those run IDs, the immutable
+source SHA, and final package checksums in the release metadata. Confirm
+miner, pool, validator, and dependent-service readiness before the bit-12
+go/no-go decision. Native Windows and macOS GUI exercise is assigned to
+post-publication community testing, with the residual uncertainty stated
+above. Tag creation and publication each require a separate owner decision.
