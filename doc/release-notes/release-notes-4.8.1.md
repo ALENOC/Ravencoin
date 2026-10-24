@@ -203,6 +203,15 @@ wallet recovery test failures (FINDING-112); a renewed failure blocks
 release, and `make check` remains mandatory on the final SHA.
 The wallet-disabled Qt corrections (FINDING-177 and FINDING-178)
 require passing unmodified Linux package smokes on the final SHA.
+The later installer and DMG binding fixes (FINDING-193 and FINDING-194)
+passed Build Raven `39939214218` and Final Gate `39939213883` on
+`b1a67830c`. All five release targets and Build Raven's aggregate
+downloaded-bundle verification passed. A separate check of all five
+downloaded bundles confirmed their common source archive, the Windows
+installer program identity, and all 23 entries of the macOS DMG app.
+FINDING-020, FINDING-193, and FINDING-194 are fixed for their documented
+scope. The final release SHA, after these documentation updates, still
+requires its own paired CI and package review.
 Operator readiness still requires qualification. The owner assigned
 native Windows and macOS GUI exercise to post-publication community
 testing, with the residual uncertainty stated above. After final-SHA

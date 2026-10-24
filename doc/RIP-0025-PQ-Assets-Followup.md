@@ -388,9 +388,11 @@ with empty scriptSig. This checks the asset format at ordinary block sizes;
 Core 4.8.0 does not enforce ML-DSA. FINDING-160 separately proves a split
 at the native 8 MWU boundary and requires a coordinated incompatible-rule
 upgrade plan. The bit-12 mainnet dates are now fixed at 2027-07-01 and
-2029-01-01 UTC. Testnet history, final-SHA artifacts and `make check`,
-the 8 MWU boundary proof on that SHA, and operator readiness remain
-release gates. The historical unexplained CI failure has an accepted
+2029-01-01 UTC. The available testnet active chain was replayed from
+genesis with `-assumevalid=0` and checked through the recorded
+snapshots. Final-SHA artifacts and `make check`, the 8 MWU boundary
+proof on that SHA, and operator readiness remain release gates. The
+historical unexplained CI failure has an accepted
 disposition, but any new failure still requires investigation. Reusing
 bit 12 for assets would change the meaning of its
 earlier deployment and is excluded.
@@ -571,5 +573,7 @@ native block-limit split in FINDING-160. Wallet, RPC, Qt, migration and
 consensus regressions passed paired release-target CI at `9151946ad`.
 The owner-approved bit-13 dates are in `src/chainparams.cpp` at
 `1dfae5b21`, with a red-then-green parameter regression and local
-`make check`. Final-SHA CI and historical testnet compatibility review
-are still required.
+`make check`. The recorded active-chain testnet replay, scan, and
+`verifychain 4 2016` passed. Final-SHA CI and package review remain
+required; this historical check cannot prove future activation or
+unknown side branches.
