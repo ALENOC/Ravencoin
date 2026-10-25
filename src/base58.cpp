@@ -356,7 +356,7 @@ bool ConvertBits(std::vector<uint8_t>& out, const std::vector<uint8_t>& in) {
 
 std::string EncodeDestination(const CTxDestination& dest)
 {
-    // Check for WitnessV2PQDestination first — uses bech32m
+    // Check for WitnessV2PQDestination first: uses bech32m
     if (const WitnessV2PQDestination* pqDest = boost::get<WitnessV2PQDestination>(&dest)) {
         std::vector<uint8_t> data8(pqDest->witnessProgram.begin(), pqDest->witnessProgram.end());
         std::vector<uint8_t> data5;

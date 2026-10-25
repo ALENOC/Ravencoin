@@ -281,7 +281,7 @@ bool ProduceSignature(const BaseSignatureCreator& creator, const CScript& fromPu
                     solved = false;
                 }
             } else {
-                // Non-transaction creator (e.g. DummySignatureCreator) — cannot sign.
+                // Non-transaction creator (e.g. DummySignatureCreator): cannot sign.
                 // Fee estimation handles this in DummySignTx with correctly-sized dummy witness.
                 solved = false;
             }
@@ -511,7 +511,7 @@ static Stacks CombineSignatures(const CScript& scriptPubKey, const BaseSignature
             return sigs2;
         return sigs1;
     case TX_WITNESS_V2_PQ_KEYHASH:
-        // RIP-25: PQ ML-DSA-44 — prefer the more complete witness
+        // RIP-25: PQ ML-DSA-44: prefer the more complete witness
         if (sigs1.witness.empty() || sigs1.witness[0].empty())
             return sigs2;
         return sigs1;
