@@ -3,6 +3,98 @@ Raven Core integration/staging tree
 
 https://ravencoin.org
 
+---
+
+## RIP-25: Post-Quantum Signatures (4.8.1 Candidate)
+
+This branch proposes [RIP-25](doc/RIP-0025-PQ-Signatures.md) ([GitHub Issue #1280](https://github.com/RavenProject/Ravencoin/issues/1280)), which adds **quantum-resistant native RVN transaction signing** using ML-DSA-44 (FIPS 204). The 4.8.1 candidate adds a separate bit-13 rule for new asset and owner-token outputs.
+
+### What it does
+
+New **witness v2** addresses use ML-DSA-44 (a NIST-standardized post-quantum signature algorithm) exclusively. Existing ECDSA addresses continue working unchanged. Users can migrate native RVN to ML-DSA-44 addresses voluntarily. The original bit-12 rule does not change legacy asset ownership. Once bit 13 activates, newly created asset and owner-token outputs require a matching native RVN witness-v2 ML-DSA anchor when spent, with no ECDSA asset signature. Historical outputs retain their classical spending rule until their owners migrate them.
+
+- **Classical addresses:** ECDSA/secp256k1, unchanged
+- **PQ addresses (witness v2):** ML-DSA-44 only, quantum-resistant
+- **Migration:** Users send native RVN from old to new addresses at their own pace
+- **Assets:** New post-bit-13 asset and owner-token outputs require an ML-DSA anchor; historical holdings remain classical until voluntary migration
+
+### Key changes
+
+| Area | Change |
+|------|--------|
+| **Consensus** | Bit-12 BIP9 signaling (1714 of 2016); incompatible 8 to 12 to 16 MWU block-limit transition and contextual PQ witness discount |
+| **Script** | Witness version 2 validation: 2-element witness stack [mldsa_sig, mldsa_pk], SHA256(pk) == program |
+| **Policy** | `TX_WITNESS_V2_PQ_KEYHASH` standard type and PQ-aware dust threshold |
+| **Addresses** | Bech32m encoding for witness v2 (HRP: `rvn` mainnet, `trvn` testnet, `rcrt` regtest) |
+| **Network** | `NODE_PQ_HYBRID` service flag (bit 5), 16 MB protocol message limit |
+| **Crypto** | `src/crypto/mldsa.h/cpp`: ML-DSA-44 via [liboqs](https://github.com/open-quantum-safe/liboqs) (FIPS 204 compliant) |
+| **Keys** | `src/pqkey.h/cpp`: `CPQKey` / `CPQPubKey` for ML-DSA-44 key management |
+| **Wallet** | `getnewpqaddress` RPC, PQ keystore integration, `IsMine` for witness v2 |
+| **Assets** | Bit 13 adds PQ-only asset carriers paired with native RVN witness-v2 inputs; historical asset outputs remain classically spendable |
+| **Signing** | ML-DSA-44 signing in `sign.cpp` via `TransactionSignatureCreator` |
+| **Build** | liboqs added as dependency (`depends/packages/liboqs.mk`, `configure.ac --with-liboqs`) |
+| **Tests** | `src/test/pqkey_tests.cpp`: unit tests for ML-DSA-44 keygen, sign/verify, witness programs |
+
+### Building with liboqs
+
+```bash
+# Install liboqs (Ubuntu/Debian)
+sudo apt install cmake ninja-build
+git clone https://github.com/open-quantum-safe/liboqs.git
+cd liboqs && mkdir build && cd build
+cmake -DOQS_MINIMAL_BUILD="SIG_ml_dsa_44" -DBUILD_SHARED_LIBS=ON ..
+make -j$(nproc) && sudo make install
+sudo ldconfig
+
+# Build Ravencoin with PQ support
+cd /path/to/Ravencoin
+./autogen.sh
+./configure --with-liboqs
+make -j$(nproc)
+```
+
+Or using the depends system:
+```bash
+cd depends && make
+cd .. && ./autogen.sh
+./configure --prefix=$(pwd)/depends/x86_64-pc-linux-gnu
+make -j$(nproc)
+```
+
+### 4.8.1 candidate status
+
+This branch proposes a Core 4.8.1 candidate based on Core 4.8.0. Official
+release qualification and the bit-12 rollout decision are still pending. The
+native-RVN witness-v2 implementation
+includes consensus, wallet, signing, policy, address encoding, and ML-DSA-44
+integration. Mainnet bit 12 activation requires miner signaling and a
+coordinated upgrade of miners, pools, full nodes, exchanges, and other
+validating services. At activation, the block-weight limit rises from 8 to
+12 MWU with the PQ witness discount, then to 16 MWU after a nominal year of
+blocks. Core 4.8.0 can reject blocks allowed by the new rule.
+
+The separate bit 13 rule protects new asset and owner-token outputs after
+activation. A spend requires an ML-DSA signature from a matching native RVN
+witness-v2 input, without an ECDSA signature on the asset input. Assets and
+owner tokens created earlier retain their classical spending condition until
+their owners migrate them voluntarily. Activation does not protect historical
+holdings retroactively, and it does not globally disable classical signatures.
+Some protected asset spends consume their matching RVN anchor; a later spend
+may need the owner to fund the matching PQ address again. Raw transaction
+funding does not select that anchor automatically.
+
+Release qualification and the remaining operator decisions are tracked in
+the [security remediation register](doc/RIP-0025-v4.8-security-remediation-register.md)
+and [4.8.1 release notes](doc/release-notes/release-notes-4.8.1.md).
+FINDING-067 remains open for the bit 12 rollout decision and release steps.
+The CI packages are unsigned. Native Windows and macOS GUI exercise is
+assigned to community testing after publication; cross-platform builds and
+package checks do not establish native GUI behavior.
+
+For the full specification see [`doc/RIP-0025-PQ-Signatures.md`](doc/RIP-0025-PQ-Signatures.md).
+
+---
+
 To see how to run Ravencoin, please read the respective files in [the doc folder](doc)
 
 
@@ -101,4 +193,3 @@ Bitcoin is and always should be focused on its goals of being a better form of m
 In the new global economy, borders and jurisdictions will be less relevant as more assets are tradable and trade across borders is increasingly frictionless. In an age where people can move significant amounts of wealth instantly using Bitcoin, global consumers will likely demand the same efficiency for their securities and similar asset holdings.
 
 For such a global system to work it will need to be independent of regulatory jurisdictions.  This is not due to ideological belief but practicality: if the rails for blockchain asset transfer are not censorship resistance and jurisdiction agnostic, any given jurisdiction may be in conflict with another.  In legacy systems, wealth was generally confined in the jurisdiction of the holder and therefore easy to control based on the policies of that jurisdiction. Because of the global nature of blockchain technology any protocol level ability to control wealth would potentially place jurisdictions in conflict and will not be able to operate fairly.  
-
