@@ -127,7 +127,7 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey, bool& 
         }
 
         case TX_WITNESS_V2_PQ_KEYHASH: {
-            // RIP-25: PQ witness v2 — check if we have the ML-DSA key for this witness program
+            // RIP-25: PQ witness v2: check if we have the ML-DSA key for this witness program
             if (vSolutions[0].size() == 32) {
                 uint256 wp;
                 memcpy(wp.begin(), vSolutions[0].data(), 32);

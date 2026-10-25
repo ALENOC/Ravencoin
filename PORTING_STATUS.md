@@ -1,13 +1,9 @@
-# RIP-25 / Ravencoin Core 4.8.0 integration
+# RIP-25 Core 4.8.1 candidate status
 
-This branch is the working integration line for rebasing RIP-25 on the Ravencoin Core 4.8.0 security baseline.
+The current native-RVN and asset PQ candidate is maintained in [ALENOC/Ravencoin PR #14](https://github.com/ALENOC/Ravencoin/pull/14). [RavenProject PR #1330](https://github.com/RavenProject/Ravencoin/pull/1330) proposes the code against official master. The original [RavenProject PR #1281](https://github.com/RavenProject/Ravencoin/pull/1281) remains a historical native-RVN proposal with its published branch unchanged.
 
-Baseline: `b60f50e04f1fba425b28804e61be2694faaf3469`.
+The candidate preserves the Core 4.8.0 security baseline, including the KAWPOW header-height check and the transfer overflow rule on version bit 11. Native-RVN ML-DSA-44 signaling uses bit 12. The separate asset and owner-token rule uses bit 13 after its prerequisites. New protected asset outputs require a matching ML-DSA-signed native RVN witness-v2 input when spent; historical outputs remain classically spendable until voluntarily migrated.
 
-Required consensus merge:
-- preserve `DEPLOYMENT_TRANSFER_OVERFLOW` on BIP9 bit 11;
-- move `DEPLOYMENT_PQ_HYBRID` from bit 11 to bit 12;
-- preserve `nHeightHeaderCheckActivation = 4487776` and the 4.8.0 checkpoint/security logic;
-- preserve all RIP-25 witness-v2 / ML-DSA-44 functionality.
+Bit 12 raises the block-weight limit from 8 to 12 MWU at activation with a PQ witness discount, then to 16 MWU after a nominal year of blocks. This needs a coordinated validator upgrade because Core 4.8.0 can reject larger blocks. The exact build and test status, known limitations, and all finding dispositions are in [the RIP-25 v4.8 security remediation register](doc/RIP-0025-v4.8-security-remediation-register.md).
 
-The original PR branch `feature/rip25-pq-hybrid` is intentionally left unchanged while this integration is validated.
+FINDING-067 remains HIGH and OPEN for operator readiness, the bit-12 go/no-go decision, and final 4.8.1 release steps. An unsigned RC pre-release is for controlled evaluation. Native Windows and macOS GUI testing is assigned to community testing after publication.

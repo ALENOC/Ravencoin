@@ -69,6 +69,24 @@ class Rip25ReleaseContractTests(unittest.TestCase):
         artifact_workflow = (ROOT / ".github/workflows/build-raven.yml").read_text(encoding="utf-8")
         self.assertRegex(artifact_workflow, r"(?m)^  verify-artifacts:$")
         self.assertRegex(artifact_workflow, r"(?m)^    needs: build$")
+    def test_staging_documents_defer_to_current_register(self):
+        for name in ("SECURITY_AUDIT_RIP25_V48.md", "PORTING_STATUS.md"):
+            document = (ROOT / name).read_text(encoding="utf-8")
+            self.assertIn("doc/RIP-0025-v4.8-security-remediation-register.md", document)
+            self.assertIn("FINDING-067", document)
+            self.assertFalse("NOT READY FOR UPSTREAM PR UPDATE" in document or
+                             "FINAL CONSENSUS MERGE BLOCKER" in document,
+                             name + " contains obsolete blocker status")
+            self.assertFalse("\u2014" in document or "\u2013" in document,
+                             name + " contains typographic dashes")
+
+    def test_rip25_source_comments_use_plain_punctuation(self):
+        for name in ("src/base58.cpp", "src/script/interpreter.cpp",
+                     "src/script/ismine.cpp", "src/script/sign.cpp",
+                     "src/script/standard.h"):
+            source = (ROOT / name).read_text(encoding="utf-8")
+            self.assertFalse("\u2014" in source or "\u2013" in source,
+                             name + " contains typographic dashes")
 
     def test_mining_template_source_contract(self):
         miner = (ROOT / "src/miner.cpp").read_text(encoding="utf-8")
