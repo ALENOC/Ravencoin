@@ -219,6 +219,21 @@ source archive, Windows installer program code, and 23 macOS DMG app
 entries. These runs precede this documentation change and are prior
 evidence, not qualification of a later tag commit.
 
+A later exact-source checkpoint at `83b2f1709` passed Build Raven
+`40119099375` and RIP-25 v4.8 Final Gate `40119101545`. Both required
+security jobs passed `make check`, seven source mutations, and all 38
+required functional tests. All five release targets, the aggregate
+downloaded-bundle verifier, and all seven Final Gate builds passed.
+Independent review of the five bundles confirmed checksums, source
+provenance, target formats, Windows installer code, and all 23 macOS DMG
+app entries. The downloaded Linux package passed node-only Qt startup
+and Options interaction after extraction. The common source archive
+SHA-256 was
+`bfe7dcd5f782de2fe9ee6cf45b7c690a12fed99b4b7aa13423700732ccc94552`.
+The packages from this checkpoint are unsigned. This later README and
+release-notes update also changes the source SHA, so its exact tag commit
+requires fresh qualification.
+
 The release process requires `make check`, paired green Build Raven and
 Final Gate runs, pinned-Qt Linux checks, and independent review of all five
 packages at the exact tag commit. Record those run IDs, the immutable

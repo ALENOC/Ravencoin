@@ -61,9 +61,34 @@ cd .. && ./autogen.sh
 make -j$(nproc)
 ```
 
-### Status
+### 4.8.1 candidate status
 
-The native-RVN witness-v2 implementation includes consensus rules, script validation, policy, network, wallet, signing, address encoding, and ML-DSA-44 integration. This statement does not cover Ravencoin asset ownership, which remains legacy-only pending a separate protocol extension.
+This fork contains a Core 4.8.1 candidate based on Core 4.8.0. It is not an
+official RavenProject release. The native-RVN witness-v2 implementation
+includes consensus, wallet, signing, policy, address encoding, and ML-DSA-44
+integration. Mainnet bit 12 activation requires miner signaling and a
+coordinated upgrade of miners, pools, full nodes, exchanges, and other
+validating services. At activation, the block-weight limit rises from 8 to
+12 MWU with the PQ witness discount, then to 16 MWU after a nominal year of
+blocks. Core 4.8.0 can reject blocks allowed by the new rule.
+
+The separate bit 13 rule protects new asset and owner-token outputs after
+activation. A spend requires an ML-DSA signature from a matching native RVN
+witness-v2 input, without an ECDSA signature on the asset input. Assets and
+owner tokens created earlier retain their classical spending condition until
+their owners migrate them voluntarily. Activation does not protect historical
+holdings retroactively, and it does not globally disable classical signatures.
+Some protected asset spends consume their matching RVN anchor; a later spend
+may need the owner to fund the matching PQ address again. Raw transaction
+funding does not select that anchor automatically.
+
+Release qualification and the remaining operator decisions are tracked in
+the [security remediation register](doc/RIP-0025-v4.8-security-remediation-register.md)
+and [4.8.1 release notes](doc/release-notes/release-notes-4.8.1.md).
+FINDING-067 remains open for the bit 12 rollout decision and release steps.
+The CI packages are unsigned. Native Windows and macOS GUI exercise is
+assigned to community testing after publication; cross-platform builds and
+package checks do not establish native GUI behavior.
 
 For the full specification see [`doc/RIP-0025-PQ-Signatures.md`](doc/RIP-0025-PQ-Signatures.md).
 

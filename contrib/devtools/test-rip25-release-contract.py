@@ -9,6 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 NOTES = ROOT / "doc/release-notes/release-notes-4.8.1.md"
 PROCESS = ROOT / "doc/release-process.md"
+README = ROOT / "README.md"
 
 
 def section(text, heading):
@@ -33,6 +34,23 @@ class Rip25ReleaseContractTests(unittest.TestCase):
     def setUpClass(cls):
         cls.notes = NOTES.read_text(encoding="utf-8")
         cls.process = PROCESS.read_text(encoding="utf-8")
+        cls.readme = README.read_text(encoding="utf-8")
+
+    def test_readme_describes_asset_custody_and_release_limits(self):
+        status = section(self.readme, "4\\.8\\.1 candidate status")
+        require_paragraph(self, status, "new PQ asset custody",
+                          r"bit 13", r"asset", r"owner.token",
+                          r"ML-DSA", r"matching.*witness-v2",
+                          r"without.*ECDSA")
+        require_paragraph(self, status, "voluntary historical migration",
+                          r"historical", r"classical", r"migrat",
+                          r"voluntar")
+        require_paragraph(self, status, "incompatible block-weight rollout",
+                          r"8 to", r"12 MWU", r"16 MWU",
+                          r"Core 4\.8\.0", r"reject")
+        self.assertRegex(status, r"FINDING-067 remains open")
+        self.assertRegex(status, r"CI packages are unsigned")
+        self.assertRegex(status, r"Native Windows and macOS GUI exercise")
 
     def test_mining_template_source_contract(self):
         miner = (ROOT / "src/miner.cpp").read_text(encoding="utf-8")
