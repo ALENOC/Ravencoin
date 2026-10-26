@@ -1830,11 +1830,21 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
                         // happens the coins database is left ahead of the block index and has
                         // to be rebuilt rather than treated as corruption.
                         bool fCoinsAheadOfIndex;
+                        bool fInvalidIndexedTip;
                         {
                             LOCK(cs_main);
-                            fCoinsAheadOfIndex = !mapBlockIndex.count(pcoinsTip->GetBestBlock());
+                            const auto tip = mapBlockIndex.find(pcoinsTip->GetBestBlock());
+                            fInvalidIndexedTip = tip != mapBlockIndex.end() &&
+                                (tip->second->nStatus & BLOCK_FAILED_MASK);
+                            fCoinsAheadOfIndex = tip == mapBlockIndex.end() || fInvalidIndexedTip;
                         }
                         if (fCoinsAheadOfIndex) {
+                            if (fInvalidIndexedTip) {
+                                return InitError(_("The coins database references an invalid block. Retain the data directory and rebuild the block index and chainstate from verified block data before restarting."));
+                            }
+                            if (fHavePruned) {
+                                return InitError(_("The coins database references an unknown block and this pruned chainstate cannot be rebuilt safely. Retain the data directory and redownload the blockchain."));
+                            }
                             LogPrintf("Coins database is ahead of the block index, rebuilding chainstate\n");
                             fRetryWithChainStateRebuild = true;
                         }
