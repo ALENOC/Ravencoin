@@ -614,7 +614,12 @@ require_fixed 'vDeployments[Consensus::DEPLOYMENT_TRANSFER_OVERFLOW].bit = 11' s
 require_fixed 'bad-txns-input-asset-totalInputs-toolarge' src/consensus/tx_verify.cpp 'asset input overflow protection missing'
 require_fixed 'bad-txns-transfer-asset-totalOutputs-toolarge' src/consensus/tx_verify.cpp 'asset output overflow protection missing'
 require_fixed 'fRetryWithChainStateRebuild' src/init.cpp 'chainstate-ahead automatic rebuild handling missing'
-require_fixed 'fCoinsAheadOfIndex = !mapBlockIndex.count(pcoinsTip->GetBestBlock())' src/init.cpp 'chainstate-ahead detection missing'
+chainstate_recovery="$(sed -n '/^[[:space:]]*if (!LoadChainTip(chainparams)) {/,/^[[:space:]]*strLoadError = _("Error initializing block database");/p' src/init.cpp | sed 's/^[[:space:]]*//')"
+[[ "$chainstate_recovery" == *$'LOCK(cs_main);\nconst auto tip = mapBlockIndex.find(pcoinsTip->GetBestBlock());\nfInvalidIndexedTip = tip != mapBlockIndex.end() &&\n(tip->second->nStatus & BLOCK_FAILED_MASK);\nfCoinsAheadOfIndex = tip == mapBlockIndex.end() || fInvalidIndexedTip;'* ]] || fail 'chainstate-ahead detection omits invalid indexed tips'
+chainstate_ahead_guard="$(sed -n '/^if (fCoinsAheadOfIndex) {/,/^fRetryWithChainStateRebuild = true;/p' <<<"$chainstate_recovery")"
+[[ "$chainstate_ahead_guard" == *$'if (fInvalidIndexedTip) {\nreturn InitError(_("The coins database references an invalid block.'* ]] || fail 'invalid indexed chainstate tip does not fail closed'
+[[ "$chainstate_ahead_guard" == *$'if (fHavePruned) {\nreturn InitError(_("The coins database references an unknown block '* ]] || fail 'pruned unknown chainstate tip does not fail closed'
+require_text "$chainstate_ahead_guard" 'fRetryWithChainStateRebuild = true;' 'chainstate-ahead automatic rebuild handling missing'
 require_fixed 'passetsdb = new CAssetsDB(nBlockTreeDBCache, false, fReset || fReindexChainState)' src/init.cpp 'asset DB is not wiped on chainstate rebuild'
 require_fixed 'prestricteddb = new CRestrictedDB(nBlockTreeDBCache, false, fReset || fReindexChainState)' src/init.cpp 'restricted-asset DB is not wiped on chainstate rebuild'
 require_fixed "'feature_chainstate_ahead.py'" test/functional/test_runner.py 'chainstate-ahead restart regression is not registered'
