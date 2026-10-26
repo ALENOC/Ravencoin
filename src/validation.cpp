@@ -4316,6 +4316,8 @@ static CBlockIndex* AddToBlockIndex(const CBlockHeader& block)
     {
         pindexNew->pprev = (*miPrev).second;
         pindexNew->nHeight = pindexNew->pprev->nHeight + 1;
+        if (block.nTime >= nKAWPOWActivationTime && block.nHeight != static_cast<uint32_t>(pindexNew->nHeight))
+            pindexNew->nStatus |= BLOCK_HAVE_DECLARED_HEIGHT;
         pindexNew->BuildSkip();
     }
     pindexNew->nTimeMax = (pindexNew->pprev ? std::max(pindexNew->pprev->nTimeMax, pindexNew->nTime) : pindexNew->nTime);
@@ -4468,16 +4470,50 @@ static bool FindUndoPos(CValidationState &state, int nFile, CDiskBlockPos &pos, 
 
 static bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true)
 {
-    // If we are checking a KAWPOW block below a know checkpoint height. We can validate the proof of work using the mix_hash
+    bool checkpointAncestor = false;
     if (fCheckPOW && block.nTime >= nKAWPOWActivationTime) {
-        CBlockIndex* pcheckpoint = Checkpoints::GetLastCheckpoint(GetParams().Checkpoints());
-        if (fCheckPOW && pcheckpoint && block.nHeight <= (uint32_t)pcheckpoint->nHeight) {
-           if (!CheckProofOfWork(block.GetHash(), block.nBits, consensusParams)) {
-               return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed with mix_hash only check");
-           }
-
-           return true;
+        const uint256 hash = block.GetHash();
+        int actualHeight = -1;
+        {
+            LOCK(cs_main);
+            const auto parent = mapBlockIndex.find(block.hashPrevBlock);
+            if (parent != mapBlockIndex.end())
+                actualHeight = parent->second->nHeight + 1;
+            if (fCheckpointsEnabled) {
+                const CBlockIndex* checkpoint = Checkpoints::GetLastCheckpoint(GetParams().Checkpoints());
+                if (checkpoint) {
+                    // ContextualCheckBlockHeader rejects these forks too. Do
+                    // the cheap check before an invalid header creates a DAG.
+                    if (actualHeight >= 0 && actualHeight < checkpoint->nHeight) {
+                        const CBlockIndex* ancestor = checkpoint->GetAncestor(actualHeight);
+                        if (!ancestor || ancestor->GetBlockHash() != hash)
+                            return state.DoS(100, false, REJECT_CHECKPOINT, "bad-fork-prior-to-checkpoint");
+                    }
+                    const auto indexed = mapBlockIndex.find(hash);
+                    if (indexed != mapBlockIndex.end()) {
+                        const CBlockIndex* candidate = indexed->second;
+                        checkpointAncestor = candidate->nHeight <= checkpoint->nHeight &&
+                            checkpoint->GetAncestor(candidate->nHeight) == candidate;
+                    }
+                }
+            }
         }
+        // The existing 4.8.0 height rule can be checked before creating a
+        // KAWPOW epoch context for an attacker-controlled declared height.
+        if (actualHeight >= consensusParams.nHeightHeaderCheckActivation &&
+            block.nHeight != static_cast<uint32_t>(actualHeight)) {
+            return state.DoS(100, false, REJECT_INVALID, "bad-blk-height");
+        }
+    }
+
+    // Only an indexed ancestor of an enabled checkpoint may use the
+    // mix_hash-only shortcut. Merely claiming an older height is insufficient:
+    // a fork or a header saved by an older node must prove full KAWPOW work.
+    if (checkpointAncestor) {
+        if (!CheckProofOfWork(block.GetHash(), block.nBits, consensusParams)) {
+            return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed with mix_hash only check");
+        }
+        return true;
     }
 
     uint256 mix_hash;
@@ -4849,9 +4885,6 @@ static bool AcceptBlockHeader(const CBlockHeader& block, CValidationState& state
             return true;
         }
 
-        if (!CheckBlockHeader(block, state, chainparams.GetConsensus()))
-            return error("%s: Consensus::CheckBlockHeader: %s, %s", __func__, hash.ToString(), FormatStateMessage(state));
-
         // Get prev block index
         CBlockIndex* pindexPrev = nullptr;
         BlockMap::iterator mi = mapBlockIndex.find(block.hashPrevBlock);
@@ -4860,6 +4893,10 @@ static bool AcceptBlockHeader(const CBlockHeader& block, CValidationState& state
         pindexPrev = (*mi).second;
         if (pindexPrev->nStatus & BLOCK_FAILED_MASK)
             return state.DoS(100, error("%s: prev block invalid", __func__), REJECT_INVALID, "bad-prevblk");
+
+        if (!CheckBlockHeader(block, state, chainparams.GetConsensus()))
+            return error("%s: Consensus::CheckBlockHeader: %s, %s", __func__, hash.ToString(), FormatStateMessage(state));
+
         if (!ContextualCheckBlockHeader(block, state, chainparams, pindexPrev, GetAdjustedTime()))
             return error("%s: Consensus::ContextualCheckBlockHeader: %s, %s", __func__, hash.ToString(), FormatStateMessage(state));
 
@@ -5005,9 +5042,19 @@ bool ProcessNewBlock(const CChainParams& chainparams, const std::shared_ptr<cons
         if (fNewBlock) *fNewBlock = false;
         CValidationState state;
 
+        // Reject an orphan KAWPOW block before its declared height can cause
+        // the full proof check to create an unbounded epoch context.
+        bool ret = true;
+        if (pblock->nTime >= nKAWPOWActivationTime) {
+            LOCK(cs_main);
+            if (mapBlockIndex.find(pblock->hashPrevBlock) == mapBlockIndex.end())
+                ret = state.DoS(10, false, 0, "prev-blk-not-found");
+        }
+
         // Ensure that CheckBlock() passes before calling AcceptBlock, as
         // belt-and-suspenders.
-        bool ret = CheckBlock(*pblock, state, chainparams.GetConsensus(), true, true);
+        if (ret)
+            ret = CheckBlock(*pblock, state, chainparams.GetConsensus(), true, true);
 
         LOCK(cs_main);
 
@@ -5316,6 +5363,23 @@ bool static LoadBlockIndexDB(const CChainParams& chainparams)
     }
 
     // Calculate nChainWork
+    // Earlier releases trusted the mix_hash of any header that claimed a
+    // height no greater than the last indexed checkpoint. Audit saved forks
+    // before they can become candidates or the best header on restart. The
+    // checkpoint's exact ancestors need only the existing cheap target check.
+    const CBlockIndex* checkpoint = Checkpoints::GetLastCheckpoint(chainparams.Checkpoints());
+    const auto& checkpointMap = chainparams.Checkpoints().mapCheckpoints;
+    const int shortcutHeight = checkpointMap.empty() ? -1 : checkpointMap.rbegin()->first;
+    std::vector<const CBlockIndex*> checkpointAncestors;
+    if (fCheckpointsEnabled && checkpoint) {
+        checkpointAncestors.resize(checkpoint->nHeight + 1, nullptr);
+        for (const CBlockIndex* ancestor = checkpoint; ancestor; ancestor = ancestor->pprev) {
+            if (ancestor->nHeight < 0 || ancestor->nHeight >= static_cast<int>(checkpointAncestors.size()))
+                break;
+            checkpointAncestors[ancestor->nHeight] = ancestor;
+        }
+    }
+
     std::vector<std::pair<int, CBlockIndex*> > vSortedByHeight;
     vSortedByHeight.reserve(mapBlockIndex.size());
     for (const std::pair<uint256, CBlockIndex*>& item : mapBlockIndex)
@@ -5346,6 +5410,21 @@ bool static LoadBlockIndexDB(const CChainParams& chainparams)
         if (!(pindex->nStatus & BLOCK_FAILED_MASK) && pindex->pprev && (pindex->pprev->nStatus & BLOCK_FAILED_MASK)) {
             pindex->nStatus |= BLOCK_FAILED_CHILD;
             setDirtyBlockIndex.insert(pindex);
+        }
+        if (!(pindex->nStatus & BLOCK_FAILED_MASK) &&
+            pindex->nTime >= nKAWPOWActivationTime && pindex->nHeight <= shortcutHeight &&
+            (pindex->nHeight < 0 || pindex->nHeight >= static_cast<int>(checkpointAncestors.size()) ||
+             checkpointAncestors[pindex->nHeight] != pindex)) {
+            const CBlockHeader header = pindex->GetBlockHeader();
+            uint256 computedMixHash;
+            if (!CheckProofOfWork(header.GetHashFull(computedMixHash), header.nBits, chainparams.GetConsensus()) ||
+                computedMixHash != header.mix_hash) {
+                pindex->nStatus |= BLOCK_FAILED_VALID;
+                g_failed_blocks.insert(pindex);
+                setDirtyBlockIndex.insert(pindex);
+                LogPrintf("LoadBlockIndexDB(): rejected saved KAWPOW header at height %d: %s\n",
+                          pindex->nHeight, pindex->GetBlockHash().ToString());
+            }
         }
         if (pindex->IsValid(BLOCK_VALID_TRANSACTIONS) && (pindex->nChainTx || pindex->pprev == nullptr))
             setBlockIndexCandidates.insert(pindex);
@@ -5425,7 +5504,8 @@ bool static LoadBlockIndexDB(const CChainParams& chainparams)
 
 bool LoadChainTip(const CChainParams& chainparams)
 {
-    if (chainActive.Tip() && chainActive.Tip()->GetBlockHash() == pcoinsTip->GetBestBlock()) return true;
+    if (chainActive.Tip() && chainActive.Tip()->GetBlockHash() == pcoinsTip->GetBestBlock() &&
+        !(chainActive.Tip()->nStatus & BLOCK_FAILED_MASK)) return true;
 
     if (pcoinsTip->GetBestBlock().IsNull() && mapBlockIndex.size() == 1) {
         // In case we just added the genesis block, connect it now, so
@@ -5439,7 +5519,7 @@ bool LoadChainTip(const CChainParams& chainparams)
 
     // Load pointer to end of best chain
     BlockMap::iterator it = mapBlockIndex.find(pcoinsTip->GetBestBlock());
-    if (it == mapBlockIndex.end())
+    if (it == mapBlockIndex.end() || it->second->nStatus & BLOCK_FAILED_MASK)
         return false;
     chainActive.SetTip(it->second);
 
