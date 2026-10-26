@@ -12,6 +12,8 @@
 
 #include <crypto/ethash/include/ethash/progpow.hpp>
 
+#include <limits>
+
 //TODO remove these
 double algoHashTotal[16];
 int algoHashHits[16];
@@ -255,15 +257,50 @@ uint64_t SipHashUint256Extra(uint64_t k0, uint64_t k1, const uint256& val, uint3
     return v0 ^ v1 ^ v2 ^ v3;
 }
 
+bool IsKAWPOWContextWithinLocalBudget(uint32_t blockHeight)
+{
+    // The bundled verifier accepts signed block numbers and calculates both
+    // cache and dataset item counts with signed int arithmetic. Check those
+    // bounds before entering it, even though only the light cache is allocated.
+    if (blockHeight > static_cast<uint32_t>(std::numeric_limits<int>::max()))
+        return false;
+
+    const uint64_t epoch = static_cast<uint64_t>(blockHeight) / ethash::epoch_length;
+    const uint64_t fullDatasetItems =
+        ((uint64_t{1} << 30) + epoch * (uint64_t{1} << 23)) / ethash::full_dataset_item_size;
+    if (fullDatasetItems > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+        return false;
+
+    const uint64_t lightCacheBytes = (uint64_t{1} << 24) + epoch * (uint64_t{1} << 17);
+    const uint64_t allocationBytes = sizeof(ethash::hash512) + lightCacheBytes + progpow::l1_cache_size;
+
+    // An operator may raise this local memory budget to verify an exceptional
+    // historical header. Exceeding it must never mark a header invalid.
+    const int64_t maxContextMiB = gArgs.GetArg("-maxkawpowcontextmb", DEFAULT_MAX_KAWPOW_CONTEXT_MIB);
+    constexpr uint64_t mebibyte = uint64_t{1} << 20;
+    if (maxContextMiB <= 0 || static_cast<uint64_t>(maxContextMiB) >
+                                  std::numeric_limits<uint64_t>::max() / mebibyte)
+        return false;
+    return allocationBytes <= static_cast<uint64_t>(maxContextMiB) * mebibyte;
+}
+
 uint256 KAWPOWHash(const CBlockHeader& blockHeader, uint256& mix_hash)
 {
     static thread_local ethash::epoch_context_ptr context{nullptr, nullptr};
 
+    if (!IsKAWPOWContextWithinLocalBudget(blockHeader.nHeight))
+        throw KAWPOWResourceError("kawpow-context-unsupported");
+
     // Get the context from the block height
     const auto epoch_number = ethash::get_epoch_number(blockHeader.nHeight);
 
-    if (!context || context->epoch_number != epoch_number)
-        context = ethash::create_epoch_context(epoch_number);
+    if (!context || context->epoch_number != epoch_number) {
+        context.reset();
+        auto nextContext = ethash::create_epoch_context(epoch_number);
+        if (!nextContext)
+            throw KAWPOWResourceError("kawpow-context-allocation-failed");
+        context = std::move(nextContext);
+    }
 
     // Build the header_hash
     uint256 nHeaderHash = blockHeader.GetKAWPOWHeaderHash();
@@ -288,7 +325,5 @@ uint256 KAWPOWHash_OnlyMix(const CBlockHeader& blockHeader)
 
     return uint256S(to_hex(result));
 }
-
-
 
 
