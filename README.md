@@ -88,9 +88,19 @@ the [security remediation register](doc/RIP-0025-v4.8-security-remediation-regis
 and [4.8.1 release notes](doc/release-notes/release-notes-4.8.1.md).
 FINDING-067 remains open for the bit 12 rollout decision and release steps.
 The KAWPOW checkpoint and concurrent hashing corrections are recorded as
-FINDING-195 and FINDING-196. Their new exact-head CI and artifact review
-remain due. FINDING-197, covering extreme declared KAWPOW heights before
-the historical height rule activates, remains open for the go/no-go review.
+FINDING-195 and FINDING-196. The official PR checkpoint `c63cad804`
+passed its exact-SHA CI pair and independent five-package review.
+FINDING-197, covering extreme declared KAWPOW heights before the
+historical height rule activates, remains open for the go/no-go review.
+The verifier now treats a context beyond its local memory budget as a
+resource error, without marking the header invalid or penalizing its peer.
+The default budget is 256 MiB per context and can be changed with
+`-maxkawpowcontextmb`. A valid historical header above that local limit
+still requires a higher budget to sync; this is not a consensus rule.
+The [mainnet declared-height scanner](contrib/devtools/kawpow-declared-height-scan.py)
+must be run against a validated canonical chain before the historical
+resource limit can be assessed. Correct-difficulty headers still need a
+repeatable-work review.
 The CI packages are unsigned. Native Windows and macOS GUI exercise is
 assigned to community testing after publication; cross-platform builds and
 package checks do not establish native GUI behavior.

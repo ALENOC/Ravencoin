@@ -4518,8 +4518,15 @@ static bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state,
 
     uint256 mix_hash;
     // Check proof of work matches claimed amount
-    if (fCheckPOW && !CheckProofOfWork(block.GetHashFull(mix_hash), block.nBits, consensusParams)) {
-        return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed");
+    if (fCheckPOW) {
+        uint256 fullHash;
+        try {
+            fullHash = block.GetHashFull(mix_hash);
+        } catch (const KAWPOWResourceError& e) {
+            return state.Error(e.what());
+        }
+        if (!CheckProofOfWork(fullHash, block.nBits, consensusParams))
+            return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed");
     }
 
     if (fCheckPOW && block.nTime >= nKAWPOWActivationTime) {
@@ -4893,6 +4900,11 @@ static bool AcceptBlockHeader(const CBlockHeader& block, CValidationState& state
         pindexPrev = (*mi).second;
         if (pindexPrev->nStatus & BLOCK_FAILED_MASK)
             return state.DoS(100, error("%s: prev block invalid", __func__), REJECT_INVALID, "bad-prevblk");
+
+        // Reject an incorrect KAWPOW target before building its epoch context.
+        if (block.nTime >= nKAWPOWActivationTime &&
+            block.nBits != GetNextWorkRequired(pindexPrev, &block, chainparams.GetConsensus()))
+            return state.DoS(100, false, REJECT_INVALID, "bad-diffbits", false, "incorrect proof of work");
 
         if (!CheckBlockHeader(block, state, chainparams.GetConsensus()))
             return error("%s: Consensus::CheckBlockHeader: %s, %s", __func__, hash.ToString(), FormatStateMessage(state));
@@ -5417,7 +5429,14 @@ bool static LoadBlockIndexDB(const CChainParams& chainparams)
              checkpointAncestors[pindex->nHeight] != pindex)) {
             const CBlockHeader header = pindex->GetBlockHeader();
             uint256 computedMixHash;
-            if (!CheckProofOfWork(header.GetHashFull(computedMixHash), header.nBits, chainparams.GetConsensus()) ||
+            uint256 fullHash;
+            try {
+                fullHash = header.GetHashFull(computedMixHash);
+            } catch (const KAWPOWResourceError& e) {
+                return error("LoadBlockIndexDB(): unable to verify saved KAWPOW header at height %d: %s",
+                             pindex->nHeight, e.what());
+            }
+            if (!CheckProofOfWork(fullHash, header.nBits, chainparams.GetConsensus()) ||
                 computedMixHash != header.mix_hash) {
                 pindex->nStatus |= BLOCK_FAILED_VALID;
                 g_failed_blocks.insert(pindex);

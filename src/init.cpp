@@ -19,6 +19,7 @@
 #include "consensus/validation.h"
 #include "crypto/mldsa.h"
 #include "fs.h"
+#include "hash.h"
 #include "httpserver.h"
 #include "httprpc.h"
 #include "key.h"
@@ -448,6 +449,7 @@ std::string HelpMessage(HelpMessageMode mode)
         strUsage += HelpMessageOpt("-dbbatchsize", strprintf("Maximum database write batch size in bytes (default: %u)", nDefaultDbBatchSize));
     }
     strUsage += HelpMessageOpt("-dbcache=<n>", strprintf(_("Set database cache size in megabytes (%d to %d, default: %d)"), nMinDbCache, nMaxDbCache, nDefaultDbCache));
+    strUsage += HelpMessageOpt("-maxkawpowcontextmb=<n>", strprintf(_("Maximum memory in MiB for each KAWPOW verification context (default: %d). This local limit does not make a header invalid."), DEFAULT_MAX_KAWPOW_CONTEXT_MIB));
     strUsage += HelpMessageOpt("-disablemessaging", strprintf(_("Turn off the databasing the messages sent with assets (default: %u)"), false));
     if (showDebug)
         strUsage += HelpMessageOpt("-feefilter", strprintf("Tell other nodes to filter invs to us by our mempool min fee (default: %u)", DEFAULT_FEEFILTER));
