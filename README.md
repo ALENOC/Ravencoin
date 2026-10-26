@@ -86,6 +86,10 @@ Release qualification and the remaining operator decisions are tracked in
 the [security remediation register](doc/RIP-0025-v4.8-security-remediation-register.md)
 and [4.8.1 release notes](doc/release-notes/release-notes-4.8.1.md).
 FINDING-067 remains open for the bit 12 rollout decision and release steps.
+The KAWPOW checkpoint and concurrent hashing corrections are recorded as
+FINDING-195 and FINDING-196. Their new exact-head CI and artifact review
+remain due. FINDING-197, covering extreme declared KAWPOW heights before
+the historical height rule activates, remains open for the go/no-go review.
 The CI packages are unsigned. Native Windows and macOS GUI exercise is
 assigned to community testing after publication; cross-platform builds and
 package checks do not establish native GUI behavior.
