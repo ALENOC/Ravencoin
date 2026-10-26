@@ -259,7 +259,13 @@ budget, default 256 MiB per context, configurable with
 local error instead of invalid proof of work, without a peer penalty or
 persistent failed header. A valid historical header above that budget
 needs a higher operator setting; concurrent context pressure remains a
-resource consideration. FINDING-197 therefore remains open. The
+resource consideration. A later correction checks the already required
+KAWPOW difficulty before building a context; its red-then-green
+regression and local 539-case `make check` passed. Correct-difficulty
+headers can still force repeated context work. A read-only canonical
+mainnet declared-height scanner is included, but its historical result
+is pending a separately validated node replay. FINDING-197 therefore
+remains open. The
 `c63cad804` qualification predates this mitigation; the later source
 needs its own exact-SHA qualification before a release decision. Neither
 qualification authorizes bit-12 activation or a final stable release.

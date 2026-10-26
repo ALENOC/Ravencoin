@@ -96,6 +96,10 @@ resource error, without marking the header invalid or penalizing its peer.
 The default budget is 256 MiB per context and can be changed with
 `-maxkawpowcontextmb`. A valid historical header above that local limit
 still requires a higher budget to sync; this is not a consensus rule.
+The [mainnet declared-height scanner](contrib/devtools/kawpow-declared-height-scan.py)
+must be run against a validated canonical chain before the historical
+resource limit can be assessed. Correct-difficulty headers still need a
+repeatable-work review.
 The CI packages are unsigned. Native Windows and macOS GUI exercise is
 assigned to community testing after publication; cross-platform builds and
 package checks do not establish native GUI behavior.
