@@ -234,6 +234,32 @@ The packages from this checkpoint are unsigned. This later README and
 release-notes update also changes the source SHA, so its exact tag commit
 requires fresh qualification.
 
+The later official PR #1330 checkpoint `c63cad804` includes the KAWPOW
+checkpoint and concurrent epoch-context corrections (FINDING-195 and
+FINDING-196). Its local `make check` passed 535 unit cases. Build Raven
+`40327113350` and Final Gate `40327113034` passed on that exact SHA,
+including their security jobs, all five release targets, the aggregate
+package verifier, and all seven Final Gate variants. A separate download
+review of all five bundles passed source, provenance, manifest,
+target-format, Windows installer, and complete macOS app checks. Their
+common source archive SHA-256 is
+`77665286b6a2a5c0a100ae5342b266d7139e0f3160633ca4a0404d2807b3e6b1`.
+The extracted Linux package passed wallet-disabled Qt startup and
+Options interaction. The unpruned public testnet node reopened its
+existing chain with this binary at height 2,569,434, accepted later
+blocks, and passed `verifychain 4 2016`. The existing RC1 package is
+older and does not contain the KAWPOW corrections. A subsequent
+FINDING-197 mitigation gives KAWPOW verification a local context-memory
+budget, default 256 MiB per context, configurable with
+`-maxkawpowcontextmb`. A budget or allocation failure is reported as a
+local error instead of invalid proof of work, without a peer penalty or
+persistent failed header. A valid historical header above that budget
+needs a higher operator setting; concurrent context pressure remains a
+resource consideration. FINDING-197 therefore remains open. The
+`c63cad804` qualification predates this mitigation; the later source
+needs its own exact-SHA qualification before a release decision. Neither
+qualification authorizes bit-12 activation or a final stable release.
+
 The release process requires `make check`, paired green Build Raven and
 Final Gate runs, pinned-Qt Linux checks, and independent review of all five
 packages at the exact tag commit. Record those run IDs, the immutable
