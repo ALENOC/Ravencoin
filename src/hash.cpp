@@ -257,7 +257,7 @@ uint64_t SipHashUint256Extra(uint64_t k0, uint64_t k1, const uint256& val, uint3
 
 uint256 KAWPOWHash(const CBlockHeader& blockHeader, uint256& mix_hash)
 {
-    static ethash::epoch_context_ptr context{nullptr, nullptr};
+    static thread_local ethash::epoch_context_ptr context{nullptr, nullptr};
 
     // Get the context from the block height
     const auto epoch_number = ethash::get_epoch_number(blockHeader.nHeight);
