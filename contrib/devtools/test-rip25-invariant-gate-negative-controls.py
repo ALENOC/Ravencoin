@@ -34,11 +34,39 @@ class InvariantGateNegativeControls(unittest.TestCase):
     def tearDownClass(cls):
         cls.tempdir.cleanup()
 
-    def run_gate(self):
+    def run_gate(self, fixture=None):
         return subprocess.run(
-            ["bash", str(GATE), "--structural-only"], cwd=self.fixture,
+            ["bash", str(GATE), "--structural-only"], cwd=fixture or self.fixture,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
+
+    def check_init_mutation(self, old, new, failure):
+        with tempfile.TemporaryDirectory(prefix="rip25-chainstate-gate-") as directory:
+            fixture = Path(directory)
+            for entry in ROOT.iterdir():
+                if entry.name == ".git":
+                    continue
+                if entry.name != "src":
+                    (fixture / entry.name).symlink_to(
+                        entry, target_is_directory=entry.is_dir()
+                    )
+                    continue
+                source_dir = fixture / "src"
+                source_dir.mkdir()
+                for source_entry in entry.iterdir():
+                    if source_entry.name != "init.cpp":
+                        (source_dir / source_entry.name).symlink_to(
+                            source_entry, target_is_directory=source_entry.is_dir()
+                        )
+                        continue
+                    original = source_entry.read_text(encoding="utf-8")
+                    self.assertEqual(original.count(old), 1)
+                    (source_dir / "init.cpp").write_text(
+                        original.replace(old, new, 1), encoding="utf-8"
+                    )
+            result = self.run_gate(fixture)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn(failure, result.stderr)
 
     def check_mutation(self, workflow, old, new, occurrence=1):
         path = self.fixture / ".github/workflows" / workflow
@@ -62,6 +90,36 @@ class InvariantGateNegativeControls(unittest.TestCase):
     def test_unmodified_workflows_pass(self):
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_chainstate_recovery_requires_invalid_tip_in_ahead_detection(self):
+        self.check_init_mutation(
+            "fCoinsAheadOfIndex = tip == mapBlockIndex.end() || fInvalidIndexedTip;",
+            "fCoinsAheadOfIndex = tip == mapBlockIndex.end();",
+            "chainstate-ahead detection omits invalid indexed tips",
+        )
+
+    def test_chainstate_recovery_rejects_commented_detection(self):
+        detection = "fCoinsAheadOfIndex = tip == mapBlockIndex.end() || fInvalidIndexedTip;"
+        self.check_init_mutation(
+            detection, "// " + detection,
+            "chainstate-ahead detection omits invalid indexed tips",
+        )
+
+    def test_chainstate_recovery_rejects_invalid_indexed_tip(self):
+        self.check_init_mutation(
+            "if (fInvalidIndexedTip) {",
+            "if (false && fInvalidIndexedTip) {",
+            "invalid indexed chainstate tip does not fail closed",
+        )
+
+    def test_chainstate_recovery_rejects_pruned_unknown_tip(self):
+        self.check_init_mutation(
+            "if (fHavePruned) {\n"
+            "                                return InitError(_(\"The coins database references an unknown block",
+            "if (false && fHavePruned) {\n"
+            "                                return InitError(_(\"The coins database references an unknown block",
+            "pruned unknown chainstate tip does not fail closed",
+        )
 
     def test_build_raven_dependency_is_executable_yaml(self):
         self.check_mutation(
