@@ -236,7 +236,11 @@ requires fresh qualification.
 
 The later official PR #1330 checkpoint `c63cad804` includes the KAWPOW
 checkpoint and concurrent epoch-context corrections (FINDING-195 and
-FINDING-196). Its local `make check` passed 535 unit cases. Build Raven
+FINDING-196). The forged-work shortcut report and regression suggestions
+from [@skareemullah8-a11y in PR #1329](https://github.com/RavenProject/Ravencoin/pull/1329)
+prompted the FINDING-195 review. The correction preserves the inherited
+pre-activation height rule while requiring full work outside exact indexed
+checkpoint ancestry. Its local `make check` passed 535 unit cases. Build Raven
 `40327113350` and Final Gate `40327113034` passed on that exact SHA,
 including their security jobs, all five release targets, the aggregate
 package verifier, and all seven Final Gate variants. A separate download
