@@ -4901,6 +4901,11 @@ static bool AcceptBlockHeader(const CBlockHeader& block, CValidationState& state
         if (pindexPrev->nStatus & BLOCK_FAILED_MASK)
             return state.DoS(100, error("%s: prev block invalid", __func__), REJECT_INVALID, "bad-prevblk");
 
+        // Reject an incorrect KAWPOW target before building its epoch context.
+        if (block.nTime >= nKAWPOWActivationTime &&
+            block.nBits != GetNextWorkRequired(pindexPrev, &block, chainparams.GetConsensus()))
+            return state.DoS(100, false, REJECT_INVALID, "bad-diffbits", false, "incorrect proof of work");
+
         if (!CheckBlockHeader(block, state, chainparams.GetConsensus()))
             return error("%s: Consensus::CheckBlockHeader: %s, %s", __func__, hash.ToString(), FormatStateMessage(state));
 

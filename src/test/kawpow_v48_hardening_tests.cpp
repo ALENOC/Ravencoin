@@ -507,6 +507,23 @@ BOOST_AUTO_TEST_CASE(pre_gate_budget_error_does_not_invalidate_valid_header)
     }
 }
 
+BOOST_AUTO_TEST_CASE(pre_gate_bad_difficulty_precedes_context_allocation)
+{
+    auto& consensus = const_cast<Consensus::Params&>(GetParams().GetConsensus());
+    consensus.nHeightHeaderCheckActivation = 1000;
+    const auto chain = BuildKAWPOWHeaderChain(1);
+    CBlockHeader bad = NextKAWPOWHeader(chain[1], 7500);
+    bad.nBits ^= 1;
+
+    ScopedKAWPOWContextBudget budget("16");
+    CValidationState state;
+    const CBlockIndex* index = nullptr;
+    BOOST_CHECK(!ProcessNewBlockHeaders({bad}, state, GetParams(), &index));
+    BOOST_CHECK(state.IsInvalid());
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-diffbits");
+    BOOST_CHECK(index == nullptr);
+}
+
 BOOST_AUTO_TEST_CASE(unknown_parent_is_rejected_before_full_hash)
 {
     const auto chain = BuildKAWPOWHeaderChain(1);
