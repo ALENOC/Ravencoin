@@ -5054,13 +5054,18 @@ bool ProcessNewBlock(const CChainParams& chainparams, const std::shared_ptr<cons
         if (fNewBlock) *fNewBlock = false;
         CValidationState state;
 
-        // Reject an orphan KAWPOW block before its declared height can cause
-        // the full proof check to create an unbounded epoch context.
+        // Reject an orphan or wrong-difficulty KAWPOW block before the full
+        // proof check can create an epoch context for its declared height.
         bool ret = true;
         if (pblock->nTime >= nKAWPOWActivationTime) {
             LOCK(cs_main);
-            if (mapBlockIndex.find(pblock->hashPrevBlock) == mapBlockIndex.end())
+            const auto prev = mapBlockIndex.find(pblock->hashPrevBlock);
+            if (prev == mapBlockIndex.end())
                 ret = state.DoS(10, false, 0, "prev-blk-not-found");
+            else if (prev->second->nStatus & BLOCK_FAILED_MASK)
+                ret = state.DoS(100, false, REJECT_INVALID, "bad-prevblk");
+            else if (pblock->nBits != GetNextWorkRequired(prev->second, pblock.get(), chainparams.GetConsensus()))
+                ret = state.DoS(100, false, REJECT_INVALID, "bad-diffbits", false, "incorrect proof of work");
         }
 
         // Ensure that CheckBlock() passes before calling AcceptBlock, as
