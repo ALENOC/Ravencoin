@@ -166,14 +166,19 @@ void MineKAWPOWHeader(CBlockHeader& header)
     header.mix_hash = mixHash;
 }
 
+void GrindClaimedKAWPOWTarget(CBlockHeader& header, bool passesTarget)
+{
+    header.mix_hash = ArithToUint256(arith_uint256(1));
+    while (CheckProofOfWork(header.GetHash(), header.nBits,
+                            GetParams().GetConsensus()) != passesTarget) {
+        ++header.nNonce64;
+    }
+}
+
 void ForgeKAWPOWHeader(CBlockHeader& header)
 {
     // Grind the final hash using an invented mix_hash, without performing ProgPoW.
-    header.mix_hash = ArithToUint256(arith_uint256(1));
-    while (!CheckProofOfWork(header.GetHash(), header.nBits,
-                             GetParams().GetConsensus())) {
-        ++header.nNonce64;
-    }
+    GrindClaimedKAWPOWTarget(header, true);
     uint256 actualMixHash;
     header.GetHashFull(actualMixHash);
     BOOST_REQUIRE(actualMixHash != header.mix_hash);
@@ -483,6 +488,7 @@ BOOST_AUTO_TEST_CASE(pre_gate_extreme_declared_height_is_a_local_error)
     consensus.nHeightHeaderCheckActivation = 1000;
     const auto chain = BuildKAWPOWHeaderChain(1);
     CBlockHeader extreme = NextKAWPOWHeader(chain[1], std::numeric_limits<uint32_t>::max());
+    GrindClaimedKAWPOWTarget(extreme, true);
 
     CValidationState state;
     const CBlockIndex* index = nullptr;
@@ -494,6 +500,41 @@ BOOST_AUTO_TEST_CASE(pre_gate_extreme_declared_height_is_a_local_error)
 
     LOCK(cs_main);
     BOOST_CHECK(mapBlockIndex.count(extreme.GetHash()) == 0);
+}
+
+BOOST_AUTO_TEST_CASE(pre_gate_over_target_mix_precedes_context_allocation)
+{
+    auto& consensus = const_cast<Consensus::Params&>(GetParams().GetConsensus());
+    consensus.nHeightHeaderCheckActivation = 1000;
+    const auto chain = BuildKAWPOWHeaderChain(1);
+    CBlockHeader overTarget = NextKAWPOWHeader(chain[1], 7500);
+    GrindClaimedKAWPOWTarget(overTarget, false);
+
+    ScopedKAWPOWContextBudget budget("16");
+    CValidationState state;
+    const CBlockIndex* index = nullptr;
+    BOOST_CHECK(!ProcessNewBlockHeaders({overTarget}, state, GetParams(), &index));
+    BOOST_CHECK(state.IsInvalid());
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "high-hash");
+    BOOST_CHECK(index == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(pre_gate_under_target_mix_still_requires_full_work)
+{
+    auto& consensus = const_cast<Consensus::Params&>(GetParams().GetConsensus());
+    consensus.nHeightHeaderCheckActivation = 1000;
+    const auto chain = BuildKAWPOWHeaderChain(1);
+    CBlockHeader underTarget = NextKAWPOWHeader(chain[1], 7500);
+    GrindClaimedKAWPOWTarget(underTarget, true);
+
+    ScopedKAWPOWContextBudget budget("16");
+    CValidationState state;
+    const CBlockIndex* index = nullptr;
+    BOOST_CHECK(!ProcessNewBlockHeaders({underTarget}, state, GetParams(), &index));
+    BOOST_CHECK(state.IsError());
+    BOOST_CHECK(!state.IsInvalid());
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "kawpow-context-unsupported");
+    BOOST_CHECK(index == nullptr);
 }
 
 BOOST_AUTO_TEST_CASE(pre_gate_budget_error_does_not_invalidate_valid_header)

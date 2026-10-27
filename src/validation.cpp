@@ -4504,15 +4504,19 @@ static bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state,
             block.nHeight != static_cast<uint32_t>(actualHeight)) {
             return state.DoS(100, false, REJECT_INVALID, "bad-blk-height");
         }
+        // A valid full KAWPOW proof has the same final hash when computed
+        // from its claimed mix. Reject an over-target claim before creating
+        // an epoch context, but still verify full work for other headers.
+        if (!CheckProofOfWork(hash, block.nBits, consensusParams)) {
+            return state.DoS(50, false, REJECT_INVALID, "high-hash", false,
+                             "proof of work failed with claimed mix hash");
+        }
     }
 
     // Only an indexed ancestor of an enabled checkpoint may use the
     // mix_hash-only shortcut. Merely claiming an older height is insufficient:
     // a fork or a header saved by an older node must prove full KAWPOW work.
     if (checkpointAncestor) {
-        if (!CheckProofOfWork(block.GetHash(), block.nBits, consensusParams)) {
-            return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed with mix_hash only check");
-        }
         return true;
     }
 
