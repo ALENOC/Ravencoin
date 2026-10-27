@@ -103,6 +103,9 @@ The [mainnet declared-height scanner](contrib/devtools/kawpow-declared-height-sc
 must be run against a validated canonical chain before the historical
 resource limit can be assessed. Correct-difficulty headers still need a
 repeatable-work review.
+FINDING-199 corrects a Windows Final Gate link failure in the
+standalone consensus library. The local library build now passes;
+paired CI on the corrected source is still required.
 The CI packages are unsigned. Native Windows and macOS GUI exercise is
 assigned to community testing after publication; cross-platform builds and
 package checks do not establish native GUI behavior.
