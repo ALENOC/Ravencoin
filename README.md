@@ -94,17 +94,18 @@ historical height rule activates, remains open for the go/no-go review.
 The verifier now treats a context beyond its local memory budget as a
 resource error, without marking the header invalid or penalizing its peer.
 Known-parent headers and complete blocks also reject an incorrect KAWPOW
-difficulty before allocating that context. Correct-difficulty requests can
-still force repeated context work, so FINDING-197 remains open.
+difficulty before allocating that context. Each KAWPOW claim must also
+meet its target before a context is built, and completed proof results
+are remembered, so replaying a header cannot force repeated context work.
 The default budget is 256 MiB per context and can be changed with
 `-maxkawpowcontextmb`. A valid historical header above that local limit
 still requires a higher budget to sync; this is not a consensus rule.
 The [mainnet declared-height scanner](contrib/devtools/kawpow-declared-height-scan.py)
 must be run against a validated canonical chain before the historical
-resource limit can be assessed. Correct-difficulty headers still need a
-repeatable-work review.
+resource limit can be assessed, so FINDING-197 remains open.
 FINDING-199 corrects a Windows Final Gate link failure in the
-standalone consensus library. On official PR head `aa5b128c5`,
+standalone consensus library; ELF builds now reject unresolved symbols
+in that library as well. On official PR head `aa5b128c5`,
 Build Raven `40499782364` and Final Gate `40499782271` both passed,
 including the Windows link. That checkpoint predates the final RC
 documentation refresh and does not qualify a later source SHA.

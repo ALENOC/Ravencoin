@@ -258,8 +258,9 @@ budget, default 256 MiB per context, configurable with
 `-maxkawpowcontextmb`. A budget or allocation failure is reported as a
 local error instead of invalid proof of work, without a peer penalty or
 persistent failed header. A valid historical header above that budget
-needs a higher operator setting; concurrent context pressure remains a
-resource consideration. A later correction checks the already required
+needs a higher operator setting. Peer messages are verified on one
+thread, so peer input can hold at most one context within the budget.
+A later correction checks the already required
 KAWPOW difficulty before building a context on the header path; its
 red-then-green regression and local 539-case `make check` passed. A
 subsequent complete-block regression found a second path that could
@@ -279,8 +280,12 @@ KAWPOW tests, and 540-case `make check` passed. On official PR head
 both passed on the same SHA, including the Windows consensus-library
 link, all five release builds, and required security tests. FINDING-199
 is fixed on that checkpoint. Its five packages have not yet received an
-independent download review. Correct-difficulty headers
-can still force repeated context work. A read-only canonical
+independent download review. Later commits check each KAWPOW claim
+against its target before building a context and remember completed
+proof results, so replaying a header cannot force repeated context
+work. Startup now rejects an invalid `-maxkawpowcontextmb` value, and
+ELF builds reject unresolved symbols in the shared consensus library.
+A read-only canonical
 mainnet declared-height scanner is included, but its historical result
 is pending a separately validated node replay. FINDING-197 therefore
 remains open. The unpruned public testnet node running `aa5b128c5`
