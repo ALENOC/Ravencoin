@@ -267,7 +267,15 @@ still build a context first. The `1fd1b4628` fix checks known-parent
 difficulty before full block hashing. The constrained-budget regression
 changed from a local resource error to `bad-diffbits`, and local
 `make check` passed 540 cases. The invariant gate passed under Python
-3.10 with all 14 required functional tests. Correct-difficulty headers
+3.10 with all 14 required functional tests. Build Raven
+`40455702783` passed all five release targets on the earlier
+`30349977b` upstream head, but Final Gate `40455702781` failed the
+Windows consensus-library link. FINDING-199 traces this to the
+node-only budget option referenced from the standalone library.
+Commit `c4d1b20ad` keeps that option in node builds and uses the
+256 MiB default in the library. The local library link, 17 focused
+KAWPOW tests, and 540-case `make check` passed. Exact-SHA Windows
+Final Gate verification is pending. Correct-difficulty headers
 can still force repeated context work. A read-only canonical
 mainnet declared-height scanner is included, but its historical result
 is pending a separately validated node replay. FINDING-197 therefore
