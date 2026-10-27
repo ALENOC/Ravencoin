@@ -260,9 +260,15 @@ local error instead of invalid proof of work, without a peer penalty or
 persistent failed header. A valid historical header above that budget
 needs a higher operator setting; concurrent context pressure remains a
 resource consideration. A later correction checks the already required
-KAWPOW difficulty before building a context; its red-then-green
-regression and local 539-case `make check` passed. Correct-difficulty
-headers can still force repeated context work. A read-only canonical
+KAWPOW difficulty before building a context on the header path; its
+red-then-green regression and local 539-case `make check` passed. A
+subsequent complete-block regression found a second path that could
+still build a context first. The `1fd1b4628` fix checks known-parent
+difficulty before full block hashing. The constrained-budget regression
+changed from a local resource error to `bad-diffbits`, and local
+`make check` passed 540 cases. The invariant gate passed under Python
+3.10 with all 14 required functional tests. Correct-difficulty headers
+can still force repeated context work. A read-only canonical
 mainnet declared-height scanner is included, but its historical result
 is pending a separately validated node replay. FINDING-197 therefore
 remains open. The
