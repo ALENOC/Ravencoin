@@ -14,6 +14,7 @@
 #include "txdb.h"
 #include "util.h"
 #include "validation.h"
+#include "validationinterface.h"
 #include "versionbits.h"
 
 #include <boost/test/unit_test.hpp>
@@ -38,6 +39,24 @@ struct ScopedKAWPOWContextBudget {
     {
         if (wasSet) gArgs.ForceSetArg("-maxkawpowcontextmb", previous);
         else gArgs.ClearArg("-maxkawpowcontextmb");
+    }
+};
+
+struct BlockCheckResult : public CValidationInterface {
+    int calls = 0;
+    bool invalid = false;
+    bool error = false;
+    std::string reason;
+
+    BlockCheckResult() { RegisterValidationInterface(this); }
+    ~BlockCheckResult() { UnregisterValidationInterface(this); }
+
+    void BlockChecked(const CBlock&, const CValidationState& state) override
+    {
+        ++calls;
+        invalid = state.IsInvalid();
+        error = state.IsError();
+        reason = state.GetRejectReason();
     }
 };
 
@@ -522,6 +541,27 @@ BOOST_AUTO_TEST_CASE(pre_gate_bad_difficulty_precedes_context_allocation)
     BOOST_CHECK(state.IsInvalid());
     BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-diffbits");
     BOOST_CHECK(index == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(pre_gate_full_block_bad_difficulty_precedes_context_allocation)
+{
+    auto& consensus = const_cast<Consensus::Params&>(GetParams().GetConsensus());
+    consensus.nHeightHeaderCheckActivation = 1000;
+    const auto chain = BuildKAWPOWHeaderChain(1);
+    CBlockHeader bad = NextKAWPOWHeader(chain[1], 7500);
+    bad.nBits ^= 1;
+
+    ScopedKAWPOWContextBudget budget("16");
+    BlockCheckResult result;
+    BOOST_CHECK(!ProcessNewBlock(GetParams(), std::make_shared<const CBlock>(bad),
+                                 true, nullptr));
+    BOOST_CHECK_EQUAL(result.calls, 1);
+    BOOST_CHECK(result.invalid);
+    BOOST_CHECK(!result.error);
+    BOOST_CHECK_EQUAL(result.reason, "bad-diffbits");
+
+    LOCK(cs_main);
+    BOOST_CHECK(mapBlockIndex.count(bad.GetHash()) == 0);
 }
 
 BOOST_AUTO_TEST_CASE(unknown_parent_is_rejected_before_full_hash)
