@@ -871,6 +871,14 @@ if test x$use_reduce_exports = xyes; then
     AX_CHECK_LINK_FLAG([[-Wl,--exclude-libs,ALL]], [RELDFLAGS="-Wl,--exclude-libs,ALL"])
 fi
 
+dnl libtool's -no-undefined rejects unresolved symbols only in a Windows DLL.
+dnl Make ELF linkers reject them in the standalone consensus library as well.
+dnl Sanitizer runtimes can leave intended undefined symbols in shared objects.
+case "$CXXFLAGS $LDFLAGS" in
+  *-fsanitize=*) ;;
+  *) AX_CHECK_LINK_FLAG([[-Wl,-z,defs]], [NOUNDEFINED_LDFLAGS="-Wl,-z,defs"]) ;;
+esac
+
 if test x$use_tests = xyes; then
 
   if test x$HEXDUMP = x; then
@@ -1306,6 +1314,7 @@ AC_SUBST(RAVEN_CLI_NAME)
 AC_SUBST(RAVEN_TX_NAME)
 
 AC_SUBST(RELDFLAGS)
+AC_SUBST(NOUNDEFINED_LDFLAGS)
 AC_SUBST(COMPAT_LDFLAGS)
 AC_SUBST(ERROR_CXXFLAGS)
 AC_SUBST(HARDENED_CXXFLAGS)

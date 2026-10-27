@@ -27,18 +27,16 @@
 namespace {
 
 struct ScopedKAWPOWContextBudget {
-    const bool wasSet = gArgs.IsArgSet("-maxkawpowcontextmb");
-    const std::string previous = gArgs.GetArg("-maxkawpowcontextmb", "");
+    const int64_t previous = GetKAWPOWContextBudgetMiB();
 
-    explicit ScopedKAWPOWContextBudget(const std::string& limit)
+    explicit ScopedKAWPOWContextBudget(int64_t limit)
     {
-        gArgs.ForceSetArg("-maxkawpowcontextmb", limit);
+        BOOST_REQUIRE(SetKAWPOWContextBudgetMiB(limit));
     }
 
     ~ScopedKAWPOWContextBudget()
     {
-        if (wasSet) gArgs.ForceSetArg("-maxkawpowcontextmb", previous);
-        else gArgs.ClearArg("-maxkawpowcontextmb");
+        SetKAWPOWContextBudgetMiB(previous);
     }
 };
 
@@ -109,14 +107,25 @@ BOOST_AUTO_TEST_CASE(kawpow_declared_header_height_gate)
 
 BOOST_AUTO_TEST_CASE(kawpow_local_context_budget_boundaries)
 {
-    ScopedKAWPOWContextBudget budget("256");
+    ScopedKAWPOWContextBudget budget(256);
     BOOST_CHECK(IsKAWPOWContextWithinLocalBudget(1919 * 7500));
     BOOST_CHECK(!IsKAWPOWContextWithinLocalBudget(1920 * 7500));
 
-    gArgs.ForceSetArg("-maxkawpowcontextmb", "65536");
+    BOOST_REQUIRE(SetKAWPOWContextBudgetMiB(65536));
     BOOST_CHECK(IsKAWPOWContextWithinLocalBudget(32639 * 7500));
     BOOST_CHECK(!IsKAWPOWContextWithinLocalBudget(32640 * 7500));
     BOOST_CHECK(!IsKAWPOWContextWithinLocalBudget(std::numeric_limits<uint32_t>::max()));
+}
+
+BOOST_AUTO_TEST_CASE(kawpow_context_budget_rejects_unusable_values)
+{
+    ScopedKAWPOWContextBudget budget(64);
+    BOOST_CHECK(!SetKAWPOWContextBudgetMiB(0));
+    BOOST_CHECK(!SetKAWPOWContextBudgetMiB(-1));
+    BOOST_CHECK(!SetKAWPOWContextBudgetMiB(std::numeric_limits<int64_t>::max()));
+    BOOST_CHECK_EQUAL(GetKAWPOWContextBudgetMiB(), 64);
+    BOOST_CHECK(SetKAWPOWContextBudgetMiB(1));
+    BOOST_CHECK_EQUAL(GetKAWPOWContextBudgetMiB(), 1);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -510,7 +519,7 @@ BOOST_AUTO_TEST_CASE(pre_gate_over_target_mix_precedes_context_allocation)
     CBlockHeader overTarget = NextKAWPOWHeader(chain[1], 7500);
     GrindClaimedKAWPOWTarget(overTarget, false);
 
-    ScopedKAWPOWContextBudget budget("16");
+    ScopedKAWPOWContextBudget budget(16);
     CValidationState state;
     const CBlockIndex* index = nullptr;
     BOOST_CHECK(!ProcessNewBlockHeaders({overTarget}, state, GetParams(), &index));
@@ -527,7 +536,7 @@ BOOST_AUTO_TEST_CASE(pre_gate_under_target_mix_still_requires_full_work)
     CBlockHeader underTarget = NextKAWPOWHeader(chain[1], 7500);
     GrindClaimedKAWPOWTarget(underTarget, true);
 
-    ScopedKAWPOWContextBudget budget("16");
+    ScopedKAWPOWContextBudget budget(16);
     CValidationState state;
     const CBlockIndex* index = nullptr;
     BOOST_CHECK(!ProcessNewBlockHeaders({underTarget}, state, GetParams(), &index));
@@ -545,7 +554,7 @@ BOOST_AUTO_TEST_CASE(pre_gate_budget_error_does_not_invalidate_valid_header)
     CBlockHeader honest = NextKAWPOWHeader(chain[1], 7500);
     MineKAWPOWHeader(honest);
 
-    ScopedKAWPOWContextBudget budget("16");
+    ScopedKAWPOWContextBudget budget(16);
     CValidationState constrainedState;
     const CBlockIndex* index = nullptr;
     BOOST_CHECK(!ProcessNewBlockHeaders({honest}, constrainedState, GetParams(), &index));
@@ -558,7 +567,7 @@ BOOST_AUTO_TEST_CASE(pre_gate_budget_error_does_not_invalidate_valid_header)
         BOOST_CHECK(mapBlockIndex.count(honest.GetHash()) == 0);
     }
 
-    gArgs.ForceSetArg("-maxkawpowcontextmb", "256");
+    BOOST_REQUIRE(SetKAWPOWContextBudgetMiB(256));
     CheckHonestHeaderAccepted(honest);
     {
         LOCK(cs_main);
@@ -575,7 +584,7 @@ BOOST_AUTO_TEST_CASE(pre_gate_bad_difficulty_precedes_context_allocation)
     CBlockHeader bad = NextKAWPOWHeader(chain[1], 7500);
     bad.nBits ^= 1;
 
-    ScopedKAWPOWContextBudget budget("16");
+    ScopedKAWPOWContextBudget budget(16);
     CValidationState state;
     const CBlockIndex* index = nullptr;
     BOOST_CHECK(!ProcessNewBlockHeaders({bad}, state, GetParams(), &index));
@@ -592,7 +601,7 @@ BOOST_AUTO_TEST_CASE(pre_gate_full_block_bad_difficulty_precedes_context_allocat
     CBlockHeader bad = NextKAWPOWHeader(chain[1], 7500);
     bad.nBits ^= 1;
 
-    ScopedKAWPOWContextBudget budget("16");
+    ScopedKAWPOWContextBudget budget(16);
     BlockCheckResult result;
     BOOST_CHECK(!ProcessNewBlock(GetParams(), std::make_shared<const CBlock>(bad),
                                  true, nullptr));

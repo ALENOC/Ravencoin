@@ -1095,6 +1095,8 @@ bool AppInitParameterInteraction()
     }
     fCheckBlockIndex = gArgs.GetBoolArg("-checkblockindex", chainparams.DefaultConsistencyChecks());
     fCheckpointsEnabled = gArgs.GetBoolArg("-checkpoints", DEFAULT_CHECKPOINTS_ENABLED);
+    if (!SetKAWPOWContextBudgetMiB(gArgs.GetArg("-maxkawpowcontextmb", DEFAULT_MAX_KAWPOW_CONTEXT_MIB)))
+        return InitError(strprintf("Invalid -maxkawpowcontextmb value: '%s'", gArgs.GetArg("-maxkawpowcontextmb", "")));
 
     hashAssumeValid = uint256S(gArgs.GetArg("-assumevalid", chainparams.GetConsensus().defaultAssumeValid.GetHex()));
     if (!hashAssumeValid.IsNull())
