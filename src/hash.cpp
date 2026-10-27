@@ -274,9 +274,15 @@ bool IsKAWPOWContextWithinLocalBudget(uint32_t blockHeight)
     const uint64_t lightCacheBytes = (uint64_t{1} << 24) + epoch * (uint64_t{1} << 17);
     const uint64_t allocationBytes = sizeof(ethash::hash512) + lightCacheBytes + progpow::l1_cache_size;
 
-    // An operator may raise this local memory budget to verify an exceptional
+    // A node operator may raise this local memory budget to verify an exceptional
     // historical header. Exceeding it must never mark a header invalid.
+    // The standalone consensus library has no node argument manager.
+    // Nodes retain the operator override; library users use the safe default.
+#ifdef BUILD_RAVEN_INTERNAL
+    const int64_t maxContextMiB = DEFAULT_MAX_KAWPOW_CONTEXT_MIB;
+#else
     const int64_t maxContextMiB = gArgs.GetArg("-maxkawpowcontextmb", DEFAULT_MAX_KAWPOW_CONTEXT_MIB);
+#endif
     constexpr uint64_t mebibyte = uint64_t{1} << 20;
     if (maxContextMiB <= 0 || static_cast<uint64_t>(maxContextMiB) >
                                   std::numeric_limits<uint64_t>::max() / mebibyte)
