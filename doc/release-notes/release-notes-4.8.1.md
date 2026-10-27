@@ -274,14 +274,23 @@ Windows consensus-library link. FINDING-199 traces this to the
 node-only budget option referenced from the standalone library.
 Commit `c4d1b20ad` keeps that option in node builds and uses the
 256 MiB default in the library. The local library link, 17 focused
-KAWPOW tests, and 540-case `make check` passed. Exact-SHA Windows
-Final Gate verification is pending. Correct-difficulty headers
+KAWPOW tests, and 540-case `make check` passed. On official PR head
+`aa5b128c5`, Build Raven `40499782364` and Final Gate `40499782271`
+both passed on the same SHA, including the Windows consensus-library
+link, all five release builds, and required security tests. FINDING-199
+is fixed on that checkpoint. Its five packages have not yet received an
+independent download review. Correct-difficulty headers
 can still force repeated context work. A read-only canonical
 mainnet declared-height scanner is included, but its historical result
 is pending a separately validated node replay. FINDING-197 therefore
-remains open. The
-`c63cad804` qualification predates this mitigation; the later source
-needs its own exact-SHA qualification before a release decision. Neither
+remains open. The unpruned public testnet node running `aa5b128c5`
+passed `verifychain 4 2016` twice around a restart and accepted three
+new blocks through height 2,570,490. A host restart interrupted the
+separate mainnet replay at height 1,453,567; the saved chainstate was
+retained and the replay restarted. The required pre-RC manpage and
+English translation refresh changes the candidate SHA after
+`aa5b128c5`, so the later source needs its own exact-SHA qualification
+before a release decision. Neither
 qualification authorizes bit-12 activation or a final stable release.
 
 The release process requires `make check`, paired green Build Raven and
