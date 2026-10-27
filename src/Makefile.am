@@ -576,7 +576,7 @@ endif
 if TARGET_WINDOWS
 libravenconsensus_la_LDFLAGS = $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS) -no-undefined $(RELDFLAGS)
 else
-libravenconsensus_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined $(RELDFLAGS)
+libravenconsensus_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined $(RELDFLAGS) $(NOUNDEFINED_LDFLAGS)
 endif
 libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS)
 

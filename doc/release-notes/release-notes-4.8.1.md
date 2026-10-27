@@ -258,8 +258,9 @@ budget, default 256 MiB per context, configurable with
 `-maxkawpowcontextmb`. A budget or allocation failure is reported as a
 local error instead of invalid proof of work, without a peer penalty or
 persistent failed header. A valid historical header above that budget
-needs a higher operator setting; concurrent context pressure remains a
-resource consideration. A later correction checks the already required
+needs a higher operator setting. Peer messages are verified on one
+thread, so peer input can hold at most one context within the budget.
+A later correction checks the already required
 KAWPOW difficulty before building a context on the header path; its
 red-then-green regression and local 539-case `make check` passed. A
 subsequent complete-block regression found a second path that could
@@ -274,14 +275,28 @@ Windows consensus-library link. FINDING-199 traces this to the
 node-only budget option referenced from the standalone library.
 Commit `c4d1b20ad` keeps that option in node builds and uses the
 256 MiB default in the library. The local library link, 17 focused
-KAWPOW tests, and 540-case `make check` passed. Exact-SHA Windows
-Final Gate verification is pending. Correct-difficulty headers
-can still force repeated context work. A read-only canonical
-mainnet declared-height scanner is included, but its historical result
-is pending a separately validated node replay. FINDING-197 therefore
-remains open. The
-`c63cad804` qualification predates this mitigation; the later source
-needs its own exact-SHA qualification before a release decision. Neither
+KAWPOW tests, and 540-case `make check` passed. On official PR head
+`aa5b128c5`, Build Raven `40499782364` and Final Gate `40499782271`
+both passed on the same SHA, including the Windows consensus-library
+link, all five release builds, and required security tests. FINDING-199
+is fixed on that checkpoint. Its five packages have not yet received an
+independent download review. Later commits check each KAWPOW claim
+against its target before building a context and remember completed
+proof results, so replaying a header cannot force repeated context
+work. Startup now rejects an invalid `-maxkawpowcontextmb` value, and
+ELF builds reject unresolved symbols in the shared consensus library.
+A checkpoint-anchored
+scan of the canonical mainnet block files found that every KAWPOW header
+up to the height gate declares its actual height, so the largest
+canonical context needs 91 MiB of the 256 MiB default. FINDING-197 is
+fixed in this source, pending exact-SHA qualification. The unpruned public testnet node running `aa5b128c5`
+passed `verifychain 4 2016` twice around a restart and accepted three
+new blocks through height 2,570,490. A host restart interrupted the
+separate mainnet replay at height 1,453,567; the saved chainstate was
+retained and the replay restarted. The required pre-RC manpage and
+English translation refresh changes the candidate SHA after
+`aa5b128c5`, so the later source needs its own exact-SHA qualification
+before a release decision. Neither
 qualification authorizes bit-12 activation or a final stable release.
 
 The release process requires `make check`, paired green Build Raven and

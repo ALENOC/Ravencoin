@@ -176,6 +176,9 @@ QT_TRANSLATE_NOOP("raven-core", ""
 "time may be influenced by peers forward or backward by this amount. "
 "(default: %u seconds)"),
 QT_TRANSLATE_NOOP("raven-core", ""
+"Maximum memory in MiB for each KAWPOW verification context (default: %d). "
+"This local limit does not make a header invalid."),
+QT_TRANSLATE_NOOP("raven-core", ""
 "Maximum size of data in data carrier transactions we relay and mine "
 "(default: %u)"),
 QT_TRANSLATE_NOOP("raven-core", ""
@@ -249,6 +252,14 @@ QT_TRANSLATE_NOOP("raven-core", ""
 "This may be due to your computer's date and time being set incorrectly. Only "
 "rebuild the block database if you are sure that your computer's date and "
 "time are correct"),
+QT_TRANSLATE_NOOP("raven-core", ""
+"The coins database references an invalid block. Retain the data directory "
+"and rebuild the block index and chainstate from verified block data before "
+"restarting."),
+QT_TRANSLATE_NOOP("raven-core", ""
+"The coins database references an unknown block and this pruned chainstate "
+"cannot be rebuilt safely. Retain the data directory and redownload the "
+"blockchain."),
 QT_TRANSLATE_NOOP("raven-core", ""
 "The default height that is required before rewards are allowed to be sent out"),
 QT_TRANSLATE_NOOP("raven-core", ""

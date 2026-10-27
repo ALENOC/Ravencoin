@@ -12,6 +12,7 @@
 
 #include <crypto/ethash/include/ethash/progpow.hpp>
 
+#include <atomic>
 #include <limits>
 
 //TODO remove these
@@ -257,6 +258,40 @@ uint64_t SipHashUint256Extra(uint64_t k0, uint64_t k1, const uint256& val, uint3
     return v0 ^ v1 ^ v2 ^ v3;
 }
 
+namespace {
+// The node sets this from -maxkawpowcontextmb. The standalone consensus
+// library has no argument manager and keeps the default.
+std::atomic<int64_t> g_kawpow_context_budget_mib{DEFAULT_MAX_KAWPOW_CONTEXT_MIB};
+std::atomic<bool> g_kawpow_fail_context_allocation{false};
+thread_local ethash::epoch_context_ptr g_kawpow_context{nullptr, nullptr};
+
+constexpr uint64_t MEBIBYTE = uint64_t{1} << 20;
+} // namespace
+
+bool SetKAWPOWContextBudgetMiB(int64_t maxContextMiB)
+{
+    if (maxContextMiB <= 0 ||
+        static_cast<uint64_t>(maxContextMiB) > std::numeric_limits<uint64_t>::max() / MEBIBYTE)
+        return false;
+    g_kawpow_context_budget_mib = maxContextMiB;
+    return true;
+}
+
+int64_t GetKAWPOWContextBudgetMiB()
+{
+    return g_kawpow_context_budget_mib;
+}
+
+void ReleaseKAWPOWThreadContext()
+{
+    g_kawpow_context.reset();
+}
+
+void SetKAWPOWContextAllocationFailureForTesting(bool fail)
+{
+    g_kawpow_fail_context_allocation = fail;
+}
+
 bool IsKAWPOWContextWithinLocalBudget(uint32_t blockHeight)
 {
     // The bundled verifier accepts signed block numbers and calculates both
@@ -276,36 +311,26 @@ bool IsKAWPOWContextWithinLocalBudget(uint32_t blockHeight)
 
     // A node operator may raise this local memory budget to verify an exceptional
     // historical header. Exceeding it must never mark a header invalid.
-    // The standalone consensus library has no node argument manager.
-    // Nodes retain the operator override; library users use the safe default.
-#ifdef BUILD_RAVEN_INTERNAL
-    const int64_t maxContextMiB = DEFAULT_MAX_KAWPOW_CONTEXT_MIB;
-#else
-    const int64_t maxContextMiB = gArgs.GetArg("-maxkawpowcontextmb", DEFAULT_MAX_KAWPOW_CONTEXT_MIB);
-#endif
-    constexpr uint64_t mebibyte = uint64_t{1} << 20;
-    if (maxContextMiB <= 0 || static_cast<uint64_t>(maxContextMiB) >
-                                  std::numeric_limits<uint64_t>::max() / mebibyte)
-        return false;
-    return allocationBytes <= static_cast<uint64_t>(maxContextMiB) * mebibyte;
+    const uint64_t maxContextMiB = static_cast<uint64_t>(GetKAWPOWContextBudgetMiB());
+    return allocationBytes <= maxContextMiB * MEBIBYTE;
 }
 
 uint256 KAWPOWHash(const CBlockHeader& blockHeader, uint256& mix_hash)
 {
-    static thread_local ethash::epoch_context_ptr context{nullptr, nullptr};
-
     if (!IsKAWPOWContextWithinLocalBudget(blockHeader.nHeight))
         throw KAWPOWResourceError("kawpow-context-unsupported");
 
     // Get the context from the block height
     const auto epoch_number = ethash::get_epoch_number(blockHeader.nHeight);
 
-    if (!context || context->epoch_number != epoch_number) {
-        context.reset();
-        auto nextContext = ethash::create_epoch_context(epoch_number);
+    if (!g_kawpow_context || g_kawpow_context->epoch_number != epoch_number) {
+        g_kawpow_context.reset();
+        auto nextContext = g_kawpow_fail_context_allocation
+                               ? ethash::epoch_context_ptr{nullptr, nullptr}
+                               : ethash::create_epoch_context(epoch_number);
         if (!nextContext)
             throw KAWPOWResourceError("kawpow-context-allocation-failed");
-        context = std::move(nextContext);
+        g_kawpow_context = std::move(nextContext);
     }
 
     // Build the header_hash
@@ -313,7 +338,7 @@ uint256 KAWPOWHash(const CBlockHeader& blockHeader, uint256& mix_hash)
     const auto header_hash = to_hash256(nHeaderHash.GetHex());
 
     // ProgPow hash
-    const auto result = progpow::hash(*context, blockHeader.nHeight, header_hash, blockHeader.nNonce64);
+    const auto result = progpow::hash(*g_kawpow_context, blockHeader.nHeight, header_hash, blockHeader.nNonce64);
 
     mix_hash = uint256S(to_hex(result.mix_hash));
     return uint256S(to_hex(result.final_hash));

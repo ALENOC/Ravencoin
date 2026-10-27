@@ -6843,7 +6843,7 @@ They are not recoverable!!</source>
 <context>
     <name>raven-core</name>
     <message>
-        <location filename="../ravenstrings.cpp" line="+506"/>
+        <location filename="../ravenstrings.cpp" line="+517"/>
         <source>Options:</source>
         <translation>Options:</translation>
     </message>
@@ -6868,7 +6868,7 @@ They are not recoverable!!</source>
         <translation>Accept command line and JSON-RPC commands</translation>
     </message>
     <message>
-        <location line="-301"/>
+        <location line="-312"/>
         <source>Distributed under the MIT software license, see the accompanying file %s or %s</source>
         <translation type="unfinished"></translation>
     </message>
@@ -6878,7 +6878,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+66"/>
+        <location line="+69"/>
         <source>Prune configured below the minimum of %d MiB.  Please use a higher number.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -6893,7 +6893,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+226"/>
+        <location line="+234"/>
         <source>Error: A fatal internal error occurred, see debug.log for details</source>
         <translation type="unfinished"></translation>
     </message>
@@ -6918,7 +6918,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="-569"/>
+        <location line="-580"/>
         <source>Raven Core</source>
         <translation type="unfinished">Raven Core</translation>
     </message>
@@ -7038,7 +7038,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+7"/>
+        <location line="+10"/>
         <source>Maximum total fees (in %s) to use in a single wallet transaction or raw transaction; setting this too low may abort large transactions (default: %s)</source>
         <translation type="unfinished"></translation>
     </message>
@@ -7083,7 +7083,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+17"/>
+        <location line="+25"/>
         <source>This is a pre-release test build - use at your own risk - do not use for mining or merchant applications</source>
         <translation type="unfinished"></translation>
     </message>
@@ -7568,7 +7568,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="-572"/>
+        <location line="-583"/>
         <source>Allow JSON-RPC connections from specified source. Valid for &lt;ip&gt; are a single IP (e.g. 1.2.3.4), a network/netmask (e.g. 1.2.3.4/255.255.255.0) or a network/CIDR (e.g. 1.2.3.4/24). This option can be specified multiple times</source>
         <translation type="unfinished"></translation>
     </message>
@@ -7613,7 +7613,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+37"/>
+        <location line="+40"/>
         <source>Maximum size of data in data carrier transactions we relay and mine (default: %u)</source>
         <translation type="unfinished"></translation>
     </message>
@@ -7623,7 +7623,7 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+54"/>
+        <location line="+62"/>
         <source>The transaction amount is too small to send after the fee has been deducted</source>
         <translation type="unfinished"></translation>
     </message>
@@ -7893,17 +7893,17 @@ They are not recoverable!!</source>
         <translation>Password for JSON-RPC connections</translation>
     </message>
     <message>
-        <location line="-393"/>
+        <location line="-404"/>
         <source>Execute command when the best block changes (%s in cmd is replaced by block hash)</source>
         <translation>Execute command when the best block changes (%s in cmd is replaced by block hash)</translation>
     </message>
     <message>
-        <location line="+278"/>
+        <location line="+289"/>
         <source>Allow DNS lookups for -addnode, -seednode and -connect</source>
         <translation>Allow DNS lookups for -addnode, -seednode and -connect</translation>
     </message>
     <message>
-        <location line="-378"/>
+        <location line="-389"/>
         <source>(1 = keep tx meta data e.g. account owner and payment request information, 2 = drop tx meta data)</source>
         <translation type="unfinished"></translation>
     </message>
@@ -8003,7 +8003,12 @@ They are not recoverable!!</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location line="+13"/>
+        <location line="+7"/>
+        <source>Maximum memory in MiB for each KAWPOW verification context (default: %d). This local limit does not make a header invalid.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+9"/>
         <source>Number of seconds to keep misbehaving peers from reconnecting (default: %u)</source>
         <translation type="unfinished"></translation>
     </message>
@@ -8044,6 +8049,16 @@ They are not recoverable!!</source>
     </message>
     <message>
         <location line="+7"/>
+        <source>The coins database references an invalid block. Retain the data directory and rebuild the block index and chainstate from verified block data before restarting.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+4"/>
+        <source>The coins database references an unknown block and this pruned chainstate cannot be rebuilt safely. Retain the data directory and redownload the blockchain.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location line="+4"/>
         <source>The default height that is required before rewards are allowed to be sent out</source>
         <translation type="unfinished"></translation>
     </message>
