@@ -285,10 +285,11 @@ against its target before building a context and remember completed
 proof results, so replaying a header cannot force repeated context
 work. Startup now rejects an invalid `-maxkawpowcontextmb` value, and
 ELF builds reject unresolved symbols in the shared consensus library.
-A read-only canonical
-mainnet declared-height scanner is included, but its historical result
-is pending a separately validated node replay. FINDING-197 therefore
-remains open. The unpruned public testnet node running `aa5b128c5`
+A checkpoint-anchored
+scan of the canonical mainnet block files found that every KAWPOW header
+up to the height gate declares its actual height, so the largest
+canonical context needs 91 MiB of the 256 MiB default. FINDING-197 is
+fixed in this source, pending exact-SHA qualification. The unpruned public testnet node running `aa5b128c5`
 passed `verifychain 4 2016` twice around a restart and accepted three
 new blocks through height 2,570,490. A host restart interrupted the
 separate mainnet replay at height 1,453,567; the saved chainstate was
