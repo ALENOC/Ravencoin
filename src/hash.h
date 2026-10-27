@@ -626,5 +626,11 @@ int64_t GetKAWPOWContextBudgetMiB();
 /** Check the node's configured context budget and the bundled verifier's integer bounds. */
 bool IsKAWPOWContextWithinLocalBudget(uint32_t blockHeight);
 
+/** Free the KAWPOW verification context cached by the calling thread. */
+void ReleaseKAWPOWThreadContext();
+
+/** Make later KAWPOW context allocations fail, for deterministic tests. */
+void SetKAWPOWContextAllocationFailureForTesting(bool fail);
+
 
 #endif // RAVEN_HASH_H

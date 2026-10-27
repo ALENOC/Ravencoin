@@ -1939,6 +1939,9 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
     if (fLoaded) {
         LogPrintf(" block index %15dms\n", GetTimeMillis() - nStart);
     }
+    // The saved-header audit and block verification ran on this thread. Do
+    // not keep their KAWPOW context for the rest of the process lifetime.
+    ReleaseKAWPOWThreadContext();
 
     fs::path est_path = GetDataDir() / FEE_ESTIMATES_FILENAME;
     CAutoFile est_filein(fsbridge::fopen(est_path, "rb"), SER_DISK, CLIENT_VERSION);

@@ -11,6 +11,7 @@
 #include "pow.h"
 #include "primitives/block.h"
 #include "test/test_raven.h"
+#include "timedata.h"
 #include "txdb.h"
 #include "util.h"
 #include "validation.h"
@@ -37,6 +38,20 @@ struct ScopedKAWPOWContextBudget {
     ~ScopedKAWPOWContextBudget()
     {
         SetKAWPOWContextBudgetMiB(previous);
+    }
+};
+
+struct ScopedKAWPOWAllocationFailure {
+    ScopedKAWPOWAllocationFailure()
+    {
+        // Drop this thread's cached context so the next full proof must allocate.
+        ReleaseKAWPOWThreadContext();
+        SetKAWPOWContextAllocationFailureForTesting(true);
+    }
+
+    ~ScopedKAWPOWAllocationFailure()
+    {
+        SetKAWPOWContextAllocationFailureForTesting(false);
     }
 };
 
@@ -623,6 +638,66 @@ BOOST_AUTO_TEST_CASE(unknown_parent_is_rejected_before_full_hash)
     std::string reason;
     BOOST_CHECK(!SubmitKAWPOWHeader(forged, reason));
     BOOST_CHECK_EQUAL(reason, "prev-blk-not-found");
+}
+
+BOOST_AUTO_TEST_CASE(context_allocation_failure_is_a_local_error)
+{
+    const auto chain = BuildKAWPOWHeaderChain(1);
+    CBlockHeader honest = NextKAWPOWHeader(chain[1], 2);
+    MineKAWPOWHeader(honest);
+    {
+        ScopedKAWPOWAllocationFailure failure;
+        CValidationState state;
+        const CBlockIndex* index = nullptr;
+        BOOST_CHECK(!ProcessNewBlockHeaders({honest}, state, GetParams(), &index));
+        BOOST_CHECK(state.IsError());
+        BOOST_CHECK(!state.IsInvalid());
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), "kawpow-context-allocation-failed");
+        BOOST_CHECK(index == nullptr);
+        LOCK(cs_main);
+        BOOST_CHECK(mapBlockIndex.count(honest.GetHash()) == 0);
+    }
+
+    // The local failure must not be remembered as a proof result.
+    CheckHonestHeaderAccepted(honest);
+    LOCK(cs_main);
+    BOOST_REQUIRE(mapBlockIndex.count(honest.GetHash()) == 1);
+    BOOST_CHECK(!(mapBlockIndex.at(honest.GetHash())->nStatus & BLOCK_FAILED_MASK));
+}
+
+BOOST_AUTO_TEST_CASE(replayed_invalid_proof_needs_no_context)
+{
+    const auto chain = BuildKAWPOWHeaderChain(1);
+    CBlockHeader forged = NextKAWPOWHeader(chain[1], 2);
+    ForgeKAWPOWHeader(forged);
+    std::string firstReason;
+    BOOST_CHECK(!SubmitKAWPOWHeader(forged, firstReason));
+    BOOST_CHECK(firstReason == "high-hash" || firstReason == "invalid-mix-hash");
+
+    // Another full check would need a new context and fail locally.
+    ScopedKAWPOWAllocationFailure failure;
+    CValidationState state;
+    BOOST_CHECK(!ProcessNewBlockHeaders({forged}, state, GetParams()));
+    BOOST_CHECK(state.IsInvalid());
+    BOOST_CHECK(!state.IsError());
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), firstReason);
+}
+
+BOOST_AUTO_TEST_CASE(replayed_valid_proof_still_runs_contextual_checks)
+{
+    const auto chain = BuildKAWPOWHeaderChain(1);
+    CBlockHeader future = NextKAWPOWHeader(chain[1], 2);
+    future.nTime = GetAdjustedTime() + 24 * 60 * 60;
+    future.nBits = GetNextWorkRequired(chain[1], &future, GetParams().GetConsensus());
+    MineKAWPOWHeader(future);
+    std::string reason;
+    BOOST_CHECK(!SubmitKAWPOWHeader(future, reason));
+    BOOST_CHECK_EQUAL(reason, "time-too-new");
+
+    // The stored valid proof skips ProgPoW, not the contextual rule.
+    ScopedKAWPOWAllocationFailure failure;
+    BOOST_CHECK(!SubmitKAWPOWHeader(future, reason));
+    BOOST_CHECK_EQUAL(reason, "time-too-new");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

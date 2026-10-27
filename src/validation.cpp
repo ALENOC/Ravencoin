@@ -46,6 +46,8 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <deque>
+#include <map>
 #include <sstream>
 
 #include <boost/algorithm/string/replace.hpp>
@@ -4468,11 +4470,68 @@ static bool FindUndoPos(CValidationState &state, int nFile, CDiskBlockPos &pos, 
     return true;
 }
 
+namespace {
+enum class KAWPOWProofResult { VALID, HIGH_HASH, INVALID_MIX };
+
+/**
+ * Bounded record of completed full KAWPOW proof checks. The key is the final
+ * hash calculated from the claimed mix, which commits to every header field,
+ * the nonce and that mix, so a stored result is exact. Replaying a checked
+ * header then needs no epoch context or ProgPoW run. Local resource errors
+ * are never stored, and contextual checks still run on every call.
+ */
+class KAWPOWProofCache
+{
+public:
+    static constexpr size_t MAX_ENTRIES = 4096;
+
+    bool Lookup(const uint256& hash, KAWPOWProofResult& result)
+    {
+        LOCK(cs);
+        const auto it = results.find(hash);
+        if (it == results.end())
+            return false;
+        result = it->second;
+        return true;
+    }
+
+    void Insert(const uint256& hash, KAWPOWProofResult result)
+    {
+        LOCK(cs);
+        if (!results.emplace(hash, result).second)
+            return;
+        order.push_back(hash);
+        if (order.size() > MAX_ENTRIES) {
+            results.erase(order.front());
+            order.pop_front();
+        }
+    }
+
+private:
+    CCriticalSection cs;
+    std::map<uint256, KAWPOWProofResult> results;
+    std::deque<uint256> order;
+};
+
+KAWPOWProofCache g_kawpow_proof_cache;
+
+bool CheckKAWPOWProofResult(KAWPOWProofResult result, CValidationState& state)
+{
+    if (result == KAWPOWProofResult::HIGH_HASH)
+        return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed");
+    if (result == KAWPOWProofResult::INVALID_MIX)
+        return state.DoS(50, false, REJECT_INVALID, "invalid-mix-hash", false, "mix_hash validity failed");
+    return true;
+}
+} // namespace
+
 static bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true)
 {
+    const bool checkKAWPOW = fCheckPOW && block.nTime >= nKAWPOWActivationTime;
+    uint256 hash;
     bool checkpointAncestor = false;
-    if (fCheckPOW && block.nTime >= nKAWPOWActivationTime) {
-        const uint256 hash = block.GetHash();
+    if (checkKAWPOW) {
+        hash = block.GetHash();
         int actualHeight = -1;
         {
             LOCK(cs_main);
@@ -4520,6 +4579,10 @@ static bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state,
         return true;
     }
 
+    KAWPOWProofResult cached;
+    if (checkKAWPOW && g_kawpow_proof_cache.Lookup(hash, cached))
+        return CheckKAWPOWProofResult(cached, state);
+
     uint256 mix_hash;
     // Check proof of work matches claimed amount
     if (fCheckPOW) {
@@ -4529,14 +4592,19 @@ static bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state,
         } catch (const KAWPOWResourceError& e) {
             return state.Error(e.what());
         }
-        if (!CheckProofOfWork(fullHash, block.nBits, consensusParams))
+        if (!CheckProofOfWork(fullHash, block.nBits, consensusParams)) {
+            if (checkKAWPOW)
+                g_kawpow_proof_cache.Insert(hash, KAWPOWProofResult::HIGH_HASH);
             return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed");
+        }
     }
 
-    if (fCheckPOW && block.nTime >= nKAWPOWActivationTime) {
-        if (mix_hash != block.mix_hash) {
-            return state.DoS(50, false, REJECT_INVALID, "invalid-mix-hash", false, "mix_hash validity failed");
-        }
+    if (checkKAWPOW) {
+        const KAWPOWProofResult result = mix_hash == block.mix_hash
+                                             ? KAWPOWProofResult::VALID
+                                             : KAWPOWProofResult::INVALID_MIX;
+        g_kawpow_proof_cache.Insert(hash, result);
+        return CheckKAWPOWProofResult(result, state);
     }
 
     return true;
