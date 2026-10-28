@@ -288,16 +288,23 @@ ELF builds reject unresolved symbols in the shared consensus library.
 A checkpoint-anchored
 scan of the canonical mainnet block files found that every KAWPOW header
 up to the height gate declares its actual height, so the largest
-canonical context needs 91 MiB of the 256 MiB default. FINDING-197 is
-fixed in this source, pending exact-SHA qualification. The unpruned public testnet node running `aa5b128c5`
-passed `verifychain 4 2016` twice around a restart and accepted three
-new blocks through height 2,570,490. A host restart interrupted the
-separate mainnet replay at height 1,453,567; the saved chainstate was
-retained and the replay restarted. The required pre-RC manpage and
-English translation refresh changes the candidate SHA after
-`aa5b128c5`, so the later source needs its own exact-SHA qualification
-before a release decision. Neither
-qualification authorizes bit-12 activation or a final stable release.
+canonical context needs 91 MiB of the 256 MiB default. The unpruned
+public testnet node running `aa5b128c5` passed `verifychain 4 2016`
+twice around a restart and accepted three new blocks through height
+2,570,490. A host restart interrupted the separate mainnet replay at
+height 1,453,567; the saved chainstate was retained and the replay
+restarted. The required pre-RC manpage and English translation refresh
+changes the candidate SHA after `aa5b128c5`. The new check on
+unresolved library symbols then found that 32-bit ARM builds left
+`sha256_transform` undefined in the shared consensus library; commit
+`c86a18d96` compiles the existing C implementation on that target. On
+official PR head `a756574d4`, which contains the refresh and these
+corrections, Build Raven `40599833317` and Final Gate `40599833429`
+both passed, including all five release builds, required security
+tests, and every Final Gate variant. FINDING-197 and FINDING-199 are
+fixed on that checkpoint. Its five packages have not yet received an
+independent download review. None of these checkpoints authorizes
+bit-12 activation or a final stable release.
 
 The release process requires `make check`, paired green Build Raven and
 Final Gate runs, pinned-Qt Linux checks, and independent review of all five
