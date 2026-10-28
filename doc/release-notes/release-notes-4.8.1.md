@@ -303,8 +303,16 @@ corrections, Build Raven `40599833317` and Final Gate `40599833429`
 both passed, including all five release builds, required security
 tests, and every Final Gate variant. FINDING-197 and FINDING-199 are
 fixed on that checkpoint. Its five packages have not yet received an
-independent download review. None of these checkpoints authorizes
-bit-12 activation or a final stable release.
+independent download review. The unsigned `v4.8.1-rc2` pre-release was
+built from the next PR head `e3356f3f1`, which changes only
+documentation. Build Raven `40609746431` and Final Gate `40609746325`
+passed on that exact SHA, its five packages passed an independent
+download review against the source checkout, and the packaged Linux Qt
+application passed the wallet-disabled smokes. The RC1 Linux ARM32
+package ships a shared consensus library that fails to load because
+`sha256_transform` is unresolved; RC2 corrects it, and the RC1 node,
+Qt, and CLI executables do not use that library. None of these
+checkpoints authorizes bit-12 activation or a final stable release.
 
 The release process requires `make check`, paired green Build Raven and
 Final Gate runs, pinned-Qt Linux checks, and independent review of all five
