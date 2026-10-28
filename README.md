@@ -114,6 +114,9 @@ in that library as well. That check also found an unresolved
 C implementation. On `a756574d4` every Final Gate variant linked the
 library, including Windows and each ELF target under the new check.
 These runs do not qualify a later source SHA.
+The unsigned [v4.8.1-rc2 pre-release](https://github.com/ALENOC/Ravencoin/releases/tag/v4.8.1-rc2)
+packages PR head `e3356f3f1` for evaluation after an independent review
+of its five packages. It is not a stable release.
 The CI packages are unsigned. Native Windows and macOS GUI exercise is
 assigned to community testing after publication; cross-platform builds and
 package checks do not establish native GUI behavior.
