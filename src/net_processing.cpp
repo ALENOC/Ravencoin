@@ -1389,6 +1389,9 @@ bool static ProcessHeadersMessage(CNode *pfrom, CConnman *connman, const std::ve
             }
             return error("invalid header received");
         }
+        LogPrintf("Unable to verify header from peer %d: %s\n",
+                  pfrom->GetId(), state.GetRejectReason());
+        return true;
     }
 
     {
@@ -2398,6 +2401,9 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 LogPrintf("Peer %d sent us invalid header via cmpctblock\n", pfrom->GetId());
                 return true;
             }
+            LogPrintf("Unable to verify cmpctblock header from peer %d: %s\n",
+                      pfrom->GetId(), state.GetRejectReason());
+            return true;
         }
 
         // When we succeed in decoding a block's txids from a cmpctblock
@@ -2584,7 +2590,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                     MarkBlockAsReceived(pblock->GetHash());
                 } else {
                     uint256 mix_hash;
-                    MarkBlockAsReceived(pblock->GetHashFull(mix_hash));
+                    try {
+                        MarkBlockAsReceived(pblock->GetHashFull(mix_hash));
+                    } catch (const KAWPOWResourceError& e) {
+                        LogPrintf("Unable to calculate compact block work: %s\n", e.what());
+                    }
                 }
             }
         }
@@ -2705,7 +2715,12 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                     mapBlockSource.erase(pblock->GetHash());
                 } else {
                     uint256 mix_hash;
-                    mapBlockSource.erase(pblock->GetHashFull(mix_hash));
+                    try {
+                        mapBlockSource.erase(pblock->GetHashFull(mix_hash));
+                    } catch (const KAWPOWResourceError& e) {
+                        LogPrintf("Unable to calculate compact block work: %s\n", e.what());
+                        mapBlockSource.erase(pblock->GetHash());
+                    }
                 }
             }
         }

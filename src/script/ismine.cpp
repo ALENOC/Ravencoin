@@ -7,6 +7,7 @@
 #include <util.h>
 #include "ismine.h"
 
+#include "assets/assets.h"
 #include "key.h"
 #include "keystore.h"
 #include "script/script.h"
@@ -126,7 +127,7 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey, bool& 
         }
 
         case TX_WITNESS_V2_PQ_KEYHASH: {
-            // RIP-25: PQ witness v2 — check if we have the ML-DSA key for this witness program
+            // RIP-25: PQ witness v2: check if we have the ML-DSA key for this witness program
             if (vSolutions[0].size() == 32) {
                 uint256 wp;
                 memcpy(wp.begin(), vSolutions[0].data(), 32);
@@ -159,6 +160,9 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey, bool& 
         case TX_NEW_ASSET: {
             if (!AreAssetsDeployed())
                 return ISMINE_NO;
+            uint256 program;
+            if (IsPQOnlyAssetScript(scriptPubKey, program))
+                break;
             keyID = CKeyID(uint160(vSolutions[0]));
             if (sigversion != SIGVERSION_BASE) {
                 CPubKey pubkey;
@@ -176,6 +180,9 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey, bool& 
         case TX_TRANSFER_ASSET: {
             if (!AreAssetsDeployed())
                 return ISMINE_NO;
+            uint256 program;
+            if (IsPQOnlyAssetScript(scriptPubKey, program))
+                break;
             keyID = CKeyID(uint160(vSolutions[0]));
             if (sigversion != SIGVERSION_BASE) {
                 CPubKey pubkey;
@@ -192,6 +199,9 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey, bool& 
         case TX_REISSUE_ASSET: {
             if (!AreAssetsDeployed())
                 return ISMINE_NO;
+            uint256 program;
+            if (IsPQOnlyAssetScript(scriptPubKey, program))
+                break;
             keyID = CKeyID(uint160(vSolutions[0]));
             if (sigversion != SIGVERSION_BASE) {
                 CPubKey pubkey;

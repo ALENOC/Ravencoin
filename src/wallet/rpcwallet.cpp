@@ -12,6 +12,7 @@
 #include "consensus/validation.h"
 #include "core_io.h"
 #include "httpserver.h"
+#include "hash.h"
 #include "validation.h"
 #include "net.h"
 #include "policy/feerate.h"
@@ -260,12 +261,101 @@ UniValue getnewpqaddress(const JSONRPCRequest& request)
     return EncodeDestination(dest);
 }
 
+UniValue recoverpqkeys(const JSONRPCRequest& request)
+{
+    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) return NullUniValue;
+    if (request.fHelp || request.params.size() != 4) {
+        throw std::runtime_error(
+            "recoverpqkeys start_index end_index start_height stop_height\n"
+            "Restore deterministic PQ keys in an inclusive index range and rescan an inclusive block range.\n"
+            "At most 100 keys and 100000 blocks may be processed per call. Split larger recovery into multiple calls.\n"
+            "All keys and the next allocation index are persisted before the rescan. If the rescan fails or is aborted, retry the same call.\n"
+            "The next allocation index advances past end_index, including unused indices.\n"
+            "An encrypted wallet must be unlocked. This cannot recover older random PQ keys; those require a wallet-file backup.\n"
+            "Arguments:\n"
+            "1. start_index    (numeric, required) first hardened PQ receive index\n"
+            "2. end_index      (numeric, required) last hardened PQ receive index\n"
+            "3. start_height   (numeric, required) first block to rescan\n"
+            "4. stop_height    (numeric, required) last block to rescan\n"
+            "Result: {\"start_index\":n,\"end_index\":n,\"new_keys\":n,\"next_index\":n,\"start_height\":n,\"stop_height\":n}\n");
+    }
+
+    const int64_t startIndex = request.params[0].get_int64();
+    const int64_t endIndex = request.params[1].get_int64();
+    const int64_t startHeight = request.params[2].get_int64();
+    const int64_t stopHeight = request.params[3].get_int64();
+    if (startIndex < 0 || endIndex < startIndex ||
+        endIndex >= CPQHDChain::MAX_COUNTER || endIndex - startIndex >= 100) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           "Invalid PQ index range: use 1 to 100 indices below 2147483648");
+    }
+
+    LOCK2(cs_main, pwallet->cs_wallet);
+    if (startHeight < 0 || stopHeight < startHeight ||
+        stopHeight > chainActive.Height() || stopHeight - startHeight >= 100000) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           "Invalid block height range: use 1 to 100000 available blocks");
+    }
+    if (!pwallet->IsHDEnabled() || !pwallet->GetPQHDChain().IsValid()) {
+        throw JSONRPCError(RPC_WALLET_ERROR,
+                           "PQ recovery requires a valid HD wallet");
+    }
+    EnsureWalletIsUnlocked(pwallet);
+
+    CBlockIndex* const pindexStart = chainActive[static_cast<int>(startHeight)];
+    CBlockIndex* const pindexStop = chainActive[static_cast<int>(stopHeight)];
+    if (fPruneMode) {
+        for (CBlockIndex* block = pindexStop;
+             block && block->nHeight >= pindexStart->nHeight;
+             block = block->pprev) {
+            if (!(block->nStatus & BLOCK_HAVE_DATA)) {
+                throw JSONRPCError(RPC_MISC_ERROR,
+                                   "Requested block range contains pruned data");
+            }
+        }
+    }
+
+    int newKeys = 0;
+    for (int64_t index = startIndex; index <= endIndex; ++index) {
+        bool added = false;
+        if (!pwallet->RecoverPQKey(static_cast<uint32_t>(index), added)) {
+            throw JSONRPCError(RPC_WALLET_ERROR,
+                               strprintf("PQ recovery stopped at index %u. Persisted keys remain available; retry the same range.",
+                                         static_cast<uint32_t>(index)));
+        }
+        if (added)
+            ++newKeys;
+    }
+
+    CBlockIndex* const failedBlock = pwallet->ScanForWalletTransactions(
+        pindexStart, pindexStop, true);
+    if (pwallet->IsAbortingRescan()) {
+        throw JSONRPCError(RPC_MISC_ERROR,
+                           "PQ recovery rescan aborted. Keys remain persisted; retry the same range.");
+    }
+    if (failedBlock) {
+        throw JSONRPCError(RPC_MISC_ERROR,
+                           "PQ recovery rescan failed. Keys remain persisted; retry the same range.");
+    }
+
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("start_index", startIndex);
+    result.pushKV("end_index", endIndex);
+    result.pushKV("new_keys", newKeys);
+    result.pushKV("next_index", static_cast<int64_t>(
+        pwallet->GetPQHDChain().nExternalChainCounter));
+    result.pushKV("start_height", startHeight);
+    result.pushKV("stop_height", stopHeight);
+    return result;
+}
+
 UniValue getnewpqassetaddress(const JSONRPCRequest& request)
 {
     CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
     if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) return NullUniValue;
     if (request.fHelp || request.params.size() > 1)
-        throw std::runtime_error("getnewpqassetaddress ( \"account\" )\nReturns a classical|PQ asset destination for active RIP-25 asset rules.\n");
+        throw std::runtime_error("getnewpqassetaddress ( \"account\" )\nReturns an asset identifier|PQ address destination for active RIP-25 asset rules. The identifier does not have a classical private key.\n");
     LOCK2(cs_main, pwallet->cs_wallet);
 
     const int activationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
@@ -275,22 +365,17 @@ UniValue getnewpqassetaddress(const JSONRPCRequest& request)
 
     std::string account;
     if (!request.params[0].isNull()) account = AccountFromValue(request.params[0]);
-    pwallet->TopUpKeyPool();
-    CReserveKey reserveClassicalKey(pwallet);
-    CPubKey classicalPubKey;
-    if (!reserveClassicalKey.GetReservedKey(classicalPubKey))
-        throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out, please call keypoolrefill first");
     CPQPubKey pqPubKey;
     if (!pwallet->GenerateNewPQKey(pqPubKey))
         throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to derive and persist ML-DSA-44 keypair");
-    const CKeyID classicalKey = classicalPubKey.GetID();
     const WitnessV2PQDestination pqDestination(pqPubKey.GetWitnessProgram());
-    if (!pwallet->StoreOwnedPQAssetDestination(classicalKey, pqDestination.witnessProgram))
-        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to persist protected asset destination pairing");
-    reserveClassicalKey.KeepKey();
-    pwallet->SetAddressBook(classicalKey, account, "receive");
+    const CKeyID assetID(Hash160(pqDestination.witnessProgram.begin(),
+                                 pqDestination.witnessProgram.end()));
+    if (!pwallet->StoreOwnedPQAssetDestination(assetID, pqDestination.witnessProgram))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Failed to persist PQ-only asset destination");
+    pwallet->SetAddressBook(assetID, account, "pqasset");
     pwallet->SetAddressBook(pqDestination, account, "receive");
-    return EncodePQAssetDestination(classicalKey, pqDestination.witnessProgram);
+    return EncodePQAssetDestination(assetID, pqDestination.witnessProgram);
 }
 
 UniValue listpqassetaddresses(const JSONRPCRequest& request)
@@ -299,7 +384,7 @@ UniValue listpqassetaddresses(const JSONRPCRequest& request)
     if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) return NullUniValue;
     if (request.fHelp || request.params.size() != 0)
         throw std::runtime_error(
-            "listpqassetaddresses\nReturns saved wallet-owned classical|PQ asset destinations and whether PQ asset rules are active for the next block. An inactive destination is not safe for receiving assets.\n");
+            "listpqassetaddresses\nReturns saved wallet-owned PQ-only and historical paired asset destinations and whether PQ asset rules are active for the next block. Historical pairs cannot receive newly created asset outputs after activation. An inactive destination is not safe for receiving assets.\n");
     LOCK2(cs_main, pwallet->cs_wallet);
 
     const int activationHeight = GetPQAssetActivationHeightForPrev(chainActive.Tip(), GetParams().GetConsensus());
@@ -511,7 +596,7 @@ UniValue getaddressesbyaccount(const JSONRPCRequest& request)
     for (const std::pair<CTxDestination, CAddressBookData>& item : pwallet->mapAddressBook) {
         const CTxDestination& dest = item.first;
         const std::string& strName = item.second.name;
-        if (strName == strAccount) {
+        if (strName == strAccount && !pwallet->IsPQOnlyAssetID(dest)) {
             ret.push_back(EncodeDestination(dest));
         }
     }
@@ -797,6 +882,8 @@ UniValue listaddressgroupings(const JSONRPCRequest& request)
         UniValue jsonGrouping(UniValue::VARR);
         for (const CTxDestination& address : grouping)
         {
+            if (pwallet->IsPQOnlyAssetID(address))
+                continue;
             UniValue addressInfo(UniValue::VARR);
             addressInfo.push_back(EncodeDestination(address));
             addressInfo.push_back(ValueFromAmount(balances[address]));
@@ -807,7 +894,8 @@ UniValue listaddressgroupings(const JSONRPCRequest& request)
             }
             jsonGrouping.push_back(addressInfo);
         }
-        jsonGroupings.push_back(jsonGrouping);
+        if (!jsonGrouping.empty())
+            jsonGroupings.push_back(jsonGrouping);
     }
     return jsonGroupings;
 }
@@ -1575,6 +1663,8 @@ UniValue ListReceived(CWallet * const pwallet, const UniValue& params, bool fByA
     std::map<std::string, tallyitem> mapAccountTally;
     for (const std::pair<CTxDestination, CAddressBookData>& item : pwallet->mapAddressBook) {
         const CTxDestination& dest = item.first;
+        if (pwallet->IsPQOnlyAssetID(dest))
+            continue;
         const std::string& strAccount = item.second.name;
         std::map<CTxDestination, tallyitem>::iterator it = mapTally.find(dest);
         if (it == mapTally.end() && !fIncludeEmpty)
@@ -2914,7 +3004,7 @@ UniValue getwalletinfo(const JSONRPCRequest& request)
             "  \"keypoolsize_hd_internal\": xxxx, (numeric) how many new keys are pre-generated for internal use (used for change outputs, only appears if the wallet is using this feature, otherwise external keys are used)\n"
             "  \"unlocked_until\": ttt,           (numeric) the timestamp in seconds since epoch (midnight Jan 1 1970 GMT) that the wallet is unlocked for transfers, or 0 if the wallet is locked\n"
             "  \"paytxfee\": x.xxxx,              (numeric) the transaction fee configuration, set in " + CURRENCY_UNIT + "/kB\n"
-            "  \"hdseedid\": \"<hash160>\"          (string, optional) the Hash160 of the HD seed (only present when HD is enabled)\n"
+            "  \"hdseedid\": \"<hash160>\"          (string, optional) HD seed identifier. BIP44 uses a domain-separated digest of the raw seed; legacy HD uses the seed public-key Hash160.\n"
             "  \"hdmasterkeyid\": \"<hash160>\"     (string, optional) alias for hdseedid retained for backwards-compatibility. Will be removed in V0.18.\n"
             "}\n"
             "\nExamples:\n"
@@ -3657,6 +3747,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "getmywords",               &getmywords,                        {} },
     { "wallet",             "getnewaddress",            &getnewaddress,            {"account"} },
     { "wallet",             "getnewpqaddress",          &getnewpqaddress,          {"account"} },
+    { "wallet",             "recoverpqkeys",            &recoverpqkeys,            {"start_index", "end_index", "start_height", "stop_height"} },
     { "wallet",             "getnewpqassetaddress",     &getnewpqassetaddress,     {"account"} },
     { "wallet",             "listpqassetaddresses",     &listpqassetaddresses,     {} },
     { "wallet",             "getrawchangeaddress",      &getrawchangeaddress,      {} },

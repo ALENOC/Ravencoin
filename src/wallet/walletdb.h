@@ -70,7 +70,7 @@ class CHDChain
 public:
     uint32_t nExternalChainCounter;
     uint32_t nInternalChainCounter;
-    CKeyID seed_id; //!< seed hash160
+    CKeyID seed_id; //!< legacy key ID or domain-separated BIP39 seed ID
 
     bool bUse_bip44;
     SecureVector vchMnemonic;
@@ -290,6 +290,7 @@ public:
 
     bool WriteKey(const CPubKey& vchPubKey, const CPrivKey& vchPrivKey, const CKeyMetadata &keyMeta);
     bool WriteCryptedKey(const CPubKey& vchPubKey, const std::vector<unsigned char>& vchCryptedSecret, const CKeyMetadata &keyMeta);
+    bool WriteKeyMetadata(const CPubKey& vchPubKey, const CKeyMetadata& keyMeta);
 
     bool WritePQKey(const uint256& witnessProgram, const CPQPubKey& pqPubKey, const CPQKey::KeyData& pqKeyData);
     bool WriteCryptedPQKey(const uint256& witnessProgram, const CPQPubKey& pqPubKey, const std::vector<unsigned char>& vchCryptedSecret);

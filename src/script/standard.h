@@ -80,7 +80,7 @@ public:
     friend bool operator<(const CNoDestination &a, const CNoDestination &b) { return true; }
 };
 
-/** RIP-25: Witness v2 PQ destination — holds the 32-byte witness program (SHA256 of ML-DSA pubkey) */
+/** RIP-25: Witness v2 PQ destination: holds the 32-byte witness program (SHA256 of ML-DSA pubkey) */
 class WitnessV2PQDestination {
 public:
     uint256 witnessProgram;

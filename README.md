@@ -7,37 +7,33 @@ https://ravencoin.org
 
 ## RIP-25: Post-Quantum Signatures (This Fork)
 
-This fork implements [RIP-25](doc/RIP-0025-PQ-Signatures.md) ([GitHub Issue #1280](https://github.com/RavenProject/Ravencoin/issues/1280)), a proposal to add **quantum-resistant native RVN transaction signing** to Ravencoin using ML-DSA-44 (FIPS 204).
+This fork implements [RIP-25](doc/RIP-0025-PQ-Signatures.md) ([GitHub Issue #1280](https://github.com/RavenProject/Ravencoin/issues/1280)), which adds **quantum-resistant native RVN transaction signing** using ML-DSA-44 (FIPS 204). The 4.8.1 candidate adds a separate bit-13 rule for new asset and owner-token outputs.
 
 ### What it does
 
-New **witness v2** addresses use ML-DSA-44 (a NIST-standardized post-quantum signature algorithm) exclusively. Existing ECDSA addresses (witness v0) continue working unchanged. Users can migrate native RVN from ECDSA to ML-DSA-44 addresses before quantum computers can break ECDSA. Ravencoin assets remain on their legacy ownership conditions and are outside the current RIP-25 scope.
+New **witness v2** addresses use ML-DSA-44 (a NIST-standardized post-quantum signature algorithm) exclusively. Existing ECDSA addresses continue working unchanged. Users can migrate native RVN to ML-DSA-44 addresses voluntarily. The original bit-12 rule does not change legacy asset ownership. Once bit 13 activates, newly created asset and owner-token outputs require a matching native RVN witness-v2 ML-DSA anchor when spent, with no ECDSA asset signature. Historical outputs retain their classical spending rule until their owners migrate them.
 
-- **Old addresses (witness v0):** ECDSA/secp256k1, unchanged
-- **New addresses (witness v2):** ML-DSA-44 only, quantum-resistant
+- **Classical addresses:** ECDSA/secp256k1, unchanged
+- **PQ addresses (witness v2):** ML-DSA-44 only, quantum-resistant
 - **Migration:** Users send native RVN from old to new addresses at their own pace
-- **Assets:** Normal, owner, reissuable, unique, restricted, and qualifier assets are not protected by RIP-25
+- **Assets:** New post-bit-13 asset and owner-token outputs require an ML-DSA anchor; historical holdings remain classical until voluntary migration
 
 ### Key changes
 
 | Area | Change |
 |------|--------|
-| **Consensus** | BIP9 soft-fork deployment (bit 12, 85% threshold), phased block weight increase (8 → 12 → 16 MWU) |
+| **Consensus** | Bit-12 BIP9 signaling (1714 of 2016); incompatible 8 to 12 to 16 MWU block-limit transition and contextual PQ witness discount |
 | **Script** | Witness version 2 validation: 2-element witness stack [mldsa_sig, mldsa_pk], SHA256(pk) == program |
-| **Policy** | `TX_WITNESS_V2_PQ_KEYHASH` standard type, PQ witness discount (8x), PQ-aware dust threshold |
+| **Policy** | `TX_WITNESS_V2_PQ_KEYHASH` standard type and PQ-aware dust threshold |
 | **Addresses** | Bech32m encoding for witness v2 (HRP: `rvn` mainnet, `trvn` testnet, `rcrt` regtest) |
 | **Network** | `NODE_PQ_HYBRID` service flag (bit 5), 16 MB protocol message limit |
-| **Crypto** | `src/crypto/mldsa.h/cpp` — ML-DSA-44 via [liboqs](https://github.com/open-quantum-safe/liboqs) (FIPS 204 compliant) |
-| **Keys** | `src/pqkey.h/cpp` — `CPQKey` / `CPQPubKey` for ML-DSA-44 key management |
+| **Crypto** | `src/crypto/mldsa.h/cpp`: ML-DSA-44 via [liboqs](https://github.com/open-quantum-safe/liboqs) (FIPS 204 compliant) |
+| **Keys** | `src/pqkey.h/cpp`: `CPQKey` / `CPQPubKey` for ML-DSA-44 key management |
 | **Wallet** | `getnewpqaddress` RPC, PQ keystore integration, `IsMine` for witness v2 |
-| **Assets** | Existing asset scripts remain legacy P2PKH-only; witness-v2 PQ destinations protect native RVN only |
+| **Assets** | Bit 13 adds PQ-only asset carriers paired with native RVN witness-v2 inputs; historical asset outputs remain classically spendable |
 | **Signing** | ML-DSA-44 signing in `sign.cpp` via `TransactionSignatureCreator` |
 | **Build** | liboqs added as dependency (`depends/packages/liboqs.mk`, `configure.ac --with-liboqs`) |
-| **Tests** | `src/test/pqkey_tests.cpp` — unit tests for ML-DSA-44 keygen, sign/verify, witness programs |
-
-### Branch
-
-Audit and remediation work is on [`fix/rip25-v48-glm-remediation`](https://github.com/ALENOC/Ravencoin/tree/fix/rip25-v48-glm-remediation).
+| **Tests** | `src/test/pqkey_tests.cpp`: unit tests for ML-DSA-44 keygen, sign/verify, witness programs |
 
 ### Building with liboqs
 
@@ -65,9 +61,65 @@ cd .. && ./autogen.sh
 make -j$(nproc)
 ```
 
-### Status
+### 4.8.1 candidate status
 
-The native-RVN witness-v2 implementation includes consensus rules, script validation, policy, network, wallet, signing, address encoding, and ML-DSA-44 integration. This statement does not cover Ravencoin asset ownership, which remains legacy-only pending a separate protocol extension.
+This fork contains a Core 4.8.1 candidate based on Core 4.8.0. It is not an
+official RavenProject release. The native-RVN witness-v2 implementation
+includes consensus, wallet, signing, policy, address encoding, and ML-DSA-44
+integration. Mainnet bit 12 activation requires miner signaling and a
+coordinated upgrade of miners, pools, full nodes, exchanges, and other
+validating services. At activation, the block-weight limit rises from 8 to
+12 MWU with the PQ witness discount, then to 16 MWU after a nominal year of
+blocks. Core 4.8.0 can reject blocks allowed by the new rule.
+
+The separate bit 13 rule protects new asset and owner-token outputs after
+activation. A spend requires an ML-DSA signature from a matching native RVN
+witness-v2 input, without an ECDSA signature on the asset input. Assets and
+owner tokens created earlier retain their classical spending condition until
+their owners migrate them voluntarily. Activation does not protect historical
+holdings retroactively, and it does not globally disable classical signatures.
+Some protected asset spends consume their matching RVN anchor; a later spend
+may need the owner to fund the matching PQ address again. Raw transaction
+funding does not select that anchor automatically.
+
+Release qualification and the remaining operator decisions are tracked in
+the [security remediation register](doc/RIP-0025-v4.8-security-remediation-register.md)
+and [4.8.1 release notes](doc/release-notes/release-notes-4.8.1.md).
+FINDING-067 remains open for the bit 12 rollout decision and release steps.
+The KAWPOW checkpoint and concurrent hashing corrections are recorded as
+FINDING-195 and FINDING-196. The official PR checkpoint `c63cad804`
+passed its exact-SHA CI pair and independent five-package review.
+FINDING-197, covering extreme declared KAWPOW heights before the
+historical height rule activates, is fixed on official PR head
+`a756574d4`, where Build Raven `40599833317` and Final Gate
+`40599833429` both passed. Its five packages await independent review.
+The verifier now treats a context beyond its local memory budget as a
+resource error, without marking the header invalid or penalizing its peer.
+Known-parent headers and complete blocks also reject an incorrect KAWPOW
+difficulty before allocating that context. Each KAWPOW claim must also
+meet its target before a context is built, and completed proof results
+are remembered, so replaying a header cannot force repeated context work.
+The default budget is 256 MiB per context and can be changed with
+`-maxkawpowcontextmb`. A valid historical header above that local limit
+still requires a higher budget to sync; this is not a consensus rule.
+A [checkpoint-anchored block-file scan](contrib/devtools/kawpow-declared-height-blockfiles.py)
+found that every canonical mainnet KAWPOW header up to the height gate
+declares its actual height, so the largest historical context needs
+91 MiB. The [RPC scanner](contrib/devtools/kawpow-declared-height-scan.py)
+can repeat the check on a fully validated chain.
+FINDING-199 corrects a Windows Final Gate link failure in the
+standalone consensus library; ELF builds now reject unresolved symbols
+in that library as well. That check also found an unresolved
+`sha256_transform` in 32-bit ARM builds, which now compile the existing
+C implementation. On `a756574d4` every Final Gate variant linked the
+library, including Windows and each ELF target under the new check.
+These runs do not qualify a later source SHA.
+The unsigned [v4.8.1-rc2 pre-release](https://github.com/ALENOC/Ravencoin/releases/tag/v4.8.1-rc2)
+packages PR head `e3356f3f1` for evaluation after an independent review
+of its five packages. It is not a stable release.
+The CI packages are unsigned. Native Windows and macOS GUI exercise is
+assigned to community testing after publication; cross-platform builds and
+package checks do not establish native GUI behavior.
 
 For the full specification see [`doc/RIP-0025-PQ-Signatures.md`](doc/RIP-0025-PQ-Signatures.md).
 

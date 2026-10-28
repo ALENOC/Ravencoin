@@ -636,7 +636,10 @@ bool Consensus::CheckTxPQAssets(const CTransaction& tx, CValidationState& state,
         if (!output.scriptPubKey.IsAssetScript())
             continue;
         uint256 program;
-        if (!GetPQAssetProgram(output.scriptPubKey, program))
+        // The parser recognizes historical P2PKH tags too. New outputs must
+        // use the OP_1 prefix whose spend does not require a classical key.
+        if (!GetPQAssetProgram(output.scriptPubKey, program) ||
+            output.scriptPubKey[0] != OP_1)
             return state.DoS(100, false, REJECT_INVALID, "bad-pq-asset-output");
     }
 
@@ -662,8 +665,11 @@ bool Consensus::CheckTxPQAssets(const CTransaction& tx, CValidationState& state,
             !coin.out.scriptPubKey.IsAssetScript())
             continue;
         uint256 program;
-        if (!GetPQAssetProgram(coin.out.scriptPubKey, program))
+        if (!GetPQAssetProgram(coin.out.scriptPubKey, program) ||
+            coin.out.scriptPubKey[0] != OP_1)
             return state.DoS(100, false, REJECT_INVALID, "bad-pq-asset-prevout");
+        if (!input.scriptSig.empty())
+            return state.DoS(100, false, REJECT_INVALID, "bad-pq-asset-scriptsig");
         requiredPrograms.insert(program);
     }
 

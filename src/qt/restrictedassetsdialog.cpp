@@ -63,8 +63,8 @@ bool ResolveGUIAdministrativeReturn(WalletModel* model, CReserveKey& reservekey,
         }
         CKeyID classicalKey;
         uint256 pqProgram;
-        if (!DecodePQAssetDestination(returnAddress, classicalKey, pqProgram)) {
-            errorText = QObject::tr("Authority return requires a canonical classical|PQ asset destination");
+        if (!DecodePQOnlyAssetDestination(returnAddress, classicalKey, pqProgram)) {
+            errorText = QObject::tr("Authority return requires a canonical PQ-only asset destination");
             return false;
         }
         return true;
@@ -479,5 +479,3 @@ void RestrictedAssetsDialog::assignQualifierClicked()
 
     widget->clear();
 }
-
-

@@ -46,6 +46,8 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <deque>
+#include <map>
 #include <sstream>
 
 #include <boost/algorithm/string/replace.hpp>
@@ -563,6 +565,9 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
     // mine newly-created v2 outputs until ML-DSA enforcement is ACTIVE.
     if (!pqEnabled && HasPQWitnessV2Output(tx))
         return state.DoS(0, false, REJECT_NONSTANDARD, "premature-pq-witness", true);
+
+    if (pqAssetActivationHeight < 0 && HasPQOnlyAssetOutput(tx))
+        return state.DoS(0, false, REJECT_NONSTANDARD, "premature-pq-asset", true);
 
     // Rather not work on nonstandard transactions (unless -testnet/-regtest)
     std::string reason;
@@ -1906,6 +1911,26 @@ static DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* 
         error("DisconnectBlock(): block asset undo data inconsistent");
         return DISCONNECT_FAILED;
     }
+
+#ifdef ENABLE_WALLET
+    if (databaseMessaging && fMessaging) {
+        bool hasAssetOutput = false;
+        for (const auto& tx : block.vtx) {
+            for (const auto& output : tx->vout) {
+                if (output.scriptPubKey.IsAssetScript()) {
+                    hasAssetOutput = true;
+                    break;
+                }
+            }
+            if (hasAssetOutput)
+                break;
+        }
+        if (hasAssetOutput && !InvalidateMessageWalletScans()) {
+            error("DisconnectBlock(): failed to invalidate wallet message scans");
+            return DISCONNECT_FAILED;
+        }
+    }
+#endif
     
     std::vector<std::pair<CAddressIndexKey, CAmount> > addressIndex;
     std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > addressUnspentIndex;
@@ -2167,9 +2192,7 @@ static DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* 
                         (IsAssetNameAnOwner(transfer.strName) || IsAssetNameAnMsgChannel(transfer.strName))) {
 
                         LOCK(cs_messaging);
-                        if (IsChannelSubscribed(transfer.strName)) {
-                            OrphanMessage(COutPoint(hash, index));
-                        }
+                        OrphanMessage(COutPoint(hash, index));
                     }
                 }
 
@@ -2489,6 +2512,78 @@ static TxAssetDeploymentContext GetTxAssetDeploymentContextLocked(const CBlockIn
     };
 }
 
+bool CollectConfirmedAssetMessages(const CBlock& block, const CBlockIndex* pindex,
+                                   std::set<CMessage>& messages)
+{
+    AssertLockHeld(cs_main);
+    if (!pindex || !pindex->pprev)
+        return false;
+    const TxAssetDeploymentContext context = GetTxAssetDeploymentContextLocked(
+        pindex->pprev, GetParams().GetConsensus());
+    if (!context.fMessagesDeployed)
+        return true;
+
+    bool hasCandidate = false;
+    for (const auto& tx : block.vtx) {
+        for (const CTxOut& output : tx->vout) {
+            CAssetOutputEntry data;
+            if (GetAssetData(output.scriptPubKey, data, &context) &&
+                data.type == TX_TRANSFER_ASSET && !data.message.empty() &&
+                (IsAssetNameAnOwner(data.assetName) ||
+                 IsAssetNameAnMsgChannel(data.assetName))) {
+                hasCandidate = true;
+                break;
+            }
+        }
+        if (hasCandidate)
+            break;
+    }
+    if (!hasCandidate)
+        return true;
+
+    CBlockUndo undo;
+    if (pindex->GetUndoPos().IsNull() ||
+        !UndoReadFromDisk(undo, pindex->GetUndoPos(), pindex->pprev->GetBlockHash()) ||
+        undo.vtxundo.size() + 1 != block.vtx.size())
+        return false;
+
+    for (size_t txIndex = 1; txIndex < block.vtx.size(); ++txIndex) {
+        const CTransaction& tx = *block.vtx[txIndex];
+        const CTxUndo& txUndo = undo.vtxundo[txIndex - 1];
+        if (txUndo.vprevout.size() != tx.vin.size())
+            return false;
+        std::map<std::string, std::string> inputAddresses;
+        for (const Coin& input : txUndo.vprevout) {
+            if (!input.IsAsset())
+                continue;
+            CAssetOutputEntry data;
+            if (!GetAssetData(input.out.scriptPubKey, data, &context))
+                return false;
+            inputAddresses.emplace(data.assetName, EncodeDestination(data.destination));
+        }
+        for (size_t outputIndex = 0; outputIndex < tx.vout.size(); ++outputIndex) {
+            CAssetOutputEntry data;
+            if (!GetAssetData(tx.vout[outputIndex].scriptPubKey, data, &context) ||
+                data.type != TX_TRANSFER_ASSET || data.message.empty() ||
+                (!IsAssetNameAnOwner(data.assetName) &&
+                 !IsAssetNameAnMsgChannel(data.assetName)) ||
+                (data.expireTime != 0 && data.expireTime <= block.nTime))
+                continue;
+            const auto sender = inputAddresses.find(data.assetName);
+            if (sender == inputAddresses.end() ||
+                sender->second != EncodeDestination(data.destination))
+                continue;
+            CMessage message(COutPoint(tx.GetHash(), outputIndex), data.assetName,
+                             data.message, data.expireTime, block.nTime);
+            message.nBlockHeight = pindex->nHeight;
+            if (data.expireTime != 0 && data.expireTime <= GetTime())
+                message.status = MessageStatus::EXPIRED;
+            messages.insert(message);
+        }
+    }
+    return true;
+}
+
 unsigned int GetMaxBlockWeightForPrev(const CBlockIndex* pindexPrev, const Consensus::Params& params)
 {
     LOCK(cs_main);
@@ -2599,6 +2694,98 @@ static int64_t nBlocksTotal = 0;
 static bool ContextualCheckBlock(const CBlock& block, CValidationState& state,
                                  const Consensus::Params& consensusParams,
                                  const CBlockIndex* pindexPrev, CAssetsCache* assetCache);
+
+#ifdef ENABLE_WALLET
+static void CollectRestrictedEvents(const CBlock& block,
+                                    std::vector<std::pair<std::string, CNullAssetTxData>>& events)
+{
+    for (const auto& tx : block.vtx) {
+        for (const auto& output : tx->vout) {
+            CNullAssetTxData data;
+            std::string address;
+            if (AssetNullDataFromScript(output.scriptPubKey, data, address))
+                events.emplace_back(address, data);
+        }
+    }
+}
+
+bool BackfillMyRestrictedIndex(const CChainParams& chainparams)
+{
+    static bool incompleteChecked = false;
+    LOCK(cs_main);
+    if (!pmyrestricteddb)
+        return true;
+
+    char state = 0;
+    uint256 indexedTip;
+    const bool hasState = pmyrestricteddb->ReadRestrictedIndexState(state);
+    const bool hasTip = pmyrestricteddb->ReadRestrictedIndexTip(indexedTip);
+    const uint256 activeTip = chainActive.Tip() ? chainActive.Tip()->GetBlockHash() : uint256();
+    if (hasState && state == 'C' && hasTip && indexedTip == activeTip)
+        return true;
+    if (hasState && state == 'P' && incompleteChecked)
+        return true;
+
+    int startHeight = 0;
+    bool reset = !hasState || (state != 'C' && state != 'S') || !hasTip;
+    if (!reset && !indexedTip.IsNull()) {
+        const auto found = mapBlockIndex.find(indexedTip);
+        if (found == mapBlockIndex.end() || !chainActive.Contains(found->second)) {
+            reset = true;
+        } else {
+            startHeight = found->second->nHeight + 1;
+        }
+    }
+
+    for (int height = reset ? 0 : startHeight; height <= chainActive.Height(); ++height) {
+        const CBlockIndex* pindex = chainActive[height];
+        if (GetTxAssetDeploymentContextLocked(pindex->pprev, chainparams.GetConsensus()).fRestrictedAssetsDeployed &&
+            !(pindex->nStatus & BLOCK_HAVE_DATA)) {
+            LogPrintf("Restricted address history is incomplete: block %d is pruned or missing\n", height);
+            incompleteChecked = true;
+            return pmyrestricteddb->WriteRestrictedIndexState('P');
+        }
+    }
+
+    if (reset) {
+        LogPrintf("Rebuilding restricted address index from active chain\n");
+        if (!pmyrestricteddb->WriteRestrictedIndexState('N') ||
+            !pmyrestricteddb->EraseAllRestrictedEvents() ||
+            !pmyrestricteddb->WriteRestrictedIndexTip(uint256()) ||
+            !pmyrestricteddb->WriteRestrictedIndexState('S'))
+            return error("BackfillMyRestrictedIndex(): could not reset restricted address index");
+    } else if (!pmyrestricteddb->WriteRestrictedIndexState('S')) {
+        return error("BackfillMyRestrictedIndex(): could not mark scan in progress");
+    }
+
+    for (int height = startHeight; height <= chainActive.Height(); ++height) {
+        boost::this_thread::interruption_point();
+        if (ShutdownRequested())
+            return false;
+        const CBlockIndex* pindex = chainActive[height];
+        if (GetTxAssetDeploymentContextLocked(pindex->pprev, chainparams.GetConsensus()).fRestrictedAssetsDeployed) {
+            CBlock block;
+            if (!ReadBlockFromDisk(block, pindex, chainparams.GetConsensus())) {
+                LogPrintf("Restricted address history is incomplete: block %d cannot be read\n", height);
+                incompleteChecked = true;
+                return pmyrestricteddb->WriteRestrictedIndexState('P');
+            }
+            std::vector<std::pair<std::string, CNullAssetTxData>> events;
+            CollectRestrictedEvents(block, events);
+            if (!events.empty() &&
+                !pmyrestricteddb->WriteRestrictedBlock(events, block.nTime, pindex->GetBlockHash()))
+                return error("BackfillMyRestrictedIndex(): failed writing block %d", height);
+        }
+        if ((height % 256) == 0 && !pmyrestricteddb->WriteRestrictedIndexTip(pindex->GetBlockHash()))
+            return error("BackfillMyRestrictedIndex(): failed checkpointing block %d", height);
+    }
+
+    if (!pmyrestricteddb->WriteRestrictedIndexTip(activeTip) ||
+        !pmyrestricteddb->WriteRestrictedIndexState('C'))
+        return error("BackfillMyRestrictedIndex(): could not finish restricted address index");
+    return true;
+}
+#endif
 
 /** Apply the effects of this block (with given index) on the UTXO set represented by coins.
  *  Validity checks that depend on the UTXO set are also done; ConnectBlock()
@@ -3094,19 +3281,18 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
         }
     }
 #ifdef ENABLE_WALLET
-    if (assetContext.fRestrictedAssetsDeployed && myNullAssetData.size() && pmyrestricteddb) {
-        for (auto item : myNullAssetData) {
-            if (IsAssetNameAQualifier(item.second.asset_name)) {
-                // TODO we can add block height to this data also, and use it to pull more info on when this was tagged/untagged
-                pmyrestricteddb->WriteTaggedAddress(item.first, item.second.asset_name, item.second.flag ? true : false, block.nTime);
-            } else if (IsAssetNameAnRestricted(item.second.asset_name)) {
-                pmyrestricteddb->WriteRestrictedAddress(item.first, item.second.asset_name, item.second.flag ? true : false, block.nTime);
+    if (!ignoreAddressIndex && pmyrestricteddb) {
+        if (!pmyrestricteddb->WriteRestrictedBlock(myNullAssetData, block.nTime,
+                                                   pindex->GetBlockHash()))
+            return AbortNode(state, "Failed to write restricted address index");
+        if (assetContext.fRestrictedAssetsDeployed) {
+            for (auto& item : myNullAssetData) {
+                for (CWalletRef wallet : vpwallets) {
+                    if (GetRestrictedAddressOwnership(*wallet, item.first) & ISMINE_ALL)
+                        wallet->UpdateMyRestrictedAssets(item.first, item.second.asset_name,
+                                                         item.second.flag, block.nTime);
+                }
             }
-
-
-            if (vpwallets.size())
-                vpwallets[0]->UpdateMyRestrictedAssets(item.first, item.second.asset_name, item.second.flag, block.nTime);
-
         }
     }
 #endif
@@ -3406,6 +3592,36 @@ bool static DisconnectTip(CValidationState& state, const CChainParams& chainpara
     CBlock& block = *pblock;
     if (!ReadBlockFromDisk(block, pindexDelete, chainparams.GetConsensus()))
         return error("DisconnectTip() : Failed to read block");
+#ifdef ENABLE_WALLET
+    std::vector<std::tuple<std::string, std::string, int, uint32_t>> restoredRestrictedEvents;
+    bool reloadRestrictedViews = false;
+    if (pmyrestricteddb) {
+        char indexState = 0;
+        uint256 indexedTip;
+        if (pmyrestricteddb->ReadRestrictedIndexState(indexState) && indexState == 'C' &&
+            pmyrestricteddb->ReadRestrictedIndexTip(indexedTip) &&
+            indexedTip == pindexDelete->GetBlockHash()) {
+            std::vector<std::pair<std::string, CNullAssetTxData>> events;
+            if (GetTxAssetDeploymentContextLocked(pindexDelete->pprev, chainparams.GetConsensus()).fRestrictedAssetsDeployed)
+                CollectRestrictedEvents(block, events);
+            const uint256 previousHash = pindexDelete->pprev ? pindexDelete->pprev->GetBlockHash() : uint256();
+            if (!pmyrestricteddb->UndoRestrictedBlock(events, indexedTip, previousHash,
+                                                      restoredRestrictedEvents)) {
+                indexState = 'N';
+                reloadRestrictedViews = true;
+            }
+        } else {
+            reloadRestrictedViews = true;
+            if (indexState != 'P')
+                indexState = 'N';
+        }
+        if (indexState == 'N') {
+            restoredRestrictedEvents.clear();
+            if (!pmyrestricteddb->WriteRestrictedIndexState('N'))
+                return AbortNode(state, "Failed to invalidate restricted address index");
+        }
+    }
+#endif
     // Apply the block atomically to the chain state.
     int64_t nStart = GetTimeMicros();
     {
@@ -3441,6 +3657,25 @@ bool static DisconnectTip(CValidationState& state, const CChainParams& chainpara
 
     // Update chainActive and related variables.
     UpdateTip(pindexDelete->pprev, chainparams);
+#ifdef ENABLE_WALLET
+    if (reloadRestrictedViews) {
+        std::string address;
+        std::string assetName;
+        for (CWalletRef wallet : vpwallets) {
+            wallet->UpdateMyRestrictedAssets(address, assetName, RESTRICTED_ASSET_VIEW_RELOAD, 0);
+        }
+    } else {
+        for (const auto& event : restoredRestrictedEvents) {
+            std::string address = std::get<0>(event);
+            std::string assetName = std::get<1>(event);
+            for (CWalletRef wallet : vpwallets) {
+                if (GetRestrictedAddressOwnership(*wallet, address) & ISMINE_ALL)
+                    wallet->UpdateMyRestrictedAssets(address, assetName,
+                                                     std::get<2>(event), std::get<3>(event));
+            }
+        }
+    }
+#endif
     // Let wallets know transactions went from 1-confirmed to
     // 0-confirmed or conflicted:
     GetMainSignals().BlockDisconnected(pblock);
@@ -4083,6 +4318,8 @@ static CBlockIndex* AddToBlockIndex(const CBlockHeader& block)
     {
         pindexNew->pprev = (*miPrev).second;
         pindexNew->nHeight = pindexNew->pprev->nHeight + 1;
+        if (block.nTime >= nKAWPOWActivationTime && block.nHeight != static_cast<uint32_t>(pindexNew->nHeight))
+            pindexNew->nStatus |= BLOCK_HAVE_DECLARED_HEIGHT;
         pindexNew->BuildSkip();
     }
     pindexNew->nTimeMax = (pindexNew->pprev ? std::max(pindexNew->pprev->nTimeMax, pindexNew->nTime) : pindexNew->nTime);
@@ -4233,30 +4470,141 @@ static bool FindUndoPos(CValidationState &state, int nFile, CDiskBlockPos &pos, 
     return true;
 }
 
-static bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true)
-{
-    // If we are checking a KAWPOW block below a know checkpoint height. We can validate the proof of work using the mix_hash
-    if (fCheckPOW && block.nTime >= nKAWPOWActivationTime) {
-        CBlockIndex* pcheckpoint = Checkpoints::GetLastCheckpoint(GetParams().Checkpoints());
-        if (fCheckPOW && pcheckpoint && block.nHeight <= (uint32_t)pcheckpoint->nHeight) {
-           if (!CheckProofOfWork(block.GetHash(), block.nBits, consensusParams)) {
-               return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed with mix_hash only check");
-           }
+namespace {
+enum class KAWPOWProofResult { VALID, HIGH_HASH, INVALID_MIX };
 
-           return true;
+/**
+ * Bounded record of completed full KAWPOW proof checks. The key is the final
+ * hash calculated from the claimed mix, which commits to every header field,
+ * the nonce and that mix, so a stored result is exact. Replaying a checked
+ * header then needs no epoch context or ProgPoW run. Local resource errors
+ * are never stored, and contextual checks still run on every call.
+ */
+class KAWPOWProofCache
+{
+public:
+    static constexpr size_t MAX_ENTRIES = 4096;
+
+    bool Lookup(const uint256& hash, KAWPOWProofResult& result)
+    {
+        LOCK(cs);
+        const auto it = results.find(hash);
+        if (it == results.end())
+            return false;
+        result = it->second;
+        return true;
+    }
+
+    void Insert(const uint256& hash, KAWPOWProofResult result)
+    {
+        LOCK(cs);
+        if (!results.emplace(hash, result).second)
+            return;
+        order.push_back(hash);
+        if (order.size() > MAX_ENTRIES) {
+            results.erase(order.front());
+            order.pop_front();
         }
     }
+
+private:
+    CCriticalSection cs;
+    std::map<uint256, KAWPOWProofResult> results;
+    std::deque<uint256> order;
+};
+
+KAWPOWProofCache g_kawpow_proof_cache;
+
+bool CheckKAWPOWProofResult(KAWPOWProofResult result, CValidationState& state)
+{
+    if (result == KAWPOWProofResult::HIGH_HASH)
+        return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed");
+    if (result == KAWPOWProofResult::INVALID_MIX)
+        return state.DoS(50, false, REJECT_INVALID, "invalid-mix-hash", false, "mix_hash validity failed");
+    return true;
+}
+} // namespace
+
+static bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true)
+{
+    const bool checkKAWPOW = fCheckPOW && block.nTime >= nKAWPOWActivationTime;
+    uint256 hash;
+    bool checkpointAncestor = false;
+    if (checkKAWPOW) {
+        hash = block.GetHash();
+        int actualHeight = -1;
+        {
+            LOCK(cs_main);
+            const auto parent = mapBlockIndex.find(block.hashPrevBlock);
+            if (parent != mapBlockIndex.end())
+                actualHeight = parent->second->nHeight + 1;
+            if (fCheckpointsEnabled) {
+                const CBlockIndex* checkpoint = Checkpoints::GetLastCheckpoint(GetParams().Checkpoints());
+                if (checkpoint) {
+                    // ContextualCheckBlockHeader rejects these forks too. Do
+                    // the cheap check before an invalid header creates a DAG.
+                    if (actualHeight >= 0 && actualHeight < checkpoint->nHeight) {
+                        const CBlockIndex* ancestor = checkpoint->GetAncestor(actualHeight);
+                        if (!ancestor || ancestor->GetBlockHash() != hash)
+                            return state.DoS(100, false, REJECT_CHECKPOINT, "bad-fork-prior-to-checkpoint");
+                    }
+                    const auto indexed = mapBlockIndex.find(hash);
+                    if (indexed != mapBlockIndex.end()) {
+                        const CBlockIndex* candidate = indexed->second;
+                        checkpointAncestor = candidate->nHeight <= checkpoint->nHeight &&
+                            checkpoint->GetAncestor(candidate->nHeight) == candidate;
+                    }
+                }
+            }
+        }
+        // The existing 4.8.0 height rule can be checked before creating a
+        // KAWPOW epoch context for an attacker-controlled declared height.
+        if (actualHeight >= consensusParams.nHeightHeaderCheckActivation &&
+            block.nHeight != static_cast<uint32_t>(actualHeight)) {
+            return state.DoS(100, false, REJECT_INVALID, "bad-blk-height");
+        }
+        // A valid full KAWPOW proof has the same final hash when computed
+        // from its claimed mix. Reject an over-target claim before creating
+        // an epoch context, but still verify full work for other headers.
+        if (!CheckProofOfWork(hash, block.nBits, consensusParams)) {
+            return state.DoS(50, false, REJECT_INVALID, "high-hash", false,
+                             "proof of work failed with claimed mix hash");
+        }
+    }
+
+    // Only an indexed ancestor of an enabled checkpoint may use the
+    // mix_hash-only shortcut. Merely claiming an older height is insufficient:
+    // a fork or a header saved by an older node must prove full KAWPOW work.
+    if (checkpointAncestor) {
+        return true;
+    }
+
+    KAWPOWProofResult cached;
+    if (checkKAWPOW && g_kawpow_proof_cache.Lookup(hash, cached))
+        return CheckKAWPOWProofResult(cached, state);
 
     uint256 mix_hash;
     // Check proof of work matches claimed amount
-    if (fCheckPOW && !CheckProofOfWork(block.GetHashFull(mix_hash), block.nBits, consensusParams)) {
-        return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed");
+    if (fCheckPOW) {
+        uint256 fullHash;
+        try {
+            fullHash = block.GetHashFull(mix_hash);
+        } catch (const KAWPOWResourceError& e) {
+            return state.Error(e.what());
+        }
+        if (!CheckProofOfWork(fullHash, block.nBits, consensusParams)) {
+            if (checkKAWPOW)
+                g_kawpow_proof_cache.Insert(hash, KAWPOWProofResult::HIGH_HASH);
+            return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed");
+        }
     }
 
-    if (fCheckPOW && block.nTime >= nKAWPOWActivationTime) {
-        if (mix_hash != block.mix_hash) {
-            return state.DoS(50, false, REJECT_INVALID, "invalid-mix-hash", false, "mix_hash validity failed");
-        }
+    if (checkKAWPOW) {
+        const KAWPOWProofResult result = mix_hash == block.mix_hash
+                                             ? KAWPOWProofResult::VALID
+                                             : KAWPOWProofResult::INVALID_MIX;
+        g_kawpow_proof_cache.Insert(hash, result);
+        return CheckKAWPOWProofResult(result, state);
     }
 
     return true;
@@ -4616,9 +4964,6 @@ static bool AcceptBlockHeader(const CBlockHeader& block, CValidationState& state
             return true;
         }
 
-        if (!CheckBlockHeader(block, state, chainparams.GetConsensus()))
-            return error("%s: Consensus::CheckBlockHeader: %s, %s", __func__, hash.ToString(), FormatStateMessage(state));
-
         // Get prev block index
         CBlockIndex* pindexPrev = nullptr;
         BlockMap::iterator mi = mapBlockIndex.find(block.hashPrevBlock);
@@ -4627,6 +4972,15 @@ static bool AcceptBlockHeader(const CBlockHeader& block, CValidationState& state
         pindexPrev = (*mi).second;
         if (pindexPrev->nStatus & BLOCK_FAILED_MASK)
             return state.DoS(100, error("%s: prev block invalid", __func__), REJECT_INVALID, "bad-prevblk");
+
+        // Reject an incorrect KAWPOW target before building its epoch context.
+        if (block.nTime >= nKAWPOWActivationTime &&
+            block.nBits != GetNextWorkRequired(pindexPrev, &block, chainparams.GetConsensus()))
+            return state.DoS(100, false, REJECT_INVALID, "bad-diffbits", false, "incorrect proof of work");
+
+        if (!CheckBlockHeader(block, state, chainparams.GetConsensus()))
+            return error("%s: Consensus::CheckBlockHeader: %s, %s", __func__, hash.ToString(), FormatStateMessage(state));
+
         if (!ContextualCheckBlockHeader(block, state, chainparams, pindexPrev, GetAdjustedTime()))
             return error("%s: Consensus::ContextualCheckBlockHeader: %s, %s", __func__, hash.ToString(), FormatStateMessage(state));
 
@@ -4772,9 +5126,24 @@ bool ProcessNewBlock(const CChainParams& chainparams, const std::shared_ptr<cons
         if (fNewBlock) *fNewBlock = false;
         CValidationState state;
 
+        // Reject an orphan or wrong-difficulty KAWPOW block before the full
+        // proof check can create an epoch context for its declared height.
+        bool ret = true;
+        if (pblock->nTime >= nKAWPOWActivationTime) {
+            LOCK(cs_main);
+            const auto prev = mapBlockIndex.find(pblock->hashPrevBlock);
+            if (prev == mapBlockIndex.end())
+                ret = state.DoS(10, false, 0, "prev-blk-not-found");
+            else if (prev->second->nStatus & BLOCK_FAILED_MASK)
+                ret = state.DoS(100, false, REJECT_INVALID, "bad-prevblk");
+            else if (pblock->nBits != GetNextWorkRequired(prev->second, pblock.get(), chainparams.GetConsensus()))
+                ret = state.DoS(100, false, REJECT_INVALID, "bad-diffbits", false, "incorrect proof of work");
+        }
+
         // Ensure that CheckBlock() passes before calling AcceptBlock, as
         // belt-and-suspenders.
-        bool ret = CheckBlock(*pblock, state, chainparams.GetConsensus(), true, true);
+        if (ret)
+            ret = CheckBlock(*pblock, state, chainparams.GetConsensus(), true, true);
 
         LOCK(cs_main);
 
@@ -5083,6 +5452,23 @@ bool static LoadBlockIndexDB(const CChainParams& chainparams)
     }
 
     // Calculate nChainWork
+    // Earlier releases trusted the mix_hash of any header that claimed a
+    // height no greater than the last indexed checkpoint. Audit saved forks
+    // before they can become candidates or the best header on restart. The
+    // checkpoint's exact ancestors need only the existing cheap target check.
+    const CBlockIndex* checkpoint = Checkpoints::GetLastCheckpoint(chainparams.Checkpoints());
+    const auto& checkpointMap = chainparams.Checkpoints().mapCheckpoints;
+    const int shortcutHeight = checkpointMap.empty() ? -1 : checkpointMap.rbegin()->first;
+    std::vector<const CBlockIndex*> checkpointAncestors;
+    if (fCheckpointsEnabled && checkpoint) {
+        checkpointAncestors.resize(checkpoint->nHeight + 1, nullptr);
+        for (const CBlockIndex* ancestor = checkpoint; ancestor; ancestor = ancestor->pprev) {
+            if (ancestor->nHeight < 0 || ancestor->nHeight >= static_cast<int>(checkpointAncestors.size()))
+                break;
+            checkpointAncestors[ancestor->nHeight] = ancestor;
+        }
+    }
+
     std::vector<std::pair<int, CBlockIndex*> > vSortedByHeight;
     vSortedByHeight.reserve(mapBlockIndex.size());
     for (const std::pair<uint256, CBlockIndex*>& item : mapBlockIndex)
@@ -5113,6 +5499,28 @@ bool static LoadBlockIndexDB(const CChainParams& chainparams)
         if (!(pindex->nStatus & BLOCK_FAILED_MASK) && pindex->pprev && (pindex->pprev->nStatus & BLOCK_FAILED_MASK)) {
             pindex->nStatus |= BLOCK_FAILED_CHILD;
             setDirtyBlockIndex.insert(pindex);
+        }
+        if (!(pindex->nStatus & BLOCK_FAILED_MASK) &&
+            pindex->nTime >= nKAWPOWActivationTime && pindex->nHeight <= shortcutHeight &&
+            (pindex->nHeight < 0 || pindex->nHeight >= static_cast<int>(checkpointAncestors.size()) ||
+             checkpointAncestors[pindex->nHeight] != pindex)) {
+            const CBlockHeader header = pindex->GetBlockHeader();
+            uint256 computedMixHash;
+            uint256 fullHash;
+            try {
+                fullHash = header.GetHashFull(computedMixHash);
+            } catch (const KAWPOWResourceError& e) {
+                return error("LoadBlockIndexDB(): unable to verify saved KAWPOW header at height %d: %s",
+                             pindex->nHeight, e.what());
+            }
+            if (!CheckProofOfWork(fullHash, header.nBits, chainparams.GetConsensus()) ||
+                computedMixHash != header.mix_hash) {
+                pindex->nStatus |= BLOCK_FAILED_VALID;
+                g_failed_blocks.insert(pindex);
+                setDirtyBlockIndex.insert(pindex);
+                LogPrintf("LoadBlockIndexDB(): rejected saved KAWPOW header at height %d: %s\n",
+                          pindex->nHeight, pindex->GetBlockHash().ToString());
+            }
         }
         if (pindex->IsValid(BLOCK_VALID_TRANSACTIONS) && (pindex->nChainTx || pindex->pprev == nullptr))
             setBlockIndexCandidates.insert(pindex);
@@ -5192,7 +5600,8 @@ bool static LoadBlockIndexDB(const CChainParams& chainparams)
 
 bool LoadChainTip(const CChainParams& chainparams)
 {
-    if (chainActive.Tip() && chainActive.Tip()->GetBlockHash() == pcoinsTip->GetBestBlock()) return true;
+    if (chainActive.Tip() && chainActive.Tip()->GetBlockHash() == pcoinsTip->GetBestBlock() &&
+        !(chainActive.Tip()->nStatus & BLOCK_FAILED_MASK)) return true;
 
     if (pcoinsTip->GetBestBlock().IsNull() && mapBlockIndex.size() == 1) {
         // In case we just added the genesis block, connect it now, so
@@ -5206,7 +5615,7 @@ bool LoadChainTip(const CChainParams& chainparams)
 
     // Load pointer to end of best chain
     BlockMap::iterator it = mapBlockIndex.find(pcoinsTip->GetBestBlock());
-    if (it == mapBlockIndex.end())
+    if (it == mapBlockIndex.end() || it->second->nStatus & BLOCK_FAILED_MASK)
         return false;
     chainActive.SetTip(it->second);
 

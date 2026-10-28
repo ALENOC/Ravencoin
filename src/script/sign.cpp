@@ -6,6 +6,7 @@
 
 #include "script/sign.h"
 
+#include "assets/assets.h"
 #include "key.h"
 #include "keystore.h"
 #include "policy/policy.h"
@@ -89,6 +90,13 @@ static bool SignStep(const BaseSignatureCreator& creator, const CScript& scriptP
         return false;
     /** RVN START */
     case TX_NEW_ASSET:
+        {
+        uint256 program;
+        if (IsPQOnlyAssetScript(scriptPubKey, program)) {
+            CPQKey pqKey;
+            return creator.KeyStore().GetPQKey(program, pqKey) && pqKey.IsValid();
+        }
+        }
         keyID = CKeyID(uint160(vSolutions[0]));
         if (!Sign1(keyID, creator, scriptPubKey, ret, sigversion))
             return false;
@@ -100,6 +108,13 @@ static bool SignStep(const BaseSignatureCreator& creator, const CScript& scriptP
         }
         return true;
     case TX_TRANSFER_ASSET:
+        {
+        uint256 program;
+        if (IsPQOnlyAssetScript(scriptPubKey, program)) {
+            CPQKey pqKey;
+            return creator.KeyStore().GetPQKey(program, pqKey) && pqKey.IsValid();
+        }
+        }
         keyID = CKeyID(uint160(vSolutions[0]));
         if (!Sign1(keyID, creator, scriptPubKey, ret, sigversion))
             return false;
@@ -112,6 +127,13 @@ static bool SignStep(const BaseSignatureCreator& creator, const CScript& scriptP
         return true;
 
     case TX_REISSUE_ASSET:
+        {
+        uint256 program;
+        if (IsPQOnlyAssetScript(scriptPubKey, program)) {
+            CPQKey pqKey;
+            return creator.KeyStore().GetPQKey(program, pqKey) && pqKey.IsValid();
+        }
+        }
         keyID = CKeyID(uint160(vSolutions[0]));
         if (!Sign1(keyID, creator, scriptPubKey, ret, sigversion))
             return false;
@@ -259,7 +281,7 @@ bool ProduceSignature(const BaseSignatureCreator& creator, const CScript& fromPu
                     solved = false;
                 }
             } else {
-                // Non-transaction creator (e.g. DummySignatureCreator) — cannot sign.
+                // Non-transaction creator (e.g. DummySignatureCreator): cannot sign.
                 // Fee estimation handles this in DummySignTx with correctly-sized dummy witness.
                 solved = false;
             }
@@ -489,7 +511,7 @@ static Stacks CombineSignatures(const CScript& scriptPubKey, const BaseSignature
             return sigs2;
         return sigs1;
     case TX_WITNESS_V2_PQ_KEYHASH:
-        // RIP-25: PQ ML-DSA-44 — prefer the more complete witness
+        // RIP-25: PQ ML-DSA-44: prefer the more complete witness
         if (sigs1.witness.empty() || sigs1.witness[0].empty())
             return sigs2;
         return sigs1;

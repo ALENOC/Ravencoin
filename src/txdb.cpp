@@ -572,7 +572,12 @@ bool CBlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, 
             if (pcursor->GetValue(diskindex)) {
                 uint256 hashBlock = diskindex.GetBlockHash();
 
-                if (!CheckProofOfWork(hashBlock, diskindex.nBits, consensusParams)) {
+                // The key is the hash originally accepted from the wire. A
+                // KAWPOW index stores the actual chain height, which can differ
+                // from the height declared in a pre-gate header. Do not load a
+                // reconstructed header under a different hash.
+                if (key.second != hashBlock ||
+                    !CheckProofOfWork(hashBlock, diskindex.nBits, consensusParams)) {
                     if (nSkipped < 32)
                         LogPrintf("%s: skipping unverifiable block index entry at height %d\n",
                                   __func__, diskindex.nHeight);
@@ -597,6 +602,7 @@ bool CBlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, 
                 pindexNew->nTx            = diskindex.nTx;
                 pindexNew->nNonce64       = diskindex.nNonce64;
                 pindexNew->mix_hash       = diskindex.mix_hash;
+                pindexNew->nHeaderHeight  = diskindex.nHeaderHeight;
                 pindexNew->nHeight        = diskindex.nHeight;
 
                 pcursor->Next();

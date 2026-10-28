@@ -1199,10 +1199,10 @@ BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
         CScriptWitness witness;
         witness.stack.push_back(std::vector<unsigned char>{0xaa});
 
-        // One element claims the canonical maximum CompactSize length, but no
-        // payload follows. Historical vector parsing resized/read in 5-MB
-        // chunks before discovering truncation.
-        RecordingFailStream stream({0x01, 0xfe, 0x00, 0x00, 0x00, 0x02});
+        // One element claims a large canonical CompactSize length that fits
+        // the encoded-size bound, but no payload follows. Historical vector
+        // parsing resized/read in 5-MB chunks before discovering truncation.
+        RecordingFailStream stream({0x01, 0xfe, 0xf0, 0xff, 0xff, 0x01});
         BOOST_CHECK_THROW(stream >> witness.stack, std::ios_base::failure);
         BOOST_CHECK_LE(stream.max_read_request, 64U * 1024U);
 

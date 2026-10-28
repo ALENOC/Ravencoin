@@ -529,6 +529,17 @@ raven_cli_LDADD += $(BOOST_LIBS) $(SSL_LIBS) $(CRYPTO_LIBS) $(EVENT_LIBS) $(LIBO
 #
 
 # raven-tx binary #
+# Keep the interdependent transaction, asset, and wallet objects in one archive.
+EXTRA_LIBRARIES += libraven_tx_core.a
+libraven_tx_core_a_SOURCES =
+libraven_tx_core_a_LIBADD = \
+  $(libraven_common_a_OBJECTS) \
+  $(libraven_server_a_OBJECTS)
+
+if ENABLE_WALLET
+libraven_tx_core_a_LIBADD += $(libraven_wallet_a_OBJECTS)
+endif
+
 raven_tx_SOURCES = raven-tx.cpp
 raven_tx_CPPFLAGS = $(AM_CPPFLAGS) $(RAVEN_INCLUDES)
 raven_tx_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
@@ -539,14 +550,18 @@ raven_tx_SOURCES += raven-tx-res.rc
 endif
 
 raven_tx_LDADD = \
+  libraven_tx_core.a \
   $(LIBUNIVALUE) \
-  $(LIBRAVEN_COMMON) \
   $(LIBRAVEN_UTIL) \
+  $(LIBRAVEN_ZMQ) \
   $(LIBRAVEN_CONSENSUS) \
   $(LIBRAVEN_CRYPTO) \
+  $(LIBLEVELDB) \
+  $(LIBLEVELDB_SSE42) \
+  $(LIBMEMENV) \
   $(LIBSECP256K1)
 
-raven_tx_LDADD += $(BOOST_LIBS) $(CRYPTO_LIBS) $(LIBOQS_LIBS)
+raven_tx_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(SSL_LIBS) $(CRYPTO_LIBS) $(MINIUPNPC_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(ZMQ_LIBS) $(LIBOQS_LIBS)
 #
 
 # ravenconsensus library #
@@ -561,7 +576,7 @@ endif
 if TARGET_WINDOWS
 libravenconsensus_la_LDFLAGS = $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS) -no-undefined $(RELDFLAGS)
 else
-libravenconsensus_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined $(RELDFLAGS)
+libravenconsensus_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined $(RELDFLAGS) $(NOUNDEFINED_LDFLAGS)
 endif
 libravenconsensus_la_LIBADD = $(LIBSECP256K1) $(BOOST_LIBS) $(LIBOQS_LIBS)
 

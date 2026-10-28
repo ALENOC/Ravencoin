@@ -1551,10 +1551,10 @@ static bool VerifyWitnessProgram(const CScriptWitness &witness, int witversion, 
     }
     else if (witversion == 2 && (flags & SCRIPT_VERIFY_PQ_HYBRID))
     {
-        // RIP-25: Witness version 2 — Post-Quantum ML-DSA-44 Only
+        // RIP-25: Witness version 2: Post-Quantum ML-DSA-44 Only
         // Program: SHA256(mldsa_pk) = 32 bytes
         // Witness stack: [mldsa_sig (2420 bytes), mldsa_pk (1312 bytes)]
-        // No ECDSA — ML-DSA-44 provides quantum-resistant signatures.
+        // No ECDSA: ML-DSA-44 provides quantum-resistant signatures.
         // Old ECDSA addresses (witness v0) continue to work.
         if (program.size() != 32)
         {
@@ -1583,7 +1583,7 @@ static bool VerifyWitnessProgram(const CScriptWitness &witness, int witversion, 
                 return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
         }
 
-        // Step 1: Verify public key binding — SHA256(mldsa_pk) == program
+        // Step 1: Verify public key binding: SHA256(mldsa_pk) == program
         uint256 expected_program;
         {
             CSHA256 hasher;
@@ -1791,7 +1791,7 @@ size_t static WitnessSigOps(int witversion, const std::vector<unsigned char> &wi
 
     if (witversion == 2 && witprogram.size() == 32 && (flags & SCRIPT_VERIFY_PQ_HYBRID))
     {
-        return 1;
+        return PQ_WITNESS_V2_SIGOPS_COST;
     }
 
     // Future flags may be implemented here.

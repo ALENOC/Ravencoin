@@ -6,6 +6,7 @@
 #include "wallet/wallet.h"
 #include "assets/assets.h"
 #include "chainparams.h"
+#include "hash.h"
 
 #include <set>
 #include <stdint.h>
@@ -62,6 +63,36 @@ private:
     bool& destroyed_;
 };
 
+class FailingTxnBeginDbEnv : public DbEnv
+{
+public:
+    FailingTxnBeginDbEnv() : DbEnv(DB_CXX_NO_EXCEPTIONS) {}
+
+    int txn_begin(DbTxn*, DbTxn** transaction, u_int32_t) override
+    {
+        *transaction = nullptr;
+        return DB_RUNRECOVERY;
+    }
+};
+
+class ScopedFailingTxnBegin
+{
+private:
+    DbEnv* const previous;
+    FailingTxnBeginDbEnv failing;
+
+public:
+    ScopedFailingTxnBegin() : previous(bitdb.dbenv)
+    {
+        bitdb.dbenv = &failing;
+    }
+
+    ~ScopedFailingTxnBegin()
+    {
+        bitdb.dbenv = previous;
+    }
+};
+
 class ScopedWalletFactoryTestState
 {
 private:
@@ -112,6 +143,99 @@ using RegisteredWalletPtr = std::unique_ptr<CWallet, RegisteredWalletDeleter>;
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
+
+    BOOST_AUTO_TEST_CASE(bip44_seed_ids_are_unique_and_stable)
+    {
+        ScopedWalletFactoryTestState testState(false);
+        const std::string mnemonics[] = {
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "legal winner thank year wave sausage worth useful legal winner thank yellow",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        };
+        CKeyID seedIds[3];
+        CPubKey firstKeys[3];
+        for (unsigned int i = 0; i < 3; ++i) {
+            const std::string filename = strprintf("bip44-seed-id-%u.dat", i);
+            gArgs.ForceSetArg("-mnemonic", mnemonics[i]);
+            gArgs.ForceSetArg("-mnemonicpassphrase", "TREZOR");
+            {
+                RegisteredWalletPtr wallet(CWallet::CreateWalletFromFile(filename));
+                BOOST_REQUIRE(wallet != nullptr);
+                BOOST_REQUIRE(wallet->IsBip44Enabled());
+                seedIds[i] = wallet->GetHDChain().seed_id;
+                BOOST_REQUIRE(wallet->GetKeyFromPool(firstKeys[i], false));
+            }
+            bitdb.Flush(false);
+            std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
+            CWallet reloaded(std::move(dbw));
+            bool firstRun = true;
+            BOOST_REQUIRE_EQUAL(reloaded.LoadWallet(firstRun, false), DB_LOAD_OK);
+            BOOST_CHECK(!firstRun);
+            BOOST_CHECK(reloaded.GetHDChain().seed_id == seedIds[i]);
+        }
+        BOOST_CHECK(seedIds[0] != seedIds[1]);
+        BOOST_CHECK(seedIds[0] == seedIds[2]);
+        BOOST_CHECK(firstKeys[0] != firstKeys[1]);
+        BOOST_CHECK(firstKeys[0] == firstKeys[2]);
+        const unsigned char blank = 0;
+        BOOST_CHECK(seedIds[0] != CKeyID(Hash160(&blank, &blank)));
+    }
+
+    BOOST_AUTO_TEST_CASE(bip44_legacy_seed_id_migrates_without_changing_keys)
+    {
+        ScopedWalletFactoryTestState testState(false);
+        const std::string filename = "bip44-legacy-seed-id.dat";
+        const std::string mnemonic =
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        gArgs.ForceSetArg("-mnemonic", mnemonic);
+        gArgs.ForceSetArg("-mnemonicpassphrase", "TREZOR");
+        CPubKey firstKey;
+        CKeyID expectedSeedId;
+        uint32_t externalCounter = 0;
+        {
+            RegisteredWalletPtr wallet(CWallet::CreateWalletFromFile(filename));
+            BOOST_REQUIRE(wallet != nullptr);
+            expectedSeedId = wallet->GetHDChain().seed_id;
+            BOOST_REQUIRE(wallet->GetKeyFromPool(firstKey, false));
+            BOOST_REQUIRE(firstKey.IsValid());
+            externalCounter = wallet->GetHDChain().nExternalChainCounter;
+        }
+        bitdb.Flush(false);
+
+        const unsigned char blank = 0;
+        const CKeyID legacySeedId(Hash160(&blank, &blank));
+        {
+            CWalletDBWrapper dbw(&bitdb, filename);
+            CWalletDB walletdb(dbw);
+            CHDChain legacy(nullptr);
+            CDB raw(dbw);
+            BOOST_REQUIRE(raw.Read(std::string("hdchain"), legacy));
+            legacy.seed_id = legacySeedId;
+            BOOST_REQUIRE(walletdb.WriteHDChain(legacy));
+
+            CKeyMetadata metadata;
+            const auto metadataKey = std::make_pair(std::string("keymeta"), firstKey);
+            BOOST_REQUIRE(raw.Read(metadataKey, metadata));
+            metadata.hd_seed_id = legacySeedId;
+            BOOST_REQUIRE(raw.Write(metadataKey, metadata));
+        }
+        bitdb.Flush(false);
+
+        std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
+        CWallet reloaded(std::move(dbw));
+        bool firstRun = true;
+        BOOST_REQUIRE_EQUAL(reloaded.LoadWallet(firstRun, false), DB_LOAD_OK);
+        BOOST_CHECK(!firstRun);
+        BOOST_CHECK(reloaded.GetHDChain().seed_id == expectedSeedId);
+        BOOST_CHECK(reloaded.GetHDChain().seed_id != legacySeedId);
+        BOOST_CHECK_EQUAL(reloaded.GetHDChain().nExternalChainCounter, externalCounter);
+        const auto entry = reloaded.mapKeyMetadata.find(firstKey.GetID());
+        BOOST_REQUIRE(entry != reloaded.mapKeyMetadata.end());
+        BOOST_CHECK(entry->second.hd_seed_id == expectedSeedId);
+        CKey existingKey;
+        BOOST_CHECK(reloaded.GetKey(firstKey.GetID(), existingKey));
+        BOOST_CHECK(existingKey.GetPubKey() == firstKey);
+    }
 
     BOOST_AUTO_TEST_CASE(database_environment_open_failure_renews_handle)
     {
@@ -943,3 +1067,86 @@ BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
     }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_FIXTURE_TEST_CASE(encrypted_bip44_legacy_seed_id_migrates_on_unlock, TestingSetup)
+    {
+        // Encryption rewrites the Berkeley DB file. Use a file-backed test environment.
+        bitdb.Close();
+        bitdb.Reset();
+        ScopedWalletFactoryTestState testState(false);
+        const std::string filename = "encrypted-bip44-legacy-seed-id.dat";
+        const SecureString walletPassphrase("bip44-seed-id-migration-passphrase");
+        gArgs.ForceSetArg("-mnemonic",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about");
+        gArgs.ForceSetArg("-mnemonicpassphrase", "TREZOR");
+        CPubKey firstKey;
+        CKeyID expectedSeedId;
+        {
+            RegisteredWalletPtr wallet(CWallet::CreateWalletFromFile(filename));
+            BOOST_REQUIRE(wallet != nullptr);
+            expectedSeedId = wallet->GetHDChain().seed_id;
+            BOOST_REQUIRE(wallet->GetKeyFromPool(firstKey, false));
+            BOOST_REQUIRE(wallet->EncryptWallet(walletPassphrase));
+        }
+        bitdb.Flush(false);
+
+        const unsigned char blank = 0;
+        const CKeyID legacySeedId(Hash160(&blank, &blank));
+        {
+            CWalletDBWrapper dbw(&bitdb, filename);
+            CWalletDB walletdb(dbw);
+            CDB raw(dbw);
+            CHDChain legacy(nullptr);
+            BOOST_REQUIRE(raw.Read(std::string("hdchain"), legacy));
+            legacy.seed_id = legacySeedId;
+            BOOST_REQUIRE(walletdb.WriteHDChain(legacy));
+            const auto metadataKey = std::make_pair(std::string("keymeta"), firstKey);
+            CKeyMetadata metadata;
+            BOOST_REQUIRE(raw.Read(metadataKey, metadata));
+            metadata.hd_seed_id = legacySeedId;
+            BOOST_REQUIRE(raw.Write(metadataKey, metadata));
+        }
+        bitdb.Flush(false);
+
+        {
+            std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
+            CWallet reloaded(std::move(dbw));
+            bool firstRun = true;
+            BOOST_REQUIRE_EQUAL(reloaded.LoadWallet(firstRun, false), DB_LOAD_OK);
+            BOOST_CHECK(!firstRun);
+            BOOST_CHECK(reloaded.IsLocked());
+            BOOST_CHECK(reloaded.GetHDChain().seed_id == legacySeedId);
+            {
+                ScopedFailingTxnBegin failingTransaction;
+                BOOST_CHECK(!reloaded.Unlock(walletPassphrase));
+            }
+            BOOST_CHECK(reloaded.IsLocked());
+            BOOST_CHECK(reloaded.GetHDChain().seed_id == legacySeedId);
+            const auto legacyMetadata = reloaded.mapKeyMetadata.find(firstKey.GetID());
+            BOOST_REQUIRE(legacyMetadata != reloaded.mapKeyMetadata.end());
+            BOOST_CHECK(legacyMetadata->second.hd_seed_id == legacySeedId);
+            {
+                CDB raw(reloaded.GetDBHandle(), "r");
+                CHDChain unchanged(nullptr);
+                BOOST_REQUIRE(raw.Read(std::string("hdchain"), unchanged));
+                BOOST_CHECK(unchanged.seed_id == legacySeedId);
+                CKeyMetadata metadata;
+                BOOST_REQUIRE(raw.Read(
+                    std::make_pair(std::string("keymeta"), firstKey), metadata));
+                BOOST_CHECK(metadata.hd_seed_id == legacySeedId);
+            }
+            BOOST_REQUIRE(reloaded.Unlock(walletPassphrase));
+            BOOST_CHECK(reloaded.GetHDChain().seed_id == expectedSeedId);
+            CKey existingKey;
+            BOOST_REQUIRE(reloaded.GetKey(firstKey.GetID(), existingKey));
+            BOOST_CHECK(existingKey.GetPubKey() == firstKey);
+            BOOST_CHECK(reloaded.Lock());
+        }
+        bitdb.Flush(false);
+
+        std::unique_ptr<CWalletDBWrapper> dbw(new CWalletDBWrapper(&bitdb, filename));
+        CWallet reloadedAgain(std::move(dbw));
+        bool firstRun = true;
+        BOOST_REQUIRE_EQUAL(reloadedAgain.LoadWallet(firstRun, false), DB_LOAD_OK);
+        BOOST_CHECK(reloadedAgain.GetHDChain().seed_id == expectedSeedId);
+    }

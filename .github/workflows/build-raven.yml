@@ -59,13 +59,22 @@ jobs:
         run: |
           ./autogen.sh
           mkdir -p "$HOME/.ccache"
+          "$PWD/depends/x86_64-pc-linux-gnu/native/bin/ccache" --print-config > /dev/null
           CONFIG_SITE="$PWD/depends/x86_64-pc-linux-gnu/share/config.site" \
-            ./configure --without-gui --disable-bench
+            ./configure --without-gui --with-tx --disable-bench
 
       - name: Build and run unit tests
         run: |
           make -j2
-          make check
+          if ! make check; then
+            for log in src/test-suite.log src/test/test_raven.log; do
+              if [ -f "$log" ]; then
+                echo "Failure details from $log:"
+                tail -n 160 "$log"
+              fi
+            done
+            exit 1
+          fi
 
       - name: Exercise the real PQ verifier fuzz target
         run: |
@@ -77,12 +86,15 @@ jobs:
       - name: Run behavioral security invariants
         run: ./contrib/devtools/check-rip25-v48-invariants.sh --run-tests
 
+      - name: Prove source mutation sensitivity
+        run: python3 contrib/devtools/test-rip25-source-mutation-sensitivity.py --full
+
       - name: Run required functional security tests
         run: |
           python3 contrib/devtools/test-required-functional-gate.py
           python3 test/functional/test_runner.py --require-tests --jobs=2 \
-            wallet_encryption_rewrite.py wallet_asset_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py \
-            feature_asset_activation_reorg.py feature_transfer_script_reorg.py feature_rip5_activation_reorg.py \
+            wallet_encryption_rewrite.py wallet_asset_multiwallet.py feature_rewards_restart.py wallet_pq_recovery.py wallet_restricted_multiwallet.py wallet_messaging_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py \
+            feature_asset_activation_reorg.py feature_pq_activation_reorg_sigops.py feature_transfer_script_reorg.py feature_rip5_activation_reorg.py feature_enforced_coinbase_activation.py \
             feature_asset_dbcrash.py feature_asset_dbcrash_transfer.py feature_asset_db_missing_block.py \
             feature_asset_verifydb_sameblock.py feature_transfer_mempool_reorg.py feature_mempool_clear_reissue.py feature_mempool_reissue_restart.py feature_transfer_sidebranch.py feature_pq_asset_anchor.py feature_pq_asset_authority_selection.py feature_pq_asset_source_rpc.py feature_pq_asset_wallet_ownership.py feature_loadblock.py \
             feature_restricted_dbcrash.py feature_restricted_verifydb.py feature_restricted_verifydb_root.py \
@@ -227,6 +239,7 @@ jobs:
       run: |
         ./autogen.sh
         mkdir -p "$HOME/.ccache"
+        "$PWD/depends/${{ matrix.host }}/native/bin/ccache" --print-config > /dev/null
 
     - name: Configure Build
       run: bash -Eeuo pipefail "${SCRIPTS}/04-configure-build.sh" "${{ matrix.OS }}" "$GITHUB_WORKSPACE"
@@ -239,6 +252,41 @@ jobs:
 
     - name: Build Raven
       run: make -j2
+
+    - name: Install Qt runtime test prerequisites
+      if: matrix.OS == 'linux'
+      run: sudo apt-get install -y xvfb xauth x11-utils libxtst6 libxkbcommon-x11-0
+
+    - name: Verify Qt smoke runtime libraries
+      if: matrix.OS == 'linux'
+      shell: bash
+      run: |
+        for binary in src/qt/raven-qt src/raven-cli; do
+          test -x "$binary"
+          libraries="$(ldd "$binary")"
+          if grep -Fq 'not found' <<< "$libraries"; then
+            printf 'Missing runtime libraries for %s:\n%s\n' "$binary" "$libraries"
+            exit 1
+          fi
+        done
+
+    - name: Test Qt startup without wallet
+      if: matrix.OS == 'linux'
+      run: ./contrib/devtools/test-qt-no-wallet-startup.sh
+
+    - name: Test Qt Options without wallet
+      if: matrix.OS == 'linux'
+      run: |
+        xvfb-run -a -s '-screen 0 1024x768x24' \
+          python3 contrib/devtools/test-qt-no-wallet-options.py \
+          src/qt/raven-qt src/raven-cli
+
+    - name: Test pinned Qt mnemonic dialog
+      if: matrix.OS == 'linux'
+      shell: bash
+      run: |
+        make -C src -j2 qt/test/test_mnemonicdialog
+        QT_QPA_PLATFORM=minimal src/qt/test/test_mnemonicdialog
 
 # Skip the binary checks for now.
 #      name: Check Binary Security
@@ -306,3 +354,47 @@ jobs:
         path: ${{ github.workspace }}/release
         if-no-files-found: error
         retention-days: 14
+
+  verify-artifacts:
+    name: Verify all five downloaded release bundles
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify checkout
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+
+      - name: Install archive validation tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
+      - name: Prove the artifact verifier fails closed
+        run: python3 -m unittest discover -s contrib/devtools -p test_build_raven_artifacts.py -v
+
+      - name: Download all Build Raven bundles
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: raven-unsigned-*
+          path: ${{ runner.temp }}/rip25-artifacts
+          merge-multiple: false
+
+      - name: Verify package provenance and binary targets
+        env:
+          PACKAGE_REF: ${{ github.base_ref || github.ref_name }}
+        shell: bash
+        run: |
+          python3 contrib/devtools/verify_build_raven_artifacts.py \
+            "$RUNNER_TEMP/rip25-artifacts" "$GITHUB_SHA" \
+            --repository "$GITHUB_WORKSPACE" --package-ref "$PACKAGE_REF" \
+            --output "$RUNNER_TEMP/rip25-artifact-verification.json"

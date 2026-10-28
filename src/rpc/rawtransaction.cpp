@@ -355,7 +355,7 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
             "Note that the transaction's inputs are not signed, and\n"
             "it is not stored in the wallet or transmitted to the network.\n"
             "After PQ asset activation, asset output keys and owner/root change fields\n"
-            "must use canonical classical|PQ descriptors. Spending a protected asset\n"
+            "must use canonical PQ-only descriptors. Spending a protected asset\n"
             "also requires a supplied, funded native witness-v2 input with the same\n"
             "PQ program; this RPC does not select or fund that anchor.\n"
 
@@ -676,9 +676,9 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                                        uint256& program) -> CTxDestination {
         if (pqAssetsActive) {
             CKeyID classicalKey;
-            if (!DecodePQAssetDestination(address, classicalKey, program))
+            if (!DecodePQOnlyAssetDestination(address, classicalKey, program))
                 throw JSONRPCError(RPC_INVALID_PARAMETER,
-                    "Invalid parameter, " + field + " must be a canonical classical|PQ asset destination");
+                    "Invalid parameter, " + field + " must be a canonical PQ-only asset destination");
             return classicalKey;
         }
         const CTxDestination destination = DecodeDestination(address);
@@ -693,7 +693,7 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
 
     const auto tagAssetScript = [](CScript& script, const uint256& program) {
         CScript tagged;
-        if (!BuildPQAssetTaggedScript(script, program, tagged))
+        if (!BuildPQOnlyAssetScript(script, program, tagged))
             throw JSONRPCError(RPC_INVALID_PARAMETER,
                 "Could not construct a canonical PQ asset output");
         script = std::move(tagged);
@@ -714,9 +714,9 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
             uint256 assetProgram;
             if (pqAssetsActive && isAssetOutput) {
                 CKeyID classicalKey;
-                if (!DecodePQAssetDestination(name_, classicalKey, assetProgram))
+                if (!DecodePQOnlyAssetDestination(name_, classicalKey, assetProgram))
                     throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
-                        "Active PQ asset output requires a canonical classical|PQ asset destination");
+                        "Active PQ asset output requires a canonical PQ-only asset destination");
                 destination = classicalKey;
             } else {
                 destination = DecodeDestination(name_);
@@ -1554,6 +1554,9 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
                         uint256 existingProgram;
                         if (!GetPQAssetProgram(outputScript, existingProgram))
                             tagAssetScript(outputScript, assetProgram);
+                        else if (!IsPQOnlyAssetScript(outputScript, existingProgram))
+                            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                                "Active PQ asset output must use the canonical PQ-only script");
                     }
                 }
             } else {
