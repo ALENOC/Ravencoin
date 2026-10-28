@@ -90,8 +90,9 @@ The KAWPOW checkpoint and concurrent hashing corrections are recorded as
 FINDING-195 and FINDING-196. The official PR checkpoint `c63cad804`
 passed its exact-SHA CI pair and independent five-package review.
 FINDING-197, covering extreme declared KAWPOW heights before the
-historical height rule activates, is fixed locally and awaits exact-SHA
-qualification.
+historical height rule activates, is fixed on official PR head
+`a756574d4`, where Build Raven `40599833317` and Final Gate
+`40599833429` both passed. Its five packages await independent review.
 The verifier now treats a context beyond its local memory budget as a
 resource error, without marking the header invalid or penalizing its peer.
 Known-parent headers and complete blocks also reject an incorrect KAWPOW
@@ -108,10 +109,11 @@ declares its actual height, so the largest historical context needs
 can repeat the check on a fully validated chain.
 FINDING-199 corrects a Windows Final Gate link failure in the
 standalone consensus library; ELF builds now reject unresolved symbols
-in that library as well. On official PR head `aa5b128c5`,
-Build Raven `40499782364` and Final Gate `40499782271` both passed,
-including the Windows link. That checkpoint predates the final RC
-documentation refresh and does not qualify a later source SHA.
+in that library as well. That check also found an unresolved
+`sha256_transform` in 32-bit ARM builds, which now compile the existing
+C implementation. On `a756574d4` every Final Gate variant linked the
+library, including Windows and each ELF target under the new check.
+These runs do not qualify a later source SHA.
 The CI packages are unsigned. Native Windows and macOS GUI exercise is
 assigned to community testing after publication; cross-platform builds and
 package checks do not establish native GUI behavior.
