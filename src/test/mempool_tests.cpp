@@ -921,4 +921,78 @@ BOOST_FIXTURE_TEST_SUITE(mempool_tests, TestingSetup)
         mempool.clear();
     }
 
+    BOOST_AUTO_TEST_CASE(pq_asset_activation_and_reorg_purge_invalid_graph)
+    {
+        LOCK(cs_main);
+        mempool.clear();
+        const int activationHeight = chainActive.Height() + 2;
+        const uint256 program = uint256S("7e");
+        auto assetOutput = [&](bool tagged) {
+            CScript script = GetScriptForDestination(
+                DecodeDestination(GetParams().GlobalBurnAddress()));
+            CAssetTransfer("PQ_MEMPOOL", COIN).ConstructTransaction(script);
+            if (tagged) {
+                const std::vector<unsigned char> bytes = ToByteVector(program);
+                script.push_back(32);
+                script.insert(script.end(), bytes.begin(), bytes.end());
+                script.push_back(OP_DROP);
+            }
+            return CTxOut(0, script);
+        };
+        auto addCoin = [&](const CTxOut& output, int height) {
+            const COutPoint outpoint(InsecureRand256(), 0);
+            pcoinsTip->AddCoin(outpoint, Coin(output, height, false), false);
+            return outpoint;
+        };
+        auto spendTo = [&](const COutPoint& prevout, const CTxOut& output) {
+            CMutableTransaction tx;
+            tx.vin.emplace_back(prevout);
+            tx.vout.push_back(output);
+            return MakeTransactionRef(tx);
+        };
+
+        const CTxOut ordinary(COIN, CScript() << OP_TRUE);
+        const CTransactionRef invalid = spendTo(
+            addCoin(ordinary, chainActive.Height()), assetOutput(false));
+        const CTransactionRef child = spendTo(
+            COutPoint(invalid->GetHash(), 0), ordinary);
+        const CTransactionRef valid = spendTo(
+            addCoin(ordinary, chainActive.Height()), assetOutput(true));
+        const CTransactionRef unrelated = spendTo(
+            addCoin(ordinary, chainActive.Height()), ordinary);
+        TestMemPoolEntryHelper entry;
+        BOOST_REQUIRE(mempool.addUnchecked(invalid->GetHash(), entry.FromTx(*invalid)));
+        BOOST_REQUIRE(mempool.addUnchecked(child->GetHash(), entry.FromTx(*child)));
+        BOOST_REQUIRE(mempool.addUnchecked(valid->GetHash(), entry.FromTx(*valid)));
+        BOOST_REQUIRE(mempool.addUnchecked(unrelated->GetHash(), entry.FromTx(*unrelated)));
+
+        ConnectedBlockAssetData noAssetChanges;
+        const std::vector<CTransactionRef> emptyBlock;
+        mempool.removeForBlock(emptyBlock, chainActive.Height() + 1,
+                               noAssetChanges, false, false, -1, false);
+        BOOST_REQUIRE_EQUAL(mempool.size(), 4U);
+        mempool.removeForBlock(emptyBlock, chainActive.Height() + 1,
+                               noAssetChanges, false, false,
+                               activationHeight, true);
+        BOOST_CHECK(!mempool.exists(invalid->GetHash()));
+        BOOST_CHECK(!mempool.exists(child->GetHash()));
+        BOOST_CHECK(mempool.exists(valid->GetHash()));
+        BOOST_CHECK(mempool.exists(unrelated->GetHash()));
+
+        const COutPoint movedCoin = addCoin(assetOutput(true), activationHeight - 1);
+        const CTransactionRef movedSpend = spendTo(movedCoin, assetOutput(true));
+        BOOST_REQUIRE(mempool.addUnchecked(movedSpend->GetHash(), entry.FromTx(*movedSpend)));
+        mempool.removeForReorg(pcoinsTip, chainActive.Height() + 1,
+                               STANDARD_LOCKTIME_VERIFY_FLAGS, true,
+                               activationHeight);
+        BOOST_CHECK(mempool.exists(movedSpend->GetHash()));
+        BOOST_REQUIRE(pcoinsTip->SpendCoin(movedCoin));
+        pcoinsTip->AddCoin(movedCoin, Coin(assetOutput(true), activationHeight, false), false);
+        mempool.removeForReorg(pcoinsTip, chainActive.Height() + 1,
+                               STANDARD_LOCKTIME_VERIFY_FLAGS, true,
+                               activationHeight);
+        BOOST_CHECK(!mempool.exists(movedSpend->GetHash()));
+        mempool.clear();
+    }
+
 BOOST_AUTO_TEST_SUITE_END()

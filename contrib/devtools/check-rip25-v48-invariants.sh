@@ -608,6 +608,9 @@ require_fixed 'python3 test/functional/test_runner.py --require-tests' "$final_g
 require_fixed 'wallet_encryption_rewrite.py wallet_asset_multiwallet.py rpc_assettransfer.py feature_chainstate_ahead.py' "$final_gate" 'required wallet, multiwallet asset, asset-scope, and chainstate-ahead functional tests are missing'
 require_fixed 'wallet_asset_multiwallet.py' .github/workflows/build-raven.yml 'release security job omits the multiwallet asset regression'
 require_fixed "'wallet_asset_multiwallet.py'" test/functional/test_runner.py 'multiwallet asset regression is not in the functional suite'
+require_fixed 'feature_pq_asset_deployment.py' "$final_gate" 'PQ asset activation boundary is not required by the final gate'
+require_fixed 'feature_pq_asset_deployment.py' .github/workflows/build-raven.yml 'PQ asset activation boundary is not required before artifact builds'
+require_fixed "'feature_pq_asset_deployment.py'" test/functional/test_runner.py 'PQ asset activation boundary is not registered'
 require_fixed 'id: posttest_integrity' "$final_gate" 'final gate does not recheck source after security tests'
 final_security_job="$(sed -n '/^  security-tests:/,/^  build:/p' "$final_gate")"
 require_text "$final_security_job" 'test/test_raven_fuzzy --pq-smoke' 'final security job does not run the PQ verifier fuzz smoke test'
@@ -788,6 +791,6 @@ echo "$fuzz_smoke_output"
 
 python3 contrib/devtools/test-required-functional-gate.py
 python3 test/functional/test_runner.py --require-tests --jobs=2 \
-  wallet_encryption_rewrite.py rpc_assettransfer.py feature_chainstate_ahead.py
+  wallet_encryption_rewrite.py rpc_assettransfer.py feature_chainstate_ahead.py feature_pq_asset_deployment.py
 
 echo 'RIP-25/v4.8 structural + behavioral invariants: OK'

@@ -518,6 +518,7 @@ bool GetAssetData(const CScript& script, CAssetOutputEntry& data);
 
 // Experimental PQ asset extension: recognize a canonical 32-byte program
 // tail without changing the legacy asset parser or script evaluator.
+// Consensus may require this canonical form only for post-activation outputs.
 bool GetPQAssetProgram(const CScript& script, uint256& program);
 
 bool GetBestAssetAddressAmount(CAssetsCache& cache, const std::string& assetName, const std::string& address);

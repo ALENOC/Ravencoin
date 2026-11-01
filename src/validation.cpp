@@ -394,6 +394,7 @@ bool CheckSequenceLocks(const CTransaction &tx, int flags, LockPoints* lp, bool 
 
 // Returns the script flags which should be checked for a given block
 static unsigned int GetBlockScriptFlags(const CBlockIndex* pindex, const Consensus::Params& chainparams);
+static int GetPQAssetActivationHeightLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params);
 
 static void LimitMempoolSize(CTxMemPool& pool, size_t limit, unsigned long age) {
     int expired = pool.Expire(GetTime() - age);
@@ -477,8 +478,11 @@ void UpdateMempoolForReorg(DisconnectedBlockTransactions &disconnectpool, bool f
     // Remove transactions invalidated by the new tip's maturity, lock-time,
     // or contextual pre-activation RIP-25 policy.
     const bool pqEnabled = IsPQHybridActiveLocked(chainActive.Tip(), GetParams().GetConsensus());
+    const int pqAssetActivationHeight = GetPQAssetActivationHeightLocked(
+        chainActive.Tip(), GetParams().GetConsensus());
     mempool.removeForReorg(pcoinsTip, chainActive.Tip()->nHeight + 1,
-                           STANDARD_LOCKTIME_VERIFY_FLAGS, pqEnabled);
+                           STANDARD_LOCKTIME_VERIFY_FLAGS, pqEnabled,
+                           pqAssetActivationHeight);
     // Re-limit mempool size, in case we added any transactions
     LimitMempoolSize(mempool, gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000, gArgs.GetArg("-mempoolexpiry", DEFAULT_MEMPOOL_EXPIRY) * 60 * 60);
 }
@@ -547,6 +551,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
     bool witnessEnabled = IsWitnessEnabled(chainActive.Tip(), chainparams.GetConsensus());
     const bool pqEnabled = IsPQHybridActiveLocked(chainActive.Tip(), chainparams.GetConsensus());
     const bool transferOverflowActive = IsTransferOverflowCheckActiveLocked(chainActive.Tip(), chainparams.GetConsensus());
+    const int pqAssetActivationHeight = GetPQAssetActivationHeightLocked(chainActive.Tip(), chainparams.GetConsensus());
     if (!gArgs.GetBoolArg("-prematurewitness", false) && tx.HasWitness() && !witnessEnabled) {
         return state.DoS(0, false, REJECT_NONSTANDARD, "no-witness-yet", true);
     }
@@ -670,6 +675,9 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
         if (!Consensus::CheckTxInputs(tx, state, view, GetSpendHeight(view), nFees)) {
             return error("%s: Consensus::CheckTxInputs: %s, %s", __func__, tx.GetHash().ToString(), FormatStateMessage(state));
         }
+
+        if (!Consensus::CheckTxPQAssets(tx, state, view, pqAssetActivationHeight))
+            return false;
 
         /** RVN START */
         if (!AreAssetsDeployed()) {
@@ -2413,6 +2421,19 @@ static int GetPQHybridActivationHeightLocked(const CBlockIndex* pindexPrev, cons
     return VersionBitsStateSinceHeight(pindexPrev, params, Consensus::DEPLOYMENT_PQ_HYBRID, versionbitscache);
 }
 
+static int GetPQAssetActivationHeightLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    AssertLockHeld(cs_main);
+    if (VersionBitsState(pindexPrev, params, Consensus::DEPLOYMENT_PQ_ASSETS, versionbitscache) != THRESHOLD_ACTIVE)
+        return -1;
+    const int nativeActivationHeight = GetPQHybridActivationHeightLocked(pindexPrev, params);
+    if (nativeActivationHeight < 0)
+        return -1;
+    const int assetActivationHeight = VersionBitsStateSinceHeight(
+        pindexPrev, params, Consensus::DEPLOYMENT_PQ_ASSETS, versionbitscache);
+    return std::max(nativeActivationHeight, assetActivationHeight);
+}
+
 static unsigned int GetMaxBlockWeightForPrevLocked(const CBlockIndex* pindexPrev, const Consensus::Params& params)
 {
     AssertLockHeld(cs_main);
@@ -2655,6 +2676,7 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     unsigned int flags = GetBlockScriptFlags(pindex, chainparams.GetConsensus());
     const bool pqWitnessDiscountActive = IsPQWitnessDiscountActive(pindex->pprev, chainparams.GetConsensus());
     const bool transferOverflowActive = IsTransferOverflowCheckActiveLocked(pindex->pprev, chainparams.GetConsensus());
+    const int pqAssetActivationHeight = GetPQAssetActivationHeightLocked(pindex->pprev, chainparams.GetConsensus());
     const unsigned int activeBlockWeightLimit = GetMaxBlockWeightForPrevLocked(pindex->pprev, chainparams.GetConsensus());
     int64_t contextualBlockWeight = GetBlockWeight(block);
 
@@ -2691,12 +2713,23 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
 
         nInputs += tx.vin.size();
 
+        if (tx.IsCoinBase() &&
+            !Consensus::CheckTxPQAssets(tx, state, view, pqAssetActivationHeight)) {
+            state.SetFailedTransaction(tx.GetHash());
+            return false;
+        }
+
         if (!tx.IsCoinBase())
         {
             CAmount txfee = 0;
             if (!Consensus::CheckTxInputs(tx, state, view, pindex->nHeight, txfee)) {
                 state.SetFailedTransaction(tx.GetHash());
                 return error("%s: Consensus::CheckTxInputs: %s, %s", __func__, tx.GetHash().ToString(), FormatStateMessage(state));
+            }
+
+            if (!Consensus::CheckTxPQAssets(tx, state, view, pqAssetActivationHeight)) {
+                state.SetFailedTransaction(tx.GetHash());
+                return false;
             }
 
             // RIP-25 consensus weight: preserve the approved 8x discount, but
@@ -2826,7 +2859,21 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
         {
             std::vector<CScriptCheck> vChecks;
             bool fCacheResults = fJustCheck; /* Don't cache results if we're actually connecting blocks (still consult the cache, though) */
-            if (!CheckInputs(tx, state, view, fScriptChecks, flags, fCacheResults,
+            // After PQ asset activation, the native anchor and the classical
+            // asset authorization are both required. Do not let assumevalid
+            // skip the P2PKH half of an asset spend.
+            bool fCheckThisTxScripts = fScriptChecks;
+            if (!fCheckThisTxScripts && pqAssetActivationHeight >= 0) {
+                for (const CTxIn& input : tx.vin) {
+                    int type = 0;
+                    bool isOwner = false;
+                    if (view.AccessCoin(input.prevout).out.scriptPubKey.IsAssetScript(type, isOwner)) {
+                        fCheckThisTxScripts = true;
+                        break;
+                    }
+                }
+            }
+            if (!CheckInputs(tx, state, view, fCheckThisTxScripts, flags, fCacheResults,
                              fCacheResults, txdata[i],
                              fQueueScriptChecks ? &vChecks : nullptr,
                              chainparams.GetConsensus().pqSignatureContext))
@@ -3539,9 +3586,15 @@ bool static ConnectTip(CValidationState& state, const CChainParams& chainparams,
         IsTransferOverflowCheckActiveLocked(pindexNew->pprev, chainparams.GetConsensus());
     const bool transferOverflowActive =
         IsTransferOverflowCheckActiveLocked(pindexNew, chainparams.GetConsensus());
+    const int pqAssetActivationHeightBefore =
+        GetPQAssetActivationHeightLocked(pindexNew->pprev, chainparams.GetConsensus());
+    const int pqAssetActivationHeightAfter =
+        GetPQAssetActivationHeightLocked(pindexNew, chainparams.GetConsensus());
     mempool.removeForBlock(blockConnecting.vtx, pindexNew->nHeight, assetDataFromBlock,
                            transferOverflowActive,
-                           transferOverflowActive && !transferOverflowWasActive);
+                           transferOverflowActive && !transferOverflowWasActive,
+                           pqAssetActivationHeightAfter,
+                           pqAssetActivationHeightAfter >= 0 && pqAssetActivationHeightBefore < 0);
     disconnectpool.removeForBlock(blockConnecting.vtx);
     // Update chainActive & related variables.
     UpdateTip(pindexNew, chainparams);

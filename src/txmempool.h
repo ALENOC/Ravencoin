@@ -584,13 +584,15 @@ public:
      * remove witness-v2 creators/spends and their descendants so a rollback
      * cannot retain transactions that current admission policy would reject.
      */
-    void removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMemPoolHeight,
-                        int flags, bool fPQHybridActive);
+    void removeForReorg(CCoinsViewCache *pcoins, unsigned int nMemPoolHeight,
+                        int flags, bool fPQHybridActive, int pqAssetActivationHeight = -1);
     void removeConflicts(const CTransaction &tx);
     void removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight,
                         ConnectedBlockAssetData& connectedBlockData,
                         bool fTransferOverflowActive,
-                        bool fTransferOverflowJustActivated = false);
+                        bool fTransferOverflowJustActivated = false,
+                        int pqAssetActivationHeight = -1,
+                        bool fPQAssetsJustActivated = false);
     void removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight);
 
     void clear();

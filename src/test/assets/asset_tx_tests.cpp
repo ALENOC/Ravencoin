@@ -15,6 +15,7 @@
 #include <consensus/tx_verify.h>
 #include <key.h>
 #include <keystore.h>
+#include <pqkey.h>
 #include <policy/policy.h>
 #include <script/interpreter.h>
 #include <script/sign.h>
@@ -52,6 +53,34 @@ CScript MakeTaggedAssetTransferScript(const std::string& assetName, CAmount amou
     CScript script = GetScriptForDestination(DecodeDestination(GetParams().GlobalBurnAddress()));
     script << OP_RVN_ASSET << assetData << OP_DROP;
     return script;
+}
+
+// Research-only encoding. These bytes remain inside the existing asset data
+// push, so the legacy script still ends with its original OP_DROP.
+bool AppendHypotheticalPQPayloadSuffix(const CScript& original,
+                                       const std::vector<unsigned char>& program,
+                                       CScript& tagged)
+{
+    if (program.size() != 32)
+        return false;
+
+    int assetType = 0;
+    int dataStart = 0;
+    bool isOwner = false;
+    if (!original.IsAssetScript(assetType, isOwner, dataStart) ||
+        original.size() <= 27 || original[25] != OP_RVN_ASSET ||
+        original.back() != OP_DROP || dataStart < 4)
+        return false;
+
+    // GetOp deliberately skips to script end after OP_RVN_ASSET, so use the
+    // legacy parser's asset-data offset rather than treating it as an opcode.
+    std::vector<unsigned char> assetData(original.begin() + dataStart - 4,
+                                         original.end() - 1);
+    assetData.insert(assetData.end(), 10, 0);
+    assetData.insert(assetData.end(), program.begin(), program.end());
+    tagged = CScript(original.begin(), original.begin() + 26);
+    tagged << assetData << OP_DROP;
+    return true;
 }
 
 } // namespace
@@ -260,6 +289,333 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         BOOST_CHECK_EQUAL(ownerName, "RAVENTEST!");
     }
 
+    BOOST_AUTO_TEST_CASE(hypothetical_pq_payload_suffix_preserves_legacy_asset_metadata)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        const CScript destination = GetScriptForDestination(
+            DecodeDestination(GetParams().GlobalBurnAddress()));
+        std::vector<unsigned char> program(32);
+        for (size_t i = 0; i < program.size(); ++i)
+            program[i] = static_cast<unsigned char>(7 + i * 37);
+
+        const auto compareRecognition = [](const CScript& legacy,
+                                           const CScript& tagged) {
+            int beforeType = 0;
+            int afterType = 0;
+            bool beforeOwner = false;
+            bool afterOwner = false;
+            BOOST_REQUIRE(legacy.IsAssetScript(beforeType, beforeOwner));
+            BOOST_REQUIRE(tagged.IsAssetScript(afterType, afterOwner));
+            BOOST_CHECK_EQUAL(afterType, beforeType);
+            BOOST_CHECK_EQUAL(afterOwner, beforeOwner);
+
+            txnouttype beforeStandardType = TX_NONSTANDARD;
+            txnouttype afterStandardType = TX_NONSTANDARD;
+            const bool beforeStandard = IsStandard(legacy, beforeStandardType, true);
+            const bool afterStandard = IsStandard(tagged, afterStandardType, true);
+            BOOST_CHECK(beforeStandard);
+            BOOST_CHECK(afterStandard);
+            BOOST_CHECK_EQUAL(afterStandard, beforeStandard);
+            BOOST_CHECK_EQUAL(afterStandardType, beforeStandardType);
+        };
+
+        const auto compareTransfer = [&](const std::string& name,
+                                         const std::string& message,
+                                         int64_t expiry) {
+            CScript legacy = destination;
+            CAssetTransfer(name, COIN, message, expiry).ConstructTransaction(legacy);
+            CScript tagged;
+            BOOST_REQUIRE(AppendHypotheticalPQPayloadSuffix(legacy, program, tagged));
+            BOOST_REQUIRE_EQUAL(tagged.back(), OP_DROP);
+            compareRecognition(legacy, tagged);
+
+            CAssetTransfer before;
+            CAssetTransfer after;
+            std::string beforeAddress;
+            std::string afterAddress;
+            BOOST_REQUIRE(TransferAssetFromScript(legacy, before, beforeAddress));
+            const bool oldParserRejectsPushData1 =
+                tagged[26] == OP_PUSHDATA1 && !AreTransferScriptsSizeDeployed();
+            if (oldParserRejectsPushData1) {
+                // The old transfer-script-size gate hardcodes payload offset
+                // 31, so it must reject a payload re-encoded as PUSHDATA1.
+                BOOST_CHECK(!TransferAssetFromScript(tagged, after, afterAddress));
+                int taggedDataStart = 0;
+                BOOST_REQUIRE(IsScriptTransferAsset(tagged, taggedDataStart));
+                CDataStream data(std::vector<unsigned char>(tagged.begin() + taggedDataStart,
+                                                            tagged.end()),
+                                 SER_NETWORK, PROTOCOL_VERSION);
+                after.SetNull();
+                BOOST_REQUIRE_NO_THROW(data >> after);
+                CTxDestination parsedDestination;
+                BOOST_REQUIRE(ExtractDestination(tagged, parsedDestination));
+                afterAddress = EncodeDestination(parsedDestination);
+            } else {
+                BOOST_REQUIRE(TransferAssetFromScript(tagged, after, afterAddress));
+            }
+            BOOST_CHECK_EQUAL(after.strName, before.strName);
+            BOOST_CHECK_EQUAL(after.nAmount, before.nAmount);
+            BOOST_CHECK_EQUAL(after.message, before.message);
+            BOOST_CHECK_EQUAL(after.nExpireTime, before.nExpireTime);
+            BOOST_CHECK_EQUAL(afterAddress, beforeAddress);
+
+            CAssetOutputEntry beforeData;
+            CAssetOutputEntry afterData;
+            BOOST_REQUIRE(GetAssetData(legacy, beforeData));
+            if (oldParserRejectsPushData1) {
+                BOOST_CHECK(!GetAssetData(tagged, afterData));
+            } else {
+                BOOST_REQUIRE(GetAssetData(tagged, afterData));
+                BOOST_CHECK_EQUAL(afterData.assetName, beforeData.assetName);
+                BOOST_CHECK_EQUAL(afterData.nAmount, beforeData.nAmount);
+                BOOST_CHECK_EQUAL(EncodeDestination(afterData.destination),
+                                  EncodeDestination(beforeData.destination));
+            }
+        };
+
+        for (const std::string& name : {"RAVENTEST", "RAVENTEST!", "RAVENTEST#ONE",
+                                         "$RAVENTEST", "#RAVENTEST"}) {
+            BOOST_TEST_CONTEXT(name) {
+                compareTransfer(name, "", 0);
+            }
+        }
+
+        const std::string txidMessage(32, 'x');
+        compareTransfer("RAVENTEST", txidMessage, 0);
+        compareTransfer("RAVENTEST", txidMessage, 123456789);
+        const std::string ipfs = std::string("\x12\x20", 2) + std::string(32, 'h');
+        compareTransfer("RAVENTEST", ipfs, 0);
+        compareTransfer("RAVENTEST", ipfs, 123456789);
+
+        const auto compareReissue = [&](const std::string& hash) {
+            CScript legacy = destination;
+            CReissueAsset("RAVENTEST", COIN, 0, 1, hash).ConstructTransaction(legacy);
+            CScript tagged;
+            BOOST_REQUIRE(AppendHypotheticalPQPayloadSuffix(legacy, program, tagged));
+            compareRecognition(legacy, tagged);
+            CReissueAsset before;
+            CReissueAsset after;
+            std::string beforeAddress;
+            std::string afterAddress;
+            BOOST_REQUIRE(ReissueAssetFromScript(legacy, before, beforeAddress));
+            BOOST_REQUIRE(ReissueAssetFromScript(tagged, after, afterAddress));
+            BOOST_CHECK_EQUAL(after.strName, before.strName);
+            BOOST_CHECK_EQUAL(after.nAmount, before.nAmount);
+            BOOST_CHECK_EQUAL(after.nUnits, before.nUnits);
+            BOOST_CHECK_EQUAL(after.nReissuable, before.nReissuable);
+            BOOST_CHECK_EQUAL(after.strIPFSHash, before.strIPFSHash);
+            BOOST_CHECK_EQUAL(afterAddress, beforeAddress);
+        };
+        compareReissue("");
+        compareReissue(ipfs);
+
+        const auto compareIssue = [&](const std::string& name, const std::string& hash) {
+            CScript legacy = destination;
+            CNewAsset(name, COIN, 0, 1, hash.empty() ? 0 : 1, hash)
+                .ConstructTransaction(legacy);
+            CScript tagged;
+            BOOST_REQUIRE(AppendHypotheticalPQPayloadSuffix(legacy, program, tagged));
+            compareRecognition(legacy, tagged);
+            CNewAsset before;
+            CNewAsset after;
+            std::string beforeAddress;
+            std::string afterAddress;
+            BOOST_REQUIRE(AssetFromScript(legacy, before, beforeAddress));
+            BOOST_REQUIRE(AssetFromScript(tagged, after, afterAddress));
+            BOOST_CHECK_EQUAL(after.strName, before.strName);
+            BOOST_CHECK_EQUAL(after.nAmount, before.nAmount);
+            BOOST_CHECK_EQUAL(after.units, before.units);
+            BOOST_CHECK_EQUAL(after.nReissuable, before.nReissuable);
+            BOOST_CHECK_EQUAL(after.nHasIPFS, before.nHasIPFS);
+            BOOST_CHECK_EQUAL(after.strIPFSHash, before.strIPFSHash);
+            BOOST_CHECK_EQUAL(afterAddress, beforeAddress);
+        };
+        compareIssue("RAVENTEST", "");
+        compareIssue("RAVENTEST", ipfs);
+        compareIssue("RAVENTEST#ONE", "");
+        compareIssue("$RAVENTEST", "");
+        compareIssue("#RAVENTEST", "");
+
+        CScript legacyOwner = destination;
+        CNewAsset("RAVENTEST", COIN, 0, 1, 0, "")
+            .ConstructOwnerTransaction(legacyOwner);
+        CScript taggedOwner;
+        BOOST_REQUIRE(AppendHypotheticalPQPayloadSuffix(legacyOwner, program, taggedOwner));
+        compareRecognition(legacyOwner, taggedOwner);
+        std::string beforeOwner;
+        std::string afterOwner;
+        std::string beforeAddress;
+        std::string afterAddress;
+        BOOST_REQUIRE(OwnerAssetFromScript(legacyOwner, beforeOwner, beforeAddress));
+        BOOST_REQUIRE(OwnerAssetFromScript(taggedOwner, afterOwner, afterAddress));
+        BOOST_CHECK_EQUAL(afterOwner, beforeOwner);
+        BOOST_CHECK_EQUAL(afterAddress, beforeAddress);
+    }
+
+    BOOST_AUTO_TEST_CASE(pq_asset_rule_requires_canonical_output_and_matching_anchor)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        const int activationHeight = 20;
+        const uint256 program = uint256S("03");
+        const uint256 otherProgram = uint256S("04");
+        const auto tagOutput = [&program](CTxOut output) {
+            BOOST_REQUIRE_EQUAL(output.scriptPubKey.back(), OP_DROP);
+            const std::vector<unsigned char> bytes = ToByteVector(program);
+            output.scriptPubKey.push_back(32);
+            output.scriptPubKey.insert(output.scriptPubKey.end(), bytes.begin(), bytes.end());
+            output.scriptPubKey.push_back(OP_DROP);
+            return output;
+        };
+
+        const CTxOut legacy = MakeAssetTransferOutput("RAVENTEST", COIN);
+        const CTxOut tagged = tagOutput(legacy);
+        const COutPoint legacyOut(uint256S("11"), 0);
+        const COutPoint taggedOldOut(uint256S("12"), 0);
+        const COutPoint taggedNewOut(uint256S("13"), 0);
+        const COutPoint anchorOut(uint256S("14"), 0);
+        const COutPoint wrongAnchorOut(uint256S("15"), 0);
+        CCoinsView base;
+        CCoinsViewCache coins(&base);
+        coins.AddCoin(legacyOut, Coin(legacy, 10, false), true);
+        coins.AddCoin(taggedOldOut, Coin(tagged, 19, false), true);
+        coins.AddCoin(taggedNewOut, Coin(tagged, 20, false), true);
+        coins.AddCoin(anchorOut, Coin(CTxOut(1000, GetScriptForWitnessV2PQ(program)), 10, false), true);
+        coins.AddCoin(wrongAnchorOut, Coin(CTxOut(1000, GetScriptForWitnessV2PQ(otherProgram)), 10, false), true);
+
+        CMutableTransaction candidate;
+        candidate.vin.emplace_back(legacyOut);
+        candidate.vout.push_back(legacy);
+        CValidationState inactive;
+        BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(candidate), inactive, coins, -1));
+        CValidationState legacyOutput;
+        BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(candidate), legacyOutput, coins, activationHeight));
+        BOOST_CHECK_EQUAL(legacyOutput.GetRejectReason(), "bad-pq-asset-output");
+
+        candidate.vout[0] = tagged;
+        CValidationState migration;
+        BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(candidate), migration, coins, activationHeight));
+        candidate.vin[0].prevout = taggedOldOut;
+        CValidationState historicalLookalike;
+        BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(candidate), historicalLookalike, coins, activationHeight));
+
+        candidate.vin[0].prevout = taggedNewOut;
+        CValidationState missingAnchor;
+        BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(candidate), missingAnchor, coins, activationHeight));
+        BOOST_CHECK_EQUAL(missingAnchor.GetRejectReason(), "bad-pq-asset-anchor");
+        candidate.vin.emplace_back(wrongAnchorOut);
+        CValidationState wrongAnchor;
+        BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(candidate), wrongAnchor, coins, activationHeight));
+        BOOST_CHECK_EQUAL(wrongAnchor.GetRejectReason(), "bad-pq-asset-anchor");
+        candidate.vin[1].prevout = anchorOut;
+        CValidationState matchingAnchor;
+        BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(candidate), matchingAnchor, coins, activationHeight));
+
+        candidate.vout[0].scriptPubKey.pop_back();
+        CValidationState malformedOutput;
+        BOOST_CHECK(!Consensus::CheckTxPQAssets(CTransaction(candidate), malformedOutput, coins, activationHeight));
+        BOOST_CHECK_EQUAL(malformedOutput.GetRejectReason(), "bad-pq-asset-output");
+    }
+
+    BOOST_AUTO_TEST_CASE(pq_asset_program_suffix_is_executable_by_legacy_nodes)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        CKey key;
+        key.MakeNewKey(true);
+        CBasicKeyStore keystore;
+        BOOST_REQUIRE(keystore.AddKey(key));
+
+        CScript assetScript = GetScriptForDestination(key.GetPubKey().GetID());
+        CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(assetScript);
+        const uint256 program = uint256S("7e"); // OP_CAT is harmless inside a 32-byte push.
+        const std::vector<unsigned char> programBytes = ToByteVector(program);
+        assetScript.push_back(32);
+        assetScript.insert(assetScript.end(), programBytes.begin(), programBytes.end());
+        assetScript.push_back(OP_DROP);
+        uint256 parsed;
+        BOOST_REQUIRE(GetPQAssetProgram(assetScript, parsed));
+        BOOST_CHECK(parsed == program);
+
+        CMutableTransaction funding;
+        funding.vin.emplace_back(COutPoint(uint256S("16"), 0));
+        funding.vout.emplace_back(0, assetScript);
+        CMutableTransaction spending;
+        spending.vin.emplace_back(COutPoint(CTransaction(funding).GetHash(), 0));
+        spending.vout.emplace_back(0, MakeAssetTransferOutput("RAVENTEST", COIN).scriptPubKey);
+        BOOST_REQUIRE(SignSignature(keystore, CTransaction(funding), spending, 0, SIGHASH_ALL));
+        ScriptError error = SCRIPT_ERR_UNKNOWN_ERROR;
+        BOOST_CHECK(VerifyScript(spending.vin[0].scriptSig, assetScript,
+                    &spending.vin[0].scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS,
+                    MutableTransactionSignatureChecker(&spending, 0, 0), &error));
+        BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
+    }
+
+    BOOST_AUTO_TEST_CASE(pq_asset_anchor_requires_real_mldsa_verification)
+    {
+        SelectParams(CBaseChainParams::MAIN);
+        const Consensus::PQSignatureContext& context = GetParams().GetConsensus().pqSignatureContext;
+        CKey classical;
+        classical.MakeNewKey(true);
+        CPQKey pq;
+        pq.MakeNewKey();
+        BOOST_REQUIRE(pq.IsValid());
+        const uint256 program = pq.GetPubKey().GetWitnessProgram();
+        CBasicKeyStore keystore;
+        BOOST_REQUIRE(keystore.AddKey(classical));
+        BOOST_REQUIRE(keystore.AddPQKeyPubKey(pq, pq.GetPubKey()));
+
+        CScript assetScript = GetScriptForDestination(classical.GetPubKey().GetID());
+        CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(assetScript);
+        const std::vector<unsigned char> bytes = ToByteVector(program);
+        assetScript.push_back(32);
+        assetScript.insert(assetScript.end(), bytes.begin(), bytes.end());
+        assetScript.push_back(OP_DROP);
+        uint256 parsed;
+        BOOST_REQUIRE(GetPQAssetProgram(assetScript, parsed));
+        BOOST_CHECK(parsed == program);
+
+        CMutableTransaction assetFunding;
+        assetFunding.vout.emplace_back(0, assetScript);
+        CMutableTransaction anchorFunding;
+        anchorFunding.vout.emplace_back(1000, GetScriptForWitnessV2PQ(program));
+        const CTransaction assetSource(assetFunding);
+        const CTransaction anchorSource(anchorFunding);
+        CMutableTransaction spend;
+        spend.vin.emplace_back(COutPoint(assetSource.GetHash(), 0));
+        spend.vin.emplace_back(COutPoint(anchorSource.GetHash(), 0));
+        spend.vout.emplace_back(0, assetScript);
+        BOOST_REQUIRE(SignSignature(keystore, assetSource, spend, 0, SIGHASH_ALL, context));
+        BOOST_REQUIRE(SignSignature(keystore, anchorSource, spend, 1, SIGHASH_ALL, context));
+
+        CCoinsView base;
+        CCoinsViewCache coins(&base);
+        coins.AddCoin(spend.vin[0].prevout, Coin(assetSource.vout[0], 20, false), true);
+        coins.AddCoin(spend.vin[1].prevout, Coin(anchorSource.vout[0], 10, false), true);
+        CValidationState state;
+        BOOST_REQUIRE(Consensus::CheckTxPQAssets(CTransaction(spend), state, coins, 20));
+        const unsigned int flags = STANDARD_SCRIPT_VERIFY_FLAGS | SCRIPT_VERIFY_PQ_HYBRID;
+        const CTransaction signedSpend(spend);
+        for (unsigned int i = 0; i < signedSpend.vin.size(); ++i) {
+            const CTxOut& prevout = i == 0 ? assetSource.vout[0] : anchorSource.vout[0];
+            ScriptError error = SCRIPT_ERR_UNKNOWN_ERROR;
+            BOOST_CHECK(VerifyScript(signedSpend.vin[i].scriptSig, prevout.scriptPubKey,
+                        &signedSpend.vin[i].scriptWitness, flags,
+                        TransactionSignatureChecker(&signedSpend, i, prevout.nValue, context),
+                        &error));
+            BOOST_CHECK_EQUAL(error, SCRIPT_ERR_OK);
+        }
+
+        CMutableTransaction corrupted(spend);
+        corrupted.vin[1].scriptWitness.stack[0][0] ^= 1;
+        const CTransaction corruptedTx(corrupted);
+        ScriptError error = SCRIPT_ERR_UNKNOWN_ERROR;
+        BOOST_CHECK(!VerifyScript(corrupted.vin[1].scriptSig,
+                    anchorSource.vout[0].scriptPubKey,
+                    &corrupted.vin[1].scriptWitness, flags,
+                    TransactionSignatureChecker(&corruptedTx, 1, 1000, context),
+                    &error));
+        BOOST_CHECK_EQUAL(error, SCRIPT_ERR_PQ_SIGNATURE_VERIFY_FAILED);
+    }
+
     BOOST_AUTO_TEST_CASE(legacy_p2pkh_asset_script_accepts_32_byte_tail_spend_test)
     {
         SelectParams(CBaseChainParams::MAIN);
@@ -300,14 +656,23 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
             DecodeDestination(GetParams().GlobalBurnAddress()));
         const auto addProgram = [&program](CScript script) {
             BOOST_REQUIRE_EQUAL(script.back(), OP_DROP);
-            script.pop_back();
+            script.push_back(32);
             script.insert(script.end(), program.begin(), program.end());
+            script.push_back(OP_DROP);
             return script;
         };
         const auto checkProgram = [&expected](const CScript& script) {
             uint256 parsed;
             BOOST_REQUIRE(GetPQAssetProgram(script, parsed));
             BOOST_CHECK(parsed == expected);
+            CMutableTransaction coinbase;
+            coinbase.vin.emplace_back(COutPoint());
+            coinbase.vout.emplace_back(0, script);
+            CCoinsView base;
+            CCoinsViewCache coins(&base);
+            CValidationState state;
+            BOOST_CHECK(Consensus::CheckTxPQAssets(CTransaction(coinbase), state,
+                                                   coins, 20));
         };
 
         CScript transfer = destination;
@@ -327,6 +692,11 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         CScript issue = destination;
         CNewAsset("RAVENTEST", COIN, 0, 1, 0, "").ConstructTransaction(issue);
         checkProgram(addProgram(issue));
+        for (const std::string& name : {"RAVENTEST#ONE", "$RAVENTEST", "#RAVENTEST"}) {
+            CScript typedIssue = destination;
+            CNewAsset(name, COIN, 0, 0, 0, "").ConstructTransaction(typedIssue);
+            checkProgram(addProgram(typedIssue));
+        }
         CScript owner = destination;
         CNewAsset("RAVENTEST", COIN, 0, 1, 0, "").ConstructOwnerTransaction(owner);
         checkProgram(addProgram(owner));
@@ -367,7 +737,9 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         BOOST_CHECK(!GetPQAssetProgram(noExpiry, parsed));
         CAssetTransfer legacyNoExpiry;
         BOOST_REQUIRE(TransferAssetFromScript(noExpiry, legacyNoExpiry, address));
-        BOOST_CHECK_EQUAL(legacyNoExpiry.nExpireTime, 3);
+        // A legacy parser consumes the suffix as an expiry unless it is
+        // preceded by an explicit eight-byte expiry in the asset payload.
+        BOOST_CHECK_NE(legacyNoExpiry.nExpireTime, 0);
         BOOST_REQUIRE_EQUAL(message[26], message.size() - 28);
         message[26] += 8;
         const std::vector<unsigned char> zeroExpiry(8, 0);
@@ -419,10 +791,12 @@ BOOST_FIXTURE_TEST_SUITE(asset_tx_tests, BasicTestingSetup)
         // creation-height gate. Script bytes alone cannot establish intent.
         CScript historical = destination;
         CAssetTransfer("RAVENTEST", COIN).ConstructTransaction(historical);
-        const std::vector<unsigned char> filler(31, 0);
+        const std::vector<unsigned char> filler(32, 0);
+        historical.push_back(32);
         historical.insert(historical.end(), filler.begin(), filler.end());
+        historical.push_back(OP_DROP);
         BOOST_CHECK(GetPQAssetProgram(historical, parsed));
-        BOOST_CHECK_EQUAL(parsed.begin()[0], OP_DROP);
+        BOOST_CHECK_EQUAL(parsed.begin()[0], 0);
     }
 
     BOOST_AUTO_TEST_CASE(asset_tx_valid_test)

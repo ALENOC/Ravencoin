@@ -24,6 +24,7 @@ enum DeploymentPos
     DEPLOYMENT_COINBASE_ASSETS,
     DEPLOYMENT_TRANSFER_OVERFLOW,   // Deployment of asset transfer qty overflow check   
     DEPLOYMENT_PQ_HYBRID, // Deployment of RIP-25: Post-Quantum Hybrid Signatures (ML-DSA-44)
+    DEPLOYMENT_PQ_ASSETS, // Dependent RIP-25 asset ownership deployment
     // DEPLOYMENT_CSV, // Deployment of BIP68, BIP112, and BIP113.
 //    DEPLOYMENT_SEGWIT, // Deployment of BIP141, BIP143, and BIP147.
     // NOTE: Also add new deployments to VersionBitsDeploymentInfo in versionbits.cpp

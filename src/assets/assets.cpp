@@ -3575,9 +3575,10 @@ bool GetAssetData(const CScript& script, CAssetOutputEntry& data)
 
 bool GetPQAssetProgram(const CScript& script, uint256& program)
 {
-    // Research parser only. No consensus or wallet path calls this function.
     // Keep the classical envelope intact so legacy nodes see the same asset.
-    if (script.size() < 26 + 1 + 4 + 32 ||
+    // The suffix must be executable by legacy nodes: drop the asset payload,
+    // push the program as data, and drop it without changing the P2PKH result.
+    if (script.size() < 26 + 1 + 4 + 35 ||
         script[0] != OP_DUP || script[1] != OP_HASH160 || script[2] != 20 ||
         script[23] != OP_EQUALVERIFY || script[24] != OP_CHECKSIG ||
         script[25] != OP_RVN_ASSET) {
@@ -3597,7 +3598,10 @@ bool GetPQAssetProgram(const CScript& script, uint256& program)
         return false;
     }
 
-    if (payloadSize < 4 || payloadStart + payloadSize + 32 != script.size())
+    if (payloadSize < 4 || payloadStart + payloadSize + 35 != script.size() ||
+        script[script.size() - 35] != OP_DROP ||
+        script[script.size() - 34] != 32 ||
+        script.back() != OP_DROP)
         return false;
     if (script[payloadStart] != RVN_R || script[payloadStart + 1] != RVN_V ||
         script[payloadStart + 2] != RVN_N)
@@ -3647,7 +3651,7 @@ bool GetPQAssetProgram(const CScript& script, uint256& program)
     if (!stream.empty())
         return false;
 
-    std::copy(script.end() - 32, script.end(), program.begin());
+    std::copy(script.end() - 33, script.end() - 1, program.begin());
     return true;
 }
 

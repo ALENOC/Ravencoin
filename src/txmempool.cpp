@@ -787,11 +787,13 @@ void CTxMemPool::removeRecursive(const CTransaction &origTx, MemPoolRemovalReaso
     }
 }
 
-void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMemPoolHeight,
-                                int flags, bool fPQHybridActive)
+void CTxMemPool::removeForReorg(CCoinsViewCache *pcoins, unsigned int nMemPoolHeight,
+                                int flags, bool fPQHybridActive, int pqAssetActivationHeight)
 {
     // Remove transactions spending a coinbase which are now immature and no-longer-final transactions
     LOCK(cs);
+    CCoinsViewMemPool viewMemPool(pcoins, *this);
+    CCoinsViewCache view(&viewMemPool);
     setEntries txToRemove;
     for (indexed_transaction_set::const_iterator it = mapTx.begin(); it != mapTx.end(); it++) {
         const CTransaction& tx = it->GetTx();
@@ -837,6 +839,14 @@ void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMem
             }
             if (removeForPQRollback)
                 txToRemove.insert(it);
+        }
+        if (pqAssetActivationHeight >= 0 && !txToRemove.count(it)) {
+            CValidationState state;
+            if (!Consensus::CheckTxPQAssets(tx, state, view, pqAssetActivationHeight)) {
+                txToRemove.insert(it);
+                LogPrint(BCLog::MEMPOOL, "Removing tx %s after PQ asset reorg: %s\n",
+                         tx.GetHash().ToString(), state.GetRejectReason());
+            }
         }
         if (!validLP) {
             mapTx.modify(it, update_lock_points(lp));
@@ -884,7 +894,9 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx,
                                 unsigned int nBlockHeight,
                                 ConnectedBlockAssetData& connectedBlockData,
                                 bool fTransferOverflowActive,
-                                bool fTransferOverflowJustActivated)
+                                bool fTransferOverflowJustActivated,
+                                int pqAssetActivationHeight,
+                                bool fPQAssetsJustActivated)
 {
     LOCK(cs);
     std::set<uint256> setAlreadyRemoving;
@@ -1040,26 +1052,34 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx,
         ClearPrioritisation(tx.GetHash());
     }
 
-    // DEPLOYMENT_TRANSFER_OVERFLOW tightens validity for transactions that
-    // were admissible in LOCKED_IN. Revalidate the remaining pool exactly on
-    // the false-to-true transition, after connected/conflicting transactions
-    // have been removed and the new UTXO/asset state has been flushed. The
-    // mempool-backed view preserves parent outputs while invalid roots and all
-    // of their descendants are collected before mutation.
-    if (fTransferOverflowJustActivated) {
+    // Transfer-overflow and PQ-asset activation tighten validity for
+    // transactions admitted under the previous rules. Revalidate the pool
+    // on either transition, after connected/conflicting transactions are
+    // removed and the new UTXO/asset state is flushed. The mempool-backed
+    // view preserves parent outputs; remove invalid roots with descendants.
+    if (fTransferOverflowJustActivated || fPQAssetsJustActivated) {
         AssertLockHeld(cs_main);
-        assert(fTransferOverflowActive);
+        assert(!fTransferOverflowJustActivated || fTransferOverflowActive);
+        assert(!fPQAssetsJustActivated || pqAssetActivationHeight >= 0);
         CCoinsViewMemPool viewMemPool(pcoinsTip, *this);
         CCoinsViewCache view(&viewMemPool);
         setEntries invalidRoots;
         for (txiter it = mapTx.begin(); it != mapTx.end(); ++it) {
             CValidationState state;
             std::vector<std::pair<std::string, uint256>> vReissueAssets;
-            if (!Consensus::CheckTxAssets(it->GetTx(), state, view, passets,
+            if (fTransferOverflowJustActivated &&
+                !Consensus::CheckTxAssets(it->GetTx(), state, view, passets,
                                           false, vReissueAssets, true)) {
                 invalidRoots.insert(it);
                 LogPrint(BCLog::MEMPOOL,
                          "Removing tx %s at transfer-overflow activation: %s\n",
+                         it->GetTx().GetHash().ToString(), state.GetRejectReason());
+            } else if (fPQAssetsJustActivated &&
+                       !Consensus::CheckTxPQAssets(it->GetTx(), state, view,
+                                                    pqAssetActivationHeight)) {
+                invalidRoots.insert(it);
+                LogPrint(BCLog::MEMPOOL,
+                         "Removing tx %s at PQ asset activation: %s\n",
                          it->GetTx().GetHash().ToString(), state.GetRejectReason());
             }
         }

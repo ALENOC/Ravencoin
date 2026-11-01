@@ -206,28 +206,32 @@ parser accepts this form, it consumes the genuine message field, can emit
 unwanted owner-token messages, and does not cover issuance or reissuance well.
 It is a compatibility probe, not the preferred extension.
 
-A third candidate replaces the final `OP_DROP` byte of a canonical P2PKH asset
-output with exactly 32 raw bytes containing the PQ program. The old script
-engine treats all bytes after `OP_RVN_ASSET` as opaque. Old transfer and reissue
-deserializers ignore exactly 32 residual bytes when no optional message or
-metadata hash exists. When a genuine transfer message exists, the protected
-form must serialize an explicit eight-byte expiry (zero if absent) before the
-32-byte tail; the old parser then retains the original message and expiry and
-ignores the tail. Initial issuance and owner-token parsers also ignore the
-tail. Local unit tests prove parsing and existing transaction/asset checks for
-representative transfer, issue, owner, and reissue scripts, including normal,
-unique, restricted, and qualifier transfer names. This is evidence of parser
-compatibility, not evidence that the proposed new consensus rule is safe.
+A third candidate with 32 raw bytes replacing `OP_DROP` also failed execution
+review. `OP_RVN_ASSET` is a no-op, not an instruction to skip the rest of the
+script. Raw program bytes execute as opcodes and can contain disabled opcodes.
+They cannot be used as an opaque suffix.
 
-A research-only helper recognizes the narrow canonical envelope and rejects
-short/long tails, nonminimal pushes, malformed payloads, and transfer messages
-without an explicit expiry field. Its classification is deliberately not used
-by consensus. An old-valid script ending in `OP_DROP` plus 31 arbitrary bytes
-is byte-identical to a candidate with a 32-byte program beginning `OP_DROP`.
-The helper necessarily classifies it as a candidate. Any later spend rule
-must therefore check the creating UTXO's height against the asset extension's
-activation height. Applying the rule only at spending height would retroactively
-lock historical coins and could split nodes after reorg or reindex.
+The current experimental envelope retains the legacy payload `OP_DROP`, then
+adds a minimal 32-byte data push and another `OP_DROP`. Its exact suffix is
+`OP_DROP 0x20 <32-byte program> OP_DROP`. This leaves the classical P2PKH script
+result unchanged on legacy nodes, even when the program contains disabled
+opcode values. Old transfer and reissue deserializers ignore residual bytes
+when no optional message or metadata hash exists. A transfer with a genuine
+message must serialize an explicit eight-byte expiry (zero if absent) inside
+the asset payload before the suffix; otherwise old parsers can mistake the
+suffix for an expiry. Initial issuance and owner-token parsers also ignore
+the suffix. Unit tests cover parser acceptance and actual legacy script
+execution. This is evidence of compatibility for tested forms, not a complete
+consensus or wallet qualification.
+
+The candidate parser recognizes only this narrow envelope and rejects
+short/long suffixes, nonminimal pushes, malformed payloads, and transfer
+messages without an explicit expiry field. A script with the same suffix may
+already have existed before activation; intent cannot be inferred from bytes.
+The spend rule must check the creating UTXO's height against the asset
+extension's activation height. Applying it only at spending height would
+retroactively lock historical coins and could split nodes after reorg or
+reindex.
 
 The proposed new rule would not put an unexpected witness on the asset input.
 Instead, the spending transaction would also consume a native RIP-25
@@ -277,12 +281,12 @@ boundary tests. `Consensus::CheckTxAssets` is also called during mempool
 revalidation and consistency checks; a new parameter defaulting to inactive
 could silently omit the rule at those sites.
 
-The precise matching rule remains undecided: whether one matching native
-witness-v2 anchor input can authorize several tagged asset inputs with the
-same program, and whether creating an asset output must create a funded anchor
-output. Those choices affect wallet funding, UTXO availability, migration,
-fee estimation, and duplicate-program resource limits. They require a protocol
-decision before any consensus patch. No BIP9 bit is assigned by this research.
+The experimental rule allows one matching native witness-v2 input to
+authorize several tagged asset inputs with the same program. It does not yet
+require a funded anchor output on creation. Wallet funding, UTXO availability,
+migration, fee estimation, and duplicate-program resource limits remain
+unresolved. Bit 13 is reserved in the local experimental branch, with no
+public-network activation window assigned.
 
 ## 15. 4.8.1 Integration Candidate and Release Gate
 
@@ -311,8 +315,8 @@ assumevalid shortcuts. Native witness-v2 signature verification must still run
 under assumevalid when the asset anchor is needed. A transaction may not remove
 the PQ condition by sending its asset to a legacy-only output after activation.
 
-The creation-height rule is essential. A pre-activation script ending in
-`OP_DROP` plus 31 bytes can be byte-identical to a tagged candidate. Requiring
+The creation-height rule is essential. A pre-activation script containing the
+same executable suffix can be byte-identical to a tagged candidate. Requiring
 an anchor from such a historical coin would retroactively make old-valid
 spends invalid. Conversely, a pre-activation tagged-looking output cannot be
 advertised as PQ-protected merely because its spend happens after activation.

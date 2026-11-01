@@ -42,6 +42,10 @@ const struct VBDeploymentInfo VersionBitsDeploymentInfo[Consensus::MAX_VERSION_B
     {
         /*.name =*/ "pq_hybrid",
         /*.gbt_force =*/ true,
+    },
+    {
+        /*.name =*/ "pq_assets",
+        /*.gbt_force =*/ true,
     }
 };
 
